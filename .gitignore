@@ -1,0 +1,65 @@
+# Compiled class file
+*.class
+
+# Log file
+*.log
+
+# BlueJ files
+*.ctxt
+.idea/            # JetBrains/IntelliJ IDE files
+
+# External libraries
+# except as specified by build tools (e.g., Maven, Gradle)
+# *.jar
+# *.war
+# *.ear
+# *.zip
+# *.tar.gz
+
+# Maven
+target/           # Build output directory
+pom.xml.tag
+pom.xml.next
+pom.xml.bak
+pom.xml.versions
+pom.xml.releaseBackup
+pom.xml.versions.backup
+results/
+dependency-reduced-pom.xml
+release.properties
+# ignore all maven created jars, wars etc. in the target folder,
+# the patterns above are generally sufficient if all build artifacts are under target/
+
+# Gradle
+.gradle/          # Gradle files
+/build/           # Build output directory
+# Gradle metadata files
+.gradle-build
+.gradle-cache
+# Generated files
+*.swp
+*.bak
+*.tmp
+*.class
+# Libraries
+# *.jar
+# *.war
+# *.ear
+
+# Eclipse
+.project          # Eclipse project file
+.classpath        # Eclipse classpath file
+.settings/        # Eclipse settings directory
+/bin/             # Eclipse output directory
+# STS (Spring Tool Suite)
+.springBeans
+
+# macOS
+.DS_Store
+
+# IDEs and other common temporary files
+*.iml             # IntelliJ IDEA module files
+.idea/            # IntelliJ IDEA configuration directory
+/out/             # IntelliJ output directory
+nbproject/        # NetBeans project files
+*.orig
