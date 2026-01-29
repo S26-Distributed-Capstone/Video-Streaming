@@ -1,4 +1,4 @@
-package com.distributed26;
+package com.distributed26.videostreaming.processing;
 
 /**
  * Hello world!

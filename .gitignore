@@ -18,6 +18,7 @@
 
 # Maven
 target/           # Build output directory
+**/target/**
 pom.xml.tag
 pom.xml.next
 pom.xml.bak
