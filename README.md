@@ -1,8 +1,9 @@
-# Distribued Systems Spring 2026 Capstone Project - Video Upload/Processing System
+# Video Upload/Processing/Playback System
+> Distributed Systems Spring 2026 Capstone Project
 
 ## Code Structure (Example File Names)
 ```
-video-upload/
+video-streaming/
 ├── README.md
 ├── pom.xml
 │
