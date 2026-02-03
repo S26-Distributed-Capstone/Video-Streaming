@@ -6,8 +6,8 @@
 
 # BlueJ files
 *.ctxt
-.idea/            # JetBrains/IntelliJ IDE files
-
+.idea/           # JetBrains/IntelliJ IDE files
+**/.idea/**
 # External libraries
 # except as specified by build tools (e.g., Maven, Gradle)
 # *.jar
