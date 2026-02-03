@@ -82,6 +82,17 @@ class S3StorageClientIT {
         Assertions.assertFalse(storageClient.fileExists(key), "Expected object to be deleted");
     }
 
+    @Test
+    void addsFileVisibleInDashboard() {
+        String key = "manual/visible-" + UUID.randomUUID() + ".txt";
+        byte[] payload = ("visible-at-" + System.currentTimeMillis()).getBytes(StandardCharsets.UTF_8);
+
+        storageClient.uploadFile(key, toStream(payload), payload.length);
+        Assertions.assertTrue(storageClient.fileExists(key), "Expected uploaded object to exist");
+
+        // Intentionally not deleting; this test leaves the object for dashboard visibility.
+    }
+
     private static S3Client buildS3Client(StorageConfig config) {
         return S3Client.builder()
                 .endpointOverride(URI.create(config.getEndpointUrl()))
