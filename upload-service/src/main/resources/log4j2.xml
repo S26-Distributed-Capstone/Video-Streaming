@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration status="WARN">
+    <Properties>
+        <Property name="logDir">logs</Property>
+        <Property name="logFile">${logDir}/upload-service.log</Property>
+    </Properties>
+    <Appenders>
+        <File name="File" fileName="${logFile}" append="true">
+            <PatternLayout pattern="%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level %c{1} - %msg%n"/>
+        </File>
+    </Appenders>
+    <Loggers>
+        <Root level="info">
+            <AppenderRef ref="File"/>
+        </Root>
+    </Loggers>
+</Configuration>
