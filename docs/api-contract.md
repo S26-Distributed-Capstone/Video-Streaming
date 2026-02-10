@@ -58,7 +58,7 @@ Provide a clear, shared reference for client interactions. Once merged, any chan
 
 ---
 ### Lifecycle and Visibility Guarantees
->### Will be expanded in a separate doc in week 4
+> ### Will be expanded in a separate doc in week 4
 - Streaming endpoints return `409` (not `404`) for videos that exist but are not ready
 - Video IDs are stable and permanent once issued
 
