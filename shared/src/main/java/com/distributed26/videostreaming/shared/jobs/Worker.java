@@ -1,0 +1,43 @@
+package com.distributed26.videostreaming.shared.jobs;
+
+import java.time.Instant;
+import java.util.Objects;
+
+public class Worker {
+    private final String id;
+    private WorkerStatus status;
+    private final Instant registeredAt;
+    private Instant lastHeartbeatAt;
+
+    public Worker(String id, Instant registeredAt) {
+        this.id = Objects.requireNonNull(id, "id is null");
+        this.registeredAt = Objects.requireNonNull(registeredAt, "registeredAt is null");
+
+        this.status = WorkerStatus.IDLE;
+        this.lastHeartbeatAt = registeredAt;
+    }
+
+    public String getId() {
+        return id;
+    }
+
+    public synchronized WorkerStatus getStatus() {
+        return status;
+    }
+
+    public synchronized void setStatus(WorkerStatus status) {
+        this.status = Objects.requireNonNull(status, "status is null");
+    }
+
+    public Instant getRegisteredAt() {
+        return registeredAt;
+    }
+
+    public synchronized Instant getLastHeartbeatAt() {
+        return lastHeartbeatAt;
+    }
+
+    public synchronized void heartbeat() {
+        this.lastHeartbeatAt = Instant.now();
+    }
+}
