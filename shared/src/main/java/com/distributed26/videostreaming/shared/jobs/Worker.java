@@ -21,7 +21,7 @@ public class Worker {
         return id;
     }
 
-    public WorkerStatus getStatus() {
+    public synchronized WorkerStatus getStatus() {
         return status;
     }
 
@@ -33,7 +33,7 @@ public class Worker {
         return registeredAt;
     }
 
-    public Instant getLastHeartbeatAt() {
+    public synchronized Instant getLastHeartbeatAt() {
         return lastHeartbeatAt;
     }
 

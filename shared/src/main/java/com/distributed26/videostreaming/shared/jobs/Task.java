@@ -12,10 +12,10 @@ public class Task {
     private final TaskType type;
     private final String payload;
     private final Map<String, String> metadata;
-    private Status status;
-    private int attempt;
-    private int maxAttempts;
-    private String assignedWorkerId;
+    private final Status status;
+    private final int attempt;
+    private final int maxAttempts;
+    private final String assignedWorkerId;
     private final Instant createdAt;
 
     public Task(
@@ -26,7 +26,7 @@ public class Task {
             int attempt,
             int maxAttempts
     ) {
-        this(id, jobId, type, payload, null, attempt, maxAttempts);
+        this(id, jobId, type, payload, null, Status.CREATED, attempt, maxAttempts, null, Instant.now());
     }
 
     public Task(
@@ -35,20 +35,32 @@ public class Task {
             TaskType type,
             String payload,
             Map<String, String> metadata,
+            Status status,
             int attempt,
-            int maxAttempts
+            int maxAttempts,
+            String assignedWorkerId,
+            Instant createdAt
     ) {
         this.id = Objects.requireNonNull(id, "id is null");
         this.jobId = Objects.requireNonNull(jobId, "jobId is null");
         this.type = Objects.requireNonNull(type, "type is null");
 
-        this.status = Status.CREATED;
+        this.status = Objects.requireNonNull(status, "status is null");
         this.payload = payload;
-        this.metadata = (metadata == null) ? new HashMap<>() : validateMetadata(metadata);
+        this.metadata = (metadata == null) ? new HashMap<>() : Util.validateAndCopy(metadata);
+        if (attempt < 0) {
+            throw new IllegalArgumentException("attempt must be >= 0");
+        }
+        if (maxAttempts < 0) {
+            throw new IllegalArgumentException("maxAttempts must be >= 0");
+        }
+        if (attempt > maxAttempts) {
+            throw new IllegalArgumentException("attempt cannot exceed maxAttempts");
+        }
         this.attempt = attempt;
         this.maxAttempts = maxAttempts;
-        this.assignedWorkerId = null;
-        this.createdAt = Instant.now();
+        this.assignedWorkerId = assignedWorkerId;
+        this.createdAt = Objects.requireNonNull(createdAt, "createdAt is null");
     }
 
     public String getId() {
@@ -71,51 +83,24 @@ public class Task {
         return Collections.unmodifiableMap(metadata);
     }
 
-    public Status getStatus() {
+    public synchronized Status getStatus() {
         return status;
     }
 
-    public synchronized void setStatus(Status status) {
-        this.status = Objects.requireNonNull(status, "status is null");
-    }
-
-    public int getAttempt() {
+    public synchronized int getAttempt() {
         return attempt;
-    }
-
-    public void setAttempt(int attempt) {
-        this.attempt = attempt;
     }
 
     public int getMaxAttempts() {
         return maxAttempts;
     }
 
-    public void setMaxAttempts(int maxAttempts) {
-        this.maxAttempts = maxAttempts;
-    }
-
-    public String getAssignedWorkerId() {
+    public synchronized String getAssignedWorkerId() {
         return assignedWorkerId;
-    }
-
-    public synchronized void setAssignedWorkerId(String assignedWorkerId) {
-        this.assignedWorkerId = assignedWorkerId;
     }
 
     public Instant getCreatedAt() {
         return createdAt;
     }
 
-    private static Map<String, String> validateMetadata(Map<String, String> metadata) {
-        for (Map.Entry<String, String> entry : metadata.entrySet()) {
-            if (entry.getKey() == null) {
-                throw new IllegalArgumentException("metadata key is null");
-            }
-            if (entry.getValue() == null) {
-                throw new IllegalArgumentException("metadata value is null");
-            }
-        }
-        return new HashMap<>(metadata);
-    }
 }
