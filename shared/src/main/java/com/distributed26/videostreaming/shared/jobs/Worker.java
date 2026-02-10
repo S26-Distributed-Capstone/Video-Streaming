@@ -25,7 +25,7 @@ public class Worker {
         return status;
     }
 
-    public void setStatus(WorkerStatus status) {
+    public synchronized void setStatus(WorkerStatus status) {
         this.status = Objects.requireNonNull(status, "status is null");
     }
 
@@ -37,7 +37,7 @@ public class Worker {
         return lastHeartbeatAt;
     }
 
-    public void heartbeat() {
+    public synchronized void heartbeat() {
         this.lastHeartbeatAt = Instant.now();
     }
 }

@@ -25,7 +25,7 @@ public class Job {
         this.createdAt = Objects.requireNonNull(createdAt, "createdAt is null");
         this.tasks = new ArrayList<>(Objects.requireNonNull(tasks, "tasks is null"));
         this.payload = payload;
-        this.metadata = (metadata == null) ? new HashMap<>() : new HashMap<>(metadata);
+        this.metadata = (metadata == null) ? new HashMap<>() : validateMetadata(metadata);
 
         this.status = Status.CREATED;
     }
@@ -38,7 +38,7 @@ public class Job {
         return status;
     }
 
-    public void setStatus(Status status) {
+    public synchronized void setStatus(Status status) {
         this.status = Objects.requireNonNull(status, "status is null");
     }
 
@@ -56,5 +56,17 @@ public class Job {
 
     public Map<String, String> getMetadata() {
         return Collections.unmodifiableMap(metadata);
+    }
+
+    private static Map<String, String> validateMetadata(Map<String, String> metadata) {
+        for (Map.Entry<String, String> entry : metadata.entrySet()) {
+            if (entry.getKey() == null) {
+                throw new IllegalArgumentException("metadata key is null");
+            }
+            if (entry.getValue() == null) {
+                throw new IllegalArgumentException("metadata value is null");
+            }
+        }
+        return new HashMap<>(metadata);
     }
 }
