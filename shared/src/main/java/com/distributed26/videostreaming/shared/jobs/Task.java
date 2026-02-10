@@ -12,7 +12,7 @@ public class Task {
     private final TaskType type;
     private final String payload;
     private final Map<String, String> metadata;
-    private final Status status;
+    private Status status;
     private final int attempt;
     private final int maxAttempts;
     private final String assignedWorkerId;
@@ -85,6 +85,10 @@ public class Task {
 
     public synchronized Status getStatus() {
         return status;
+    }
+
+    public synchronized void setStatus(Status status){
+        this.status = status;
     }
 
     public synchronized int getAttempt() {

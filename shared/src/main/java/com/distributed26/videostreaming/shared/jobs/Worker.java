@@ -11,7 +11,7 @@ public class Worker {
 
     public Worker(String id, Instant registeredAt) {
         this.id = Objects.requireNonNull(id, "id is null");
-        this.registeredAt = Objects.requireNonNull(registeredAt, "registeredAt");
+        this.registeredAt = Objects.requireNonNull(registeredAt, "registeredAt is null");
 
         this.status = WorkerStatus.IDLE;
         this.lastHeartbeatAt = registeredAt;
