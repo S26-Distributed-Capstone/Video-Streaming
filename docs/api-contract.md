@@ -16,16 +16,26 @@ Provide a clear, shared reference for client interactions. Once merged, any chan
 	- `400 Bad Request` — no file provided
 	- `500 Internal Server Error` — storage failure
 
-#### `GET /video/{videoId}/status`
-- Success response: `200 OK`
+#### `GET /video/{videoId}/status/stream`
+- Purpose: Real-time status updates via WebSocket, eliminating the need for polling
+- Protocol: HTTP upgrade to WebSocket
+- Message format: JSON status messages pushed to client as the video progresses through lifecycle states
 	```json
 	{
 		"videoId": "<uuid>",
-		"state": "UPLOADED | PROCESSING | READY | FAILED"
+		"state": "UPLOADED | PROCESSING | READY | FAILED",
+		"timestamp": "<iso8601>"
 	}
 	```
+- Connection lifecycle:
+	- Client initiates HTTP upgrade request to WebSocket
+	- Server sends immediate status update upon connection
+	- Server pushes subsequent status updates as they occur
+	- Client may close the connection at any time
+	- Server closes the connection after sending a terminal state (`READY` or `FAILED`)
 - Error responses:
-	- `404 Not Found` — unknown video ID
+	- `404 Not Found` — unknown video ID (before upgrade)
+	- `400 Bad Request` — invalid WebSocket upgrade request
 
 ## 2. Streaming Service Endpoints
 
