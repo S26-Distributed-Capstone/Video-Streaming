@@ -33,7 +33,10 @@ Provide a clear, shared reference for client interactions. Once merged, any chan
 - Streaming endpoints serve clients requesting playback assets
 
 #### `GET /stream/{videoId}/manifest`
-- Returns the HLS or DASH manifest for a ready video
+- Returns the HLS manifest for a ready video
+- Success response: `200 OK`
+	- Body: HLS playlist (M3U8) manifest
+	- `Content-Type: application/vnd.apple.mpegurl`
 - Error responses:
 	- `404 Not Found` — unknown video ID
 	- `409 Conflict` — video exists but is not yet ready for streaming
