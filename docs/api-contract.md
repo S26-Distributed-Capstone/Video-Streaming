@@ -43,6 +43,12 @@ Provide a clear, shared reference for client interactions. Once merged, any chan
 
 #### `GET /stream/{videoId}/segment/{segmentId}`
 - Returns a specific video segment
+- Success response:
+	- `200 OK` — full segment response
+	- May return `206 Partial Content` when honoring `Range` requests
+	- Content-Type: `video/*` (exact encoding TBD, but represents a single segment)
+	- Supports HTTP byte-range requests via the `Range` header
+	- Cacheable by CDNs/clients (specific `Cache-Control` directives TBD)
 - Error responses:
 	- `404 Not Found` — unknown video or segment
 
