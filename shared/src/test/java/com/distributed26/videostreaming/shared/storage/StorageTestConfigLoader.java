@@ -1,39 +1,28 @@
 package com.distributed26.videostreaming.shared.storage;
 
 import com.distributed26.videostreaming.shared.config.StorageConfig;
-import java.io.IOException;
-import java.io.InputStream;
-import java.util.Properties;
+import io.github.cdimascio.dotenv.Dotenv;
 
 final class StorageTestConfigLoader {
     private StorageTestConfigLoader() {
     }
 
     static StorageConfig load() {
-        Properties properties = new Properties();
-        try (InputStream input = StorageTestConfigLoader.class.getClassLoader()
-                .getResourceAsStream("application.properties")) {
-            if (input == null) {
-                throw new IllegalStateException("application.properties not found on classpath");
-            }
-            properties.load(input);
-        } catch (IOException ex) {
-            throw new IllegalStateException("Failed to load application.properties", ex);
-        }
+        Dotenv dotenv = Dotenv.configure().directory("../").ignoreIfMissing().load();
 
         return new StorageConfig(
-                require(properties, "minio.endpoint"),
-                require(properties, "minio.access-key"),
-                require(properties, "minio.secret-key"),
-                require(properties, "minio.bucket-name"),
-                require(properties, "minio.region")
+                require(dotenv, "MINIO_ENDPOINT"),
+                require(dotenv, "MINIO_ACCESS_KEY"),
+                require(dotenv, "MINIO_SECRET_KEY"),
+                require(dotenv, "MINIO_BUCKET_NAME"),
+                require(dotenv, "MINIO_REGION")
         );
     }
 
-    private static String require(Properties properties, String key) {
-        String value = properties.getProperty(key);
+    private static String require(Dotenv dotenv, String key) {
+        String value = dotenv.get(key);
         if (value == null || value.isBlank()) {
-            throw new IllegalStateException("Missing required property: " + key);
+            throw new IllegalStateException("Missing required environment variable: " + key);
         }
         return value.trim();
     }
