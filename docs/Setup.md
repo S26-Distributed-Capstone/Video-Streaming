@@ -99,6 +99,12 @@ Uploads a video file, segments it using FFmpeg, and uploads the segments to the 
 - **Body Parameters:**
   - `file`: The video file to upload (binary).
 
+**Example Curl Request**
+- curl -X POST http://localhost:8080/upload \
+  -H "Accept: application/json" \
+  -F "file=@/path/to/video.mp4"
+
+
 #### Response
 
 - **Status:** `201 Created`

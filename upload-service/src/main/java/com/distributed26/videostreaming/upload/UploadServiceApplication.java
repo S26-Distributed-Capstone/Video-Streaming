@@ -3,6 +3,8 @@ package com.distributed26.videostreaming.upload;
 import com.distributed26.videostreaming.shared.config.StorageConfig;
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
 import com.distributed26.videostreaming.shared.storage.S3StorageClient;
+import com.distributed26.videostreaming.shared.upload.InMemoryStatusBus;
+import com.distributed26.videostreaming.shared.upload.StatusBus;
 import io.javalin.Javalin;
 import io.javalin.config.SizeUnit;
 import java.io.IOException;
@@ -30,13 +32,18 @@ public class UploadServiceApplication {
 
         // Ensure the bucket exists before starting the application
         storageClient.ensureBucketExists();
+        
+        StatusBus statusBus = new InMemoryStatusBus();
+        UploadHandler uploadHandler = new UploadHandler(storageClient, statusBus);
+        UploadStatusWebSocket uploadStatusWebSocket = new UploadStatusWebSocket(statusBus);
 
-        UploadHandler uploadHandler = new UploadHandler(storageClient);
+		Javalin app = Javalin.create(config -> {
+            config.jetty.multipartConfig.maxFileSize(10, SizeUnit.GB);
+        });
 
-		Javalin app = Javalin.create(config -> config.jetty.multipartConfig.maxFileSize(10, SizeUnit.GB));
-
-		app.get("/health", HealthHandler::health);
+        app.get("/health", HealthHandler::health);
         app.post("/upload", uploadHandler::upload);
+        app.ws("/upload-status", uploadStatusWebSocket::configure);
 		return app;
 	}
 
