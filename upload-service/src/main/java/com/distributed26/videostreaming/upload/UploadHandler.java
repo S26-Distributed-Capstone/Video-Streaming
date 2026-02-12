@@ -11,7 +11,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.Comparator;
+import java.util.List;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import net.bramp.ffmpeg.FFmpeg;
 import net.bramp.ffmpeg.FFmpegExecutor;
@@ -33,6 +35,7 @@ public class UploadHandler {
     }
 
     public void upload(Context ctx) {
+        long startTime = System.currentTimeMillis();
         UploadedFile uploadedFile = ctx.uploadedFile("file");
         if (uploadedFile == null) {
             ctx.status(400).result("No 'file' part found in request");
@@ -44,6 +47,7 @@ public class UploadHandler {
 
         // Create UUID for the video
         String videoId = UUID.randomUUID().toString();
+        logger.info("Assigned video ID: {}", videoId);
 
         Path tempInput = null;
         Path tempOutput = null;
@@ -75,8 +79,14 @@ public class UploadHandler {
             new FFmpegExecutor(ffmpeg, ffprobe).createJob(builder).run();
 
             // 4. Upload all generated files to S3
+            int totalChunks;
+            int uploadedChunks = 0;
+
             try (Stream<Path> stream = Files.list(tempOutput)) {
-                stream.forEach(path -> {
+                List<Path> files = stream.collect(Collectors.toList());
+                totalChunks = files.size();
+
+                for (Path path : files) {
                     try {
                         String fileName = path.getFileName().toString();
                         String objectKey = videoId + "/" + fileName;
@@ -85,14 +95,16 @@ public class UploadHandler {
 
                         try (InputStream is = new FileInputStream(path.toFile())) {
                             storageClient.uploadFile(objectKey, is, size);
+                            uploadedChunks++;
                         }
                     } catch (IOException e) {
                         throw new RuntimeException("Failed to upload segment: " + path, e);
                     }
-                });
+                }
             }
 
-            logger.info("Successfully segmented and uploaded video: {}", videoId);
+            long duration = System.currentTimeMillis() - startTime;
+            logger.info("Successfully segmented and uploaded video: {}. Uploaded {}/{} chunks. Total time: {} ms", videoId, uploadedChunks, totalChunks, duration);
             ctx.status(201).json(videoId);
 
         } catch (Exception e) {

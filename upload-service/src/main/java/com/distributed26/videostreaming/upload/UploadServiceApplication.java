@@ -52,7 +52,7 @@ public class UploadServiceApplication {
             getEnvOrProp("MINIO_ENDPOINT", props, "minio.endpoint", "http://localhost:9000"),
             getEnvOrProp("MINIO_ACCESS_KEY", props, "minio.access-key", "minioadmin"),
             getEnvOrProp("MINIO_SECRET_KEY", props, "minio.secret-key", "minioadmin"),
-            getEnvOrProp("MINIO_BUCKET_NAME", props, "minio.bucket-name", "videos"),
+            getEnvOrProp("MINIO_BUCKET_NAME", props, "minio.bucket-name", "uploads"),
             getEnvOrProp("MINIO_REGION", props, "minio.region", "us-east-1")
         );
     }
