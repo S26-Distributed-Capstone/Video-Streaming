@@ -1,6 +1,8 @@
 package com.distributed26.videostreaming.upload;
 
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
+import com.distributed26.videostreaming.shared.upload.StatusBus;
+import com.distributed26.videostreaming.shared.upload.UploadStatusEvent;
 import io.javalin.http.Context;
 import io.javalin.http.UploadedFile;
 import java.io.File;
@@ -10,6 +12,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.time.Instant;
 import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
@@ -22,15 +25,18 @@ import net.bramp.ffmpeg.builder.FFmpegBuilder;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import io.github.cdimascio.dotenv.Dotenv;
+import com.distributed26.videostreaming.shared.jobs.Status;
 
 public class UploadHandler {
     private static final Logger logger = LogManager.getLogger(UploadHandler.class);
     private final ObjectStorageClient storageClient;
+    private final StatusBus statusBus;
     private final int segmentDuration;
 
-    public UploadHandler(ObjectStorageClient storageClient) {
+    public UploadHandler(ObjectStorageClient storageClient, StatusBus statusBus) {
         Dotenv dotenv = Dotenv.load();
         this.storageClient = storageClient;
+        this.statusBus = statusBus;
         this.segmentDuration =dotenv.get("CHUNK_DURATION_SECONDS").isEmpty() ? 10 : Integer.parseInt(dotenv.get("CHUNK_DURATION_SECONDS"));
     }
 
@@ -48,6 +54,8 @@ public class UploadHandler {
         // Create UUID for the video
         String videoId = UUID.randomUUID().toString();
         logger.info("Assigned video ID: {}", videoId);
+        statusBus.publish(new UploadStatusEvent(videoId, Status.CREATED, Instant.now()));
+        logger.info("Added event with video ID {} and status CREATED to bus", videoId);
 
         Path tempInput = null;
         Path tempOutput = null;
@@ -66,6 +74,8 @@ public class UploadHandler {
             // Assuming ffmpeg/ffprobe are in PATH. In a real app, these paths should be configurable.
             FFmpeg ffmpeg = new FFmpeg("ffmpeg");
             FFprobe ffprobe = new FFprobe("ffprobe");
+            statusBus.publish(new UploadStatusEvent(videoId, Status.RUNNING, Instant.now(), 0.0, 0L, null, "Segmenting video"));
+            logger.info("Added event with video ID {} and status RUNNING to bus", videoId);
 
             FFmpegBuilder builder = new FFmpegBuilder()
                     .setInput(tempInput.toString())
@@ -96,6 +106,17 @@ public class UploadHandler {
                         try (InputStream is = new FileInputStream(path.toFile())) {
                             storageClient.uploadFile(objectKey, is, size);
                             uploadedChunks++;
+                            double progress = totalChunks == 0 ? 1.0 : (double) uploadedChunks / totalChunks;
+                            statusBus.publish(new UploadStatusEvent(
+                                    videoId,
+                                    Status.RUNNING,
+                                    Instant.now(),
+                                    progress,
+                                    null,
+                                    null,
+                                    "Uploading segments"
+                            ));
+                            logger.info("Added chunk with video ID {} to bus", videoId);
                         }
                     } catch (IOException e) {
                         throw new RuntimeException("Failed to upload segment: " + path, e);
@@ -105,10 +126,30 @@ public class UploadHandler {
 
             long duration = System.currentTimeMillis() - startTime;
             logger.info("Successfully segmented and uploaded video: {}. Uploaded {}/{} chunks. Total time: {} ms", videoId, uploadedChunks, totalChunks, duration);
+            statusBus.publish(new UploadStatusEvent(
+                    videoId,
+                    Status.SUCCEEDED,
+                    Instant.now(),
+                    1.0,
+                    null,
+                    null,
+                    "Upload complete"
+            ));
+            logger.info("Added event with video ID {} and status SUCCEEDED to bus", videoId);
             ctx.status(201).json(videoId);
 
         } catch (Exception e) {
             logger.error("Upload/Processing failed", e);
+            statusBus.publish(new UploadStatusEvent(
+                    videoId,
+                    Status.FAILED,
+                    Instant.now(),
+                    null,
+                    null,
+                    null,
+                    "Upload/Processing failed: " + e.getMessage()
+            ));
+            logger.info("Added event with video ID {} and status FAILED to bus", videoId);
             ctx.status(500).result("Upload/Processing failed: " + e.getMessage());
         } finally {
             // 5. Cleanup

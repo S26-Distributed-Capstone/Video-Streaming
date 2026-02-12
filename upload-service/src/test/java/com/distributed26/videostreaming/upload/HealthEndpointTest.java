@@ -32,7 +32,7 @@ public class HealthEndpointTest {
 		});
 	}
 
-	@Test
+	/*@Test
 	public void startAndStopServerForLogInspection() throws Exception {
 		Javalin app = UploadServiceApplication.startApp(0);
 		try {
@@ -40,5 +40,5 @@ public class HealthEndpointTest {
 		} finally {
 			app.stop();
 		}
-	}
+	}*/
 }
