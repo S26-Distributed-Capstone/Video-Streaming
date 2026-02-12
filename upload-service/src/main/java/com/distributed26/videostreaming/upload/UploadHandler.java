@@ -89,7 +89,7 @@ public class UploadHandler {
                 for (Path path : files) {
                     try {
                         String fileName = path.getFileName().toString();
-                        String objectKey = videoId + "/" + fileName;
+                        String objectKey = videoId + "/chunks/" + fileName;
                         long size = Files.size(path);
                         logger.info("Uploading segment: {} ({} bytes)", objectKey, size);
 
