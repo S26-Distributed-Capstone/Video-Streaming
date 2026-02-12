@@ -27,11 +27,13 @@ public class UploadServiceApplication {
 	static Javalin createApp() {
         StorageConfig storageConfig = loadStorageConfig();
         ObjectStorageClient storageClient = new S3StorageClient(storageConfig);
+
+        // Ensure the bucket exists before starting the application
+        storageClient.ensureBucketExists();
+
         UploadHandler uploadHandler = new UploadHandler(storageClient);
 
-		Javalin app = Javalin.create(config -> {
-            config.jetty.multipartConfig.maxFileSize(10, SizeUnit.GB);
-        });
+		Javalin app = Javalin.create(config -> config.jetty.multipartConfig.maxFileSize(10, SizeUnit.GB));
 
 		app.get("/health", HealthHandler::health);
         app.post("/upload", uploadHandler::upload);

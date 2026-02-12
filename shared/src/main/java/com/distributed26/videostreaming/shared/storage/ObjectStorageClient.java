@@ -13,4 +13,6 @@ public interface ObjectStorageClient {
     boolean fileExists(String key);
 
     List<String> listFiles(String prefix);
+
+    void ensureBucketExists();
 }
