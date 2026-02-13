@@ -79,8 +79,8 @@ public class UploadServiceApplication {
 
 	static Javalin startApp(int port) {
 		Javalin app = createApp();
+        logger.info("Creating Javalin app");
 		app.start(port);
-		logger.info("Upload service started; health endpoint available at http://localhost:{}/health", app.port());
 		return app;
 	}
 

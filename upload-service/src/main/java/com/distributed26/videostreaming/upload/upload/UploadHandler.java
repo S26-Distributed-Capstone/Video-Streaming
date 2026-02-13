@@ -31,7 +31,10 @@ public class UploadHandler {
     public UploadHandler(ObjectStorageClient storageClient) {
         Dotenv dotenv = Dotenv.configure().directory("../").ignoreIfMissing().load();
         this.storageClient = storageClient;
-        this.segmentDuration =dotenv.get("CHUNK_DURATION_SECONDS").isEmpty() ? 10 : Integer.parseInt(dotenv.get("CHUNK_DURATION_SECONDS"));
+        String chunkSeconds = dotenv.get("CHUNK_DURATION_SECONDS");
+        this.segmentDuration = (chunkSeconds == null || chunkSeconds.isEmpty())
+                ? 10
+                : Integer.parseInt(chunkSeconds);
     }
 
     public void upload(Context ctx) {
