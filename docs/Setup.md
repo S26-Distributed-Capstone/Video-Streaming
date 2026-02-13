@@ -7,6 +7,7 @@ Ensure you have the following installed:
 - Maven
 - Docker & Docker Compose
 - FFmpeg (installed and available in system PATH)
+- Postgres (installed and available in system PATH)
 
 ## Installing Dependencies
 
@@ -60,6 +61,7 @@ Start the MinIO service using Docker Compose:
 
 ```bash
 docker-compose -f minio_docker_compose.yaml up -d
+docker compose -f minio_docker_compose.yaml up -d
 ```
 
 This will start a MinIO server accessible at `http://localhost:9000` with the following default credentials:
@@ -77,11 +79,34 @@ mvn install -DskipTests
 
 2. Run the upload service:
 ```bash
-mvn exec:java -pl upload-service -Dexec.mainClass="com.distributed26.videostreaming.upload.UploadServiceApplication"
+mvn exec:java -pl upload-service -Dexec.mainClass="com.distributed26.videostreaming.upload.upload.UploadServiceApplication"
 ```
 
 The service will start on **port 8080**.
 
+### Step 3: Set Up Postgres (for Job/Task Tracking)
+
+1. Install and start Postgres.
+   **macOS (Homebrew):**
+   ```bash
+   brew install postgresql@16
+   brew services start postgresql@16
+   ```
+
+2. Create the database:
+   ```bash
+   createdb videostreaming
+   ```
+
+3. Create the table:
+   ```bash
+   psql -d videostreaming -c "CREATE TABLE IF NOT EXISTS job_tasks (job_id TEXT PRIMARY KEY, num_tasks INTEGER NOT NULL);"
+   ```
+
+4. Add a test row:
+   ```bash
+   psql -d videostreaming -c "INSERT INTO job_tasks (job_id, num_tasks) VALUES ('job-123', 3) ON CONFLICT (job_id) DO UPDATE SET num_tasks = EXCLUDED.num_tasks;"
+   ```
 ---
 
 ## API Documentation
