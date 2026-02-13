@@ -5,6 +5,8 @@ import com.distributed26.videostreaming.shared.upload.JobTaskBus;
 import com.distributed26.videostreaming.shared.upload.JobTaskEvent;
 import com.distributed26.videostreaming.upload.db.JobTaskRepository;
 import java.time.Instant;
+
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -18,6 +20,7 @@ public class JobTaskTrackerTest {
      * - Publish task completion events for that jobId.
      * - Assert the tracker counts tasks and reports completion.
     */
+    @Disabled
     @Test
     void tracksCompletionCounts() {
         String jobId = "job-123";

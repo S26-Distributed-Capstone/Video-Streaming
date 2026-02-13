@@ -28,6 +28,10 @@ public class JobTaskRepository {
         if (url == null || url.isBlank()) {
             throw new IllegalStateException("PG_URL is not set");
         }
+
+        if (user == null || user.isBlank()) {
+            throw new IllegalStateException("PG_USER is not set");
+        }
         return new JobTaskRepository(url, user, pass);
     }
 

@@ -5,13 +5,14 @@ import com.distributed26.videostreaming.shared.upload.JobTaskBus;
 import com.distributed26.videostreaming.shared.upload.JobTaskEvent;
 
 import io.javalin.Javalin;
-import java.time.Instant;
 import java.util.UUID;
+
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 public class JobTaskPublisherTest {
-
-    /*@Test
+    @Disabled
+    @Test 
     void publishJobTasksPeriodically() throws Exception {
         JobTaskBus jobTaskBus = new InMemoryJobTaskBus();
 
@@ -28,5 +29,5 @@ public class JobTaskPublisherTest {
         }
 
         app.stop();
-    }*/
+    }
 }

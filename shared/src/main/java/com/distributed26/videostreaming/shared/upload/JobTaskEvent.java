@@ -1,6 +1,5 @@
 package com.distributed26.videostreaming.shared.upload;
 
-import java.time.Instant;
 import java.util.Objects;
 
 public class JobTaskEvent {

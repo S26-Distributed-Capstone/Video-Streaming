@@ -79,7 +79,7 @@ mvn install -DskipTests
 
 2. Run the upload service:
 ```bash
-mvn exec:java -pl upload-service -Dexec.mainClass="com.distributed26.videostreaming.upload.UploadServiceApplication"
+mvn exec:java -pl upload-service -Dexec.mainClass="com.distributed26.videostreaming.upload.upload.UploadServiceApplication"
 ```
 
 The service will start on **port 8080**.

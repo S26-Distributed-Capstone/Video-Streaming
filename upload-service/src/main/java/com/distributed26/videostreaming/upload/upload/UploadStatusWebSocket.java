@@ -60,6 +60,11 @@ public class UploadStatusWebSocket {
     }
 
     private void bindJob(WsContext ctx, String jobId) {
+        if (jobId == null || jobId.isBlank()) {
+            ctx.send("{\"error\":\"missing_jobId\"}");
+            ctx.closeSession();
+            return;
+        }
         JobTaskListener listener = event -> {
             try {
                 ctx.send(objectMapper.writeValueAsString(event));

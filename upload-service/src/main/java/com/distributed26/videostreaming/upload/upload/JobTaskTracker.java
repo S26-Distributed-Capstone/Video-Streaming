@@ -60,9 +60,12 @@ public class JobTaskTracker {
         if (event == null) {
             return;
         }
-        if (!event.getJobId().equals(jobId)) {
+
+        String currentJobId = this.jobId;
+        if(!Objects.equals(event.getJobId(), currentJobId)){
             return;
         }
+        
         String taskId = event.getTaskId();
         if (taskId == null || taskId.isBlank()) {
             return;
