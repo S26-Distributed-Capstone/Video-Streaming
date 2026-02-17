@@ -163,7 +163,7 @@ public class UploadHandler {
                     lastSegmentTime = System.currentTimeMillis();
                     currentPollingInterval = pollingIntervalMillis;
                 } else if (System.currentTimeMillis() - lastSegmentTime > 10000) {
-                   // If no segments for 10 seconds, slowing down polling
+                   // If no segments for 10 seconds, slow down polling
                    currentPollingInterval = Math.min(5000, currentPollingInterval * 2);
                 }
 
