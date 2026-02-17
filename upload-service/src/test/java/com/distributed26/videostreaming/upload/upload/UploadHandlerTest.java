@@ -1,4 +1,4 @@
-package com.distributed26.videostreaming.upload;
+package com.distributed26.videostreaming.upload.upload;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.*;
