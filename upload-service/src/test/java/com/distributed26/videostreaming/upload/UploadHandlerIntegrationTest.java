@@ -289,7 +289,7 @@ public class UploadHandlerIntegrationTest {
             .pollInterval(Duration.ofMillis(500))
             .until(() -> uploadTimestamps.size() >= 2);
 
-// Verify that uploads were spread out over time (progressive upload)
+        // Verify that uploads were spread out over time (progressive upload)
         if (uploadTimestamps.size() >= 2) {
             long firstUpload = uploadTimestamps.get(0);
             long lastUpload = uploadTimestamps.get(uploadTimestamps.size() - 1);
