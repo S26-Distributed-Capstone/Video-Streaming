@@ -1,4 +1,4 @@
-package com.distributed26.videostreaming.upload;
+package com.distributed26.videostreaming.upload.upload;
 
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
 import io.javalin.http.Context;
@@ -38,8 +38,10 @@ public class UploadHandler {
     private final long pollingIntervalMillis;
 
     public UploadHandler(ObjectStorageClient storageClient) {
-        Dotenv dotenv = Dotenv.load();
+        Dotenv dotenv = Dotenv.configure().directory("../").ignoreIfMissing().load();
         this.storageClient = storageClient;
+        String chunkSeconds = dotenv.get("CHUNK_DURATION_SECONDS");
+
         this.segmentDuration = dotenv.get("CHUNK_DURATION_SECONDS").isEmpty() ? 10 : Integer.parseInt(dotenv.get("CHUNK_DURATION_SECONDS"));
 
         String timeoutEnv = dotenv.get("PROCESSING_TIMEOUT_SECONDS");

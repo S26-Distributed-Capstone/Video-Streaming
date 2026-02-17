@@ -1,8 +1,10 @@
-package com.distributed26.videostreaming.upload;
+package com.distributed26.videostreaming.upload.upload;
 
 import com.distributed26.videostreaming.shared.config.StorageConfig;
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
 import com.distributed26.videostreaming.shared.storage.S3StorageClient;
+import com.distributed26.videostreaming.shared.upload.InMemoryJobTaskBus;
+import com.distributed26.videostreaming.shared.upload.JobTaskBus;
 import io.javalin.Javalin;
 import io.javalin.config.SizeUnit;
 import java.io.IOException;
@@ -25,18 +27,26 @@ public class UploadServiceApplication {
 	}
 
 	static Javalin createApp() {
+        JobTaskBus jobTaskBus = new InMemoryJobTaskBus();
+        return createApp(jobTaskBus);
+    }
+
+    static Javalin createApp(JobTaskBus jobTaskBus) {
         StorageConfig storageConfig = loadStorageConfig();
         ObjectStorageClient storageClient = new S3StorageClient(storageConfig);
 
         // Ensure the bucket exists before starting the application
         storageClient.ensureBucketExists();
-
+        
         UploadHandler uploadHandler = new UploadHandler(storageClient);
+        UploadStatusWebSocket uploadStatusWebSocket = new UploadStatusWebSocket(jobTaskBus);
 
-		Javalin app = Javalin.create(config -> config.jetty.multipartConfig.maxFileSize(10, SizeUnit.GB));
+		Javalin app = Javalin.create(config -> {
+            config.jetty.multipartConfig.maxFileSize(10, SizeUnit.GB);
+        });
 
-		app.get("/health", HealthHandler::health);
         app.post("/upload", uploadHandler::upload);
+        app.ws("/upload-status", uploadStatusWebSocket::configure);
 		return app;
 	}
 
@@ -69,8 +79,8 @@ public class UploadServiceApplication {
 
 	static Javalin startApp(int port) {
 		Javalin app = createApp();
+        logger.info("Creating Javalin app");
 		app.start(port);
-		logger.info("Upload service started; health endpoint available at http://localhost:{}/health", app.port());
 		return app;
 	}
 
