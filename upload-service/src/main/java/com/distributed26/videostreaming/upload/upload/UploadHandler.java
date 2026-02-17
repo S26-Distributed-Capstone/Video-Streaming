@@ -38,11 +38,10 @@ public class UploadHandler {
     private final long pollingIntervalMillis;
 
     public UploadHandler(ObjectStorageClient storageClient) {
-        Dotenv dotenv = Dotenv.configure().directory("../").ignoreIfMissing().load();
+        Dotenv dotenv = Dotenv.configure().directory("./").ignoreIfMissing().load();
         this.storageClient = storageClient;
-        String chunkSeconds = dotenv.get("CHUNK_DURATION_SECONDS");
 
-        this.segmentDuration = dotenv.get("CHUNK_DURATION_SECONDS").isEmpty() ? 10 : Integer.parseInt(dotenv.get("CHUNK_DURATION_SECONDS"));
+        this.segmentDuration = dotenv.get("CHUNK_DURATION_SECONDS") == null ? 10 : Integer.parseInt(dotenv.get("CHUNK_DURATION_SECONDS"));
 
         String timeoutEnv = dotenv.get("PROCESSING_TIMEOUT_SECONDS");
         this.processingTimeoutMillis = timeoutEnv != null && !timeoutEnv.isEmpty()
