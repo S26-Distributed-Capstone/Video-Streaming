@@ -153,7 +153,7 @@ public class UploadHandlerTest {
                     // Check if any uploads were captured
                     List<String> uploadedKeys = keyCaptor.getAllValues();
                     // Either uploads happened or processing failed (FFmpeg not installed)
-                    return !uploadedKeys.isEmpty() || true;
+                    return !uploadedKeys.isEmpty();
                 });
         }
 
