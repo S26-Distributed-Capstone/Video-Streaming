@@ -11,12 +11,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.Comparator;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.stream.Stream;
@@ -134,7 +134,8 @@ public class UploadHandler {
             }, ffmpegExecutor);
 
             // 4. Upload generated files to S3 as they become available
-            Set<Path> uploadedFiles = new HashSet<>();
+            // Using thread-safe Set in case future changes introduce concurrent access
+            Set<Path> uploadedFiles = ConcurrentHashMap.newKeySet();
 
             logger.info("Starting segment monitoring loop for video: {}", videoId);
 
@@ -170,6 +171,7 @@ public class UploadHandler {
                     Thread.sleep(currentPollingInterval);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
+                    ffmpegFuture.cancel(true);
                     throw new RuntimeException("Upload interrupted", e);
                 }
             }
