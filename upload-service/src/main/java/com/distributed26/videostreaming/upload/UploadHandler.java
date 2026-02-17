@@ -247,12 +247,7 @@ public class UploadHandler {
                     uploadedCount++;
                 } catch (Exception e) {
                     logger.error("Failed to upload segment: {}", path, e);
-                    // Decide whether provided exception should stop the entire process.
-                    // Current logic in uploadFile throws RuntimeException which is caught here.
-                    // If one segment fails, the video is likely corrupted, so re-throwing might be appropriate
-                    // or we rely on the caller to handle it.
-                    // But to ensure the stream is closed (which is done in the try-with-resources above),
-                    // we separated the listing from the processing.
+                    // Rethrow to stop processing if any segment upload fails.
                     throw e;
                 }
             }
