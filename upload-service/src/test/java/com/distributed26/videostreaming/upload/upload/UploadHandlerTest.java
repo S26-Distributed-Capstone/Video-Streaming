@@ -6,12 +6,16 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
+import com.distributed26.videostreaming.shared.upload.InMemoryJobTaskBus;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.javalin.Javalin;
 import io.javalin.testtools.JavalinTest;
 import okhttp3.MediaType;
 import okhttp3.MultipartBody;
 import okhttp3.RequestBody;
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.condition.EnabledIf;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
@@ -47,6 +51,7 @@ public class UploadHandlerTest {
 
     @Mock
     private ObjectStorageClient mockStorageClient;
+    private static final ObjectMapper objectMapper = new ObjectMapper();
 
     @BeforeAll
     static void printTestInfo() {
@@ -65,7 +70,7 @@ public class UploadHandlerTest {
         @Test
         @DisplayName("Should return 400 when no file is provided")
         void shouldReturn400WhenNoFileProvided() {
-            UploadHandler handler = new UploadHandler(mockStorageClient);
+            UploadHandler handler = new UploadHandler(mockStorageClient, new InMemoryJobTaskBus());
             Javalin app = Javalin.create();
             app.post("/upload", handler::upload);
 
@@ -82,7 +87,7 @@ public class UploadHandlerTest {
         @Test
         @DisplayName("Should return 202 Accepted with video ID for valid upload")
         void shouldReturn202WithVideoIdForValidUpload() {
-            UploadHandler handler = new UploadHandler(mockStorageClient);
+            UploadHandler handler = new UploadHandler(mockStorageClient, new InMemoryJobTaskBus());
             Javalin app = Javalin.create();
             app.post("/upload", handler::upload);
 
@@ -102,9 +107,10 @@ public class UploadHandlerTest {
                     builder.post(requestBody))) {
                     assertEquals(202, response.code());
                     String body = response.body().string();
-                    // Response should be a valid UUID in JSON format
+                    // Response should include videoId and uploadStatusUrl fields
                     assertNotNull(body);
-                    assertTrue(body.length() > 30, "Response should contain UUID"); // UUID is 36 chars
+                    assertTrue(body.contains("\"videoId\""), "Response should contain videoId");
+                    assertTrue(body.contains("\"uploadStatusUrl\""), "Response should contain uploadStatusUrl");
                 }
             });
         }
@@ -116,20 +122,22 @@ public class UploadHandlerTest {
 
         @Test
         @DisplayName("Should upload segments to storage with correct key format")
+        @EnabledIf("com.distributed26.videostreaming.upload.upload.UploadHandlerTest#isFfmpegAvailable")
         void shouldUploadSegmentsWithCorrectKeyFormat() throws Exception {
+            Path testVideo = createTestVideo();
+            Assumptions.assumeTrue(testVideo != null, "FFmpeg test video creation failed");
             // Capture upload calls
             ArgumentCaptor<String> keyCaptor = ArgumentCaptor.forClass(String.class);
             doNothing().when(mockStorageClient).uploadFile(keyCaptor.capture(), any(InputStream.class), anyLong());
 
-            UploadHandler handler = new UploadHandler(mockStorageClient);
+            UploadHandler handler = new UploadHandler(mockStorageClient, new InMemoryJobTaskBus());
             Javalin app = Javalin.create();
             app.post("/upload", handler::upload);
 
             JavalinTest.test(app, (server, client) -> {
-                // Create a minimal valid video file (this won't actually process with FFmpeg,
-                // but tests the initial flow)
+                // Use a real short video file so FFmpeg can segment it
                 RequestBody fileBody = RequestBody.create(
-                    createMinimalMp4(),
+                    Files.readAllBytes(testVideo),
                     MediaType.parse("video/mp4")
                 );
 
@@ -155,6 +163,8 @@ public class UploadHandlerTest {
                     // Either uploads happened or processing failed (FFmpeg not installed)
                     return !uploadedKeys.isEmpty();
                 });
+
+            Files.deleteIfExists(testVideo);
         }
 
         @Test
@@ -164,7 +174,7 @@ public class UploadHandlerTest {
             doThrow(new RuntimeException("Storage unavailable"))
                 .when(mockStorageClient).uploadFile(anyString(), any(InputStream.class), anyLong());
 
-            UploadHandler handler = new UploadHandler(mockStorageClient);
+            UploadHandler handler = new UploadHandler(mockStorageClient, new InMemoryJobTaskBus());
             Javalin app = Javalin.create();
             app.post("/upload", handler::upload);
 
@@ -191,6 +201,18 @@ public class UploadHandlerTest {
         }
     }
 
+    static boolean isFfmpegAvailable() {
+        try {
+            Process process = new ProcessBuilder("ffmpeg", "-version")
+                .redirectErrorStream(true)
+                .start();
+            int exitCode = process.waitFor();
+            return exitCode == 0;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     @Nested
     @DisplayName("Concurrent Upload Tests")
     class ConcurrentUploadTests {
@@ -204,7 +226,7 @@ public class UploadHandlerTest {
                 return null;
             }).when(mockStorageClient).uploadFile(anyString(), any(InputStream.class), anyLong());
 
-            UploadHandler handler = new UploadHandler(mockStorageClient);
+            UploadHandler handler = new UploadHandler(mockStorageClient, new InMemoryJobTaskBus());
             Javalin app = Javalin.create();
             app.post("/upload", handler::upload);
 
@@ -242,7 +264,7 @@ public class UploadHandlerTest {
         @Test
         @DisplayName("Should cleanup temporary files after processing")
         void shouldCleanupTemporaryFilesAfterProcessing() throws Exception {
-            UploadHandler handler = new UploadHandler(mockStorageClient);
+            UploadHandler handler = new UploadHandler(mockStorageClient, new InMemoryJobTaskBus());
             Javalin app = Javalin.create();
             app.post("/upload", handler::upload);
 
@@ -298,7 +320,7 @@ public class UploadHandlerTest {
         @Test
         @DisplayName("Should generate unique video IDs for each upload")
         void shouldGenerateUniqueVideoIds() throws Exception {
-            UploadHandler handler = new UploadHandler(mockStorageClient);
+            UploadHandler handler = new UploadHandler(mockStorageClient, new InMemoryJobTaskBus());
             Javalin app = Javalin.create();
             app.post("/upload", handler::upload);
 
@@ -318,7 +340,7 @@ public class UploadHandlerTest {
 
                 try (var response = client.request("/upload", builder ->
                     builder.post(requestBody1))) {
-                    videoId1 = response.body().string().replace("\"", "");
+                    videoId1 = extractVideoId(response.body().string());
                 }
 
                 // Second upload
@@ -333,7 +355,7 @@ public class UploadHandlerTest {
 
                 try (var response = client.request("/upload", builder ->
                     builder.post(requestBody2))) {
-                    videoId2 = response.body().string().replace("\"", "");
+                    videoId2 = extractVideoId(response.body().string());
                 }
 
                 // Verify IDs are different and valid UUIDs
@@ -365,12 +387,32 @@ public class UploadHandlerTest {
         };
         return ftyp;
     }
+
+    private Path createTestVideo() {
+        try {
+            Path tempVideo = Files.createTempFile("upload-test-", ".mp4");
+            Process process = new ProcessBuilder(
+                "ffmpeg",
+                "-y",
+                "-f", "lavfi",
+                "-i", "testsrc=duration=1:size=128x72:rate=15",
+                tempVideo.toAbsolutePath().toString()
+            ).redirectErrorStream(true).start();
+            int exitCode = process.waitFor();
+            if (exitCode != 0) {
+                Files.deleteIfExists(tempVideo);
+                return null;
+            }
+            return tempVideo;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static String extractVideoId(String body) throws Exception {
+        JsonNode json = objectMapper.readTree(body);
+        return json.get("videoId").asText();
+    }
 }
-
-
-
-
-
-
 
 

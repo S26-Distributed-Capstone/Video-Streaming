@@ -5,7 +5,10 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
+import com.distributed26.videostreaming.shared.upload.InMemoryJobTaskBus;
 import io.javalin.Javalin;
 import io.javalin.testtools.JavalinTest;
 import okhttp3.MediaType;
@@ -36,6 +39,7 @@ public class UploadHandlerIntegrationTest {
 
     private ObjectStorageClient mockStorageClient;
     private Path testVideoFile;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     static boolean isFfmpegAvailable() {
         try {
@@ -85,7 +89,7 @@ public class UploadHandlerIntegrationTest {
             return null;
         }).when(mockStorageClient).uploadFile(anyString(), any(InputStream.class), anyLong());
 
-        UploadHandler handler = new UploadHandler(mockStorageClient);
+        UploadHandler handler = new UploadHandler(mockStorageClient, new InMemoryJobTaskBus());
         Javalin app = Javalin.create();
         app.post("/upload", handler::upload);
 
@@ -107,7 +111,8 @@ public class UploadHandlerIntegrationTest {
             try (var response = client.request("/upload", builder ->
                 builder.post(requestBody))) {
                 assertEquals(202, response.code());
-                capturedVideoId[0] = response.body().string().replace("\"", "");
+                JsonNode json = objectMapper.readTree(response.body().string());
+                capturedVideoId[0] = json.get("videoId").asText();
             }
         });
 
@@ -161,7 +166,7 @@ public class UploadHandlerIntegrationTest {
             return null;
         }).when(mockStorageClient).uploadFile(anyString(), any(InputStream.class), anyLong());
 
-        UploadHandler handler = new UploadHandler(mockStorageClient);
+        UploadHandler handler = new UploadHandler(mockStorageClient, new InMemoryJobTaskBus());
         Javalin app = Javalin.create();
         app.post("/upload", handler::upload);
 
@@ -199,7 +204,7 @@ public class UploadHandlerIntegrationTest {
         doThrow(new RuntimeException("Storage unavailable"))
             .when(mockStorageClient).uploadFile(anyString(), any(InputStream.class), anyLong());
 
-        UploadHandler handler = new UploadHandler(mockStorageClient);
+        UploadHandler handler = new UploadHandler(mockStorageClient, new InMemoryJobTaskBus());
         Javalin app = Javalin.create();
         app.post("/upload", handler::upload);
 
@@ -261,7 +266,7 @@ public class UploadHandlerIntegrationTest {
             return null;
         }).when(mockStorageClient).uploadFile(anyString(), any(InputStream.class), anyLong());
 
-        UploadHandler handler = new UploadHandler(mockStorageClient);
+        UploadHandler handler = new UploadHandler(mockStorageClient, new InMemoryJobTaskBus());
         Javalin app = Javalin.create();
         app.post("/upload", handler::upload);
 
@@ -342,8 +347,6 @@ public class UploadHandlerIntegrationTest {
         return testVideo;
     }
 }
-
-
 
 
 

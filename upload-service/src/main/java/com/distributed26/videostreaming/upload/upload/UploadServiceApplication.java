@@ -5,6 +5,7 @@ import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
 import com.distributed26.videostreaming.shared.storage.S3StorageClient;
 import com.distributed26.videostreaming.shared.upload.InMemoryJobTaskBus;
 import com.distributed26.videostreaming.shared.upload.JobTaskBus;
+import com.distributed26.videostreaming.upload.db.VideoUploadRepository;
 import io.javalin.Javalin;
 import io.javalin.config.SizeUnit;
 import java.io.IOException;
@@ -37,9 +38,18 @@ public class UploadServiceApplication {
 
         // Ensure the bucket exists before starting the application
         storageClient.ensureBucketExists();
-        
-        UploadHandler uploadHandler = new UploadHandler(storageClient);
+
+        VideoUploadRepository videoUploadRepository = createVideoUploadRepository();
+        String machineId = resolveMachineId();
+
+        UploadHandler uploadHandler = new UploadHandler(
+                storageClient,
+                jobTaskBus,
+                videoUploadRepository,
+                machineId
+        );
         UploadStatusWebSocket uploadStatusWebSocket = new UploadStatusWebSocket(jobTaskBus);
+        UploadInfoHandler uploadInfoHandler = new UploadInfoHandler(videoUploadRepository);
 
 		Javalin app = Javalin.create(config -> {
             config.jetty.multipartConfig.maxFileSize(10, SizeUnit.GB);
@@ -47,6 +57,7 @@ public class UploadServiceApplication {
 
         app.post("/upload", uploadHandler::upload);
         app.ws("/upload-status", uploadStatusWebSocket::configure);
+        app.get("/upload-info/{videoId}", uploadInfoHandler::getInfo);
 		return app;
 	}
 
@@ -75,6 +86,23 @@ public class UploadServiceApplication {
             return envVal;
         }
         return props.getProperty(propKey, defaultValue);
+    }
+
+    private static VideoUploadRepository createVideoUploadRepository() {
+        try {
+            return VideoUploadRepository.fromEnv();
+        } catch (IllegalStateException e) {
+            logger.warn("Postgres not configured; upload info disabled: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    private static String resolveMachineId() {
+        String machineId = System.getenv("MACHINE_ID");
+        if (machineId != null && !machineId.isBlank()) {
+            return machineId;
+        }
+        return System.getenv("HOSTNAME");
     }
 
 	static Javalin startApp(int port) {
