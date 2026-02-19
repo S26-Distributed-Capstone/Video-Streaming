@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import os
 import sys
 
 
@@ -33,7 +34,7 @@ def main():
     upload_url = args.base_url.rstrip("/") + "/upload"
 
     with open(args.file, "rb") as f:
-        files = {"file": (args.file.split("/")[-1], f, "video/mp4")}
+        files = {"file": (os.path.basename(args.file), f, "video/mp4")}
         resp = requests.post(upload_url, files=files)
 
     if resp.status_code != 202:
@@ -47,6 +48,15 @@ def main():
 
     video_id = payload.get("videoId") or payload.get("video_id") or payload.get("id")
     upload_status_url = payload.get("uploadStatusUrl")
+
+    if not video_id:
+        print(
+            "Upload response did not include a video ID; cannot coninue.",
+            file=sys.stderr,
+        )
+        print(f"Response payload: {payload}", file=sys.stderr)
+        sys.exit(1)
+
     info_url = args.base_url.rstrip("/") + "/upload-info/" + video_id
     if not upload_status_url:
         scheme = "ws" if args.base_url.startswith("http://") else "wss"
@@ -61,6 +71,8 @@ def main():
         if info_resp.status_code == 200:
             info_json = info_resp.json()
             total_segments = info_json.get("totalSegments")
+            #RIGHT NOW NOT PULLING ANY DATA BECUASE IT DOESN'T EXIST
+            #55 DEFAULT FOR TANI'S TEST VIDEO
             if total_segments is None:
                 total_segments = 55
             print(f"totalSegments: {total_segments}")

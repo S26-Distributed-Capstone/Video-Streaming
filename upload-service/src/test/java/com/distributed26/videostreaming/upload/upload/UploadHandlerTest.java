@@ -126,45 +126,47 @@ public class UploadHandlerTest {
         void shouldUploadSegmentsWithCorrectKeyFormat() throws Exception {
             Path testVideo = createTestVideo();
             Assumptions.assumeTrue(testVideo != null, "FFmpeg test video creation failed");
-            // Capture upload calls
-            ArgumentCaptor<String> keyCaptor = ArgumentCaptor.forClass(String.class);
-            doNothing().when(mockStorageClient).uploadFile(keyCaptor.capture(), any(InputStream.class), anyLong());
+            try {
+                // Capture upload calls
+                ArgumentCaptor<String> keyCaptor = ArgumentCaptor.forClass(String.class);
+                doNothing().when(mockStorageClient).uploadFile(keyCaptor.capture(), any(InputStream.class), anyLong());
 
-            UploadHandler handler = new UploadHandler(mockStorageClient, new InMemoryJobTaskBus());
-            Javalin app = Javalin.create();
-            app.post("/upload", handler::upload);
+                UploadHandler handler = new UploadHandler(mockStorageClient, new InMemoryJobTaskBus());
+                Javalin app = Javalin.create();
+                app.post("/upload", handler::upload);
 
-            JavalinTest.test(app, (server, client) -> {
-                // Use a real short video file so FFmpeg can segment it
-                RequestBody fileBody = RequestBody.create(
-                    Files.readAllBytes(testVideo),
-                    MediaType.parse("video/mp4")
-                );
+                JavalinTest.test(app, (server, client) -> {
+                    // Use a real short video file so FFmpeg can segment it
+                    RequestBody fileBody = RequestBody.create(
+                        Files.readAllBytes(testVideo),
+                        MediaType.parse("video/mp4")
+                    );
 
-                MultipartBody requestBody = new MultipartBody.Builder()
-                    .setType(MultipartBody.FORM)
-                    .addFormDataPart("file", "test-video.mp4", fileBody)
-                    .build();
+                    MultipartBody requestBody = new MultipartBody.Builder()
+                        .setType(MultipartBody.FORM)
+                        .addFormDataPart("file", "test-video.mp4", fileBody)
+                        .build();
 
-                try (var response = client.request("/upload", builder ->
-                    builder.post(requestBody))) {
-                    assertEquals(202, response.code());
-                }
-            });
-
-            // Wait for async processing to attempt uploads
-            // Note: This may fail if FFmpeg isn't installed - that's expected in unit tests
-            await().atMost(Duration.ofSeconds(5))
-                .pollInterval(Duration.ofMillis(100))
-                .ignoreExceptions()
-                .until(() -> {
-                    // Check if any uploads were captured
-                    List<String> uploadedKeys = keyCaptor.getAllValues();
-                    // Either uploads happened or processing failed (FFmpeg not installed)
-                    return !uploadedKeys.isEmpty();
+                    try (var response = client.request("/upload", builder ->
+                        builder.post(requestBody))) {
+                        assertEquals(202, response.code());
+                    }
                 });
 
-            Files.deleteIfExists(testVideo);
+                // Wait for async processing to attempt uploads
+                // Note: This may fail if FFmpeg isn't installed - that's expected in unit tests
+                await().atMost(Duration.ofSeconds(5))
+                    .pollInterval(Duration.ofMillis(100))
+                    .ignoreExceptions()
+                    .until(() -> {
+                        // Check if any uploads were captured
+                        List<String> uploadedKeys = keyCaptor.getAllValues();
+                        // Either uploads happened or processing failed (FFmpeg not installed)
+                        return !uploadedKeys.isEmpty();
+                    });
+            } finally {
+                Files.deleteIfExists(testVideo);
+            }
         }
 
         @Test
@@ -414,5 +416,4 @@ public class UploadHandlerTest {
         return json.get("videoId").asText();
     }
 }
-
 

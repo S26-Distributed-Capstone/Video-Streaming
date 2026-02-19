@@ -219,7 +219,7 @@ public class UploadHandler {
 
             // 5. Final sweep - upload remaining files (last segment + playlist)
             uploadReadySegments(tempOutput, videoId, uploadedFiles, true);
-
+            //right now it doesn't add the amount of segments - to do for Jason
             int totalChunks = uploadedFiles.size();
             long duration = System.currentTimeMillis() - startTime;
             logger.info("Successfully segmented and uploaded video: {}. Uploaded {} chunks (including playlist). Total time: {} ms", videoId, totalChunks, duration);
