@@ -49,7 +49,7 @@ public class S3StorageClient implements ObjectStorageClient {
 
     @Override
     public void uploadFile(String key, InputStream data, long size) {
-        LOGGER.info("Uploading object '{}' ({} bytes) to bucket '{}'", key, size, bucketName);
+        //LOGGER.info("Uploading object '{}' ({} bytes) to bucket '{}'", key, size, bucketName);
         try {
             PutObjectRequest request = PutObjectRequest.builder()
                     .bucket(bucketName)

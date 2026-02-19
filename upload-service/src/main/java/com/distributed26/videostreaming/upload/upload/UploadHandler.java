@@ -3,6 +3,7 @@ package com.distributed26.videostreaming.upload.upload;
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
 import com.distributed26.videostreaming.shared.upload.JobTaskBus;
 import com.distributed26.videostreaming.shared.upload.JobTaskEvent;
+import com.distributed26.videostreaming.shared.upload.UploadMetaEvent;
 import com.distributed26.videostreaming.upload.db.VideoUploadRepository;
 import io.javalin.http.Context;
 import io.javalin.http.UploadedFile;
@@ -61,6 +62,7 @@ public class UploadHandler {
         this.machineId = machineId;
 
         this.segmentDuration = dotenv.get("CHUNK_DURATION_SECONDS") == null ? 10 : Integer.parseInt(dotenv.get("CHUNK_DURATION_SECONDS"));
+        logger.info("CHUNK_DURATION_SECONDS resolved to {}", this.segmentDuration);
 
         String timeoutEnv = dotenv.get("PROCESSING_TIMEOUT_SECONDS");
         this.processingTimeoutMillis = timeoutEnv != null && !timeoutEnv.isEmpty()
@@ -117,6 +119,17 @@ public class UploadHandler {
             return;
         }
 
+        if (videoUploadRepository != null) {
+            try {
+                int estimatedSegments = estimateTotalSegments(inputPath);
+                if (estimatedSegments > 0) {
+                    videoUploadRepository.updateTotalSegments(videoId, estimatedSegments);
+                }
+            } catch (Exception e) {
+                logger.warn("Failed to estimate total segments for video: {}", videoId, e);
+            }
+        }
+
         // Run the supervision logic on the supervision executor
         CompletableFuture.runAsync(() -> {
             processVideo(videoId, inputPath, startTime);
@@ -154,6 +167,9 @@ public class UploadHandler {
                     .addExtraArgs("-start_number", "0")
                     .addExtraArgs("-hls_time", String.valueOf(segmentDuration))
                     .addExtraArgs("-hls_list_size", "0")
+                    // Force keyframes at segment boundaries for closer-to-target durations.
+                    .addExtraArgs("-force_key_frames", "expr:gte(t,n_forced*" + segmentDuration + ")")
+                    .addExtraArgs("-sc_threshold", "0")
                     .done();
 
             logger.info("Starting FFmpeg segmentation for video: {}", videoId);
@@ -217,9 +233,23 @@ public class UploadHandler {
                 throw new RuntimeException("FFmpeg processing failed", e.getCause());
             }
 
+            long totalSegments = 0;
+            try (Stream<Path> stream = Files.list(tempOutput)) {
+                totalSegments = stream
+                    .filter(path -> path.getFileName().toString().endsWith(".ts"))
+                    .count();
+            }
+
+            if (videoUploadRepository != null) {
+                if (totalSegments > 0) {
+                    videoUploadRepository.updateTotalSegments(videoId, (int) totalSegments);
+                    jobTaskBus.publish(new UploadMetaEvent(videoId, (int) totalSegments));
+                    logger.info("Successfully updated total segments to {} segments", totalSegments);
+                }
+            }
+
             // 5. Final sweep - upload remaining files (last segment + playlist)
             uploadReadySegments(tempOutput, videoId, uploadedFiles, true);
-            //right now it doesn't add the amount of segments - to do for Jason
             int totalChunks = uploadedFiles.size();
             long duration = System.currentTimeMillis() - startTime;
             logger.info("Successfully segmented and uploaded video: {}. Uploaded {} chunks (including playlist). Total time: {} ms", videoId, totalChunks, duration);
@@ -251,6 +281,15 @@ public class UploadHandler {
                 } catch (IOException ignored) {}
             }
         }
+    }
+
+    private int estimateTotalSegments(Path inputPath) throws IOException {
+        FFprobe ffprobe = new FFprobe("ffprobe");
+        double durationSeconds = ffprobe.probe(inputPath.toString()).getFormat().duration;
+        if (durationSeconds <= 0) {
+            return 0;
+        }
+        return (int) Math.ceil(durationSeconds / segmentDuration);
     }
 
     /**
@@ -323,7 +362,9 @@ public class UploadHandler {
 
             try (InputStream is = new FileInputStream(path.toFile())) {
                 storageClient.uploadFile(objectKey, is, size);
-                jobTaskBus.publish(new JobTaskEvent(videoId, objectKey));
+                if (fileName.endsWith(".ts")) {
+                    jobTaskBus.publish(new JobTaskEvent(videoId, objectKey));
+                }
                 logger.info("Finished uploading segment: {}", objectKey);
             }
         } catch (IOException e) {

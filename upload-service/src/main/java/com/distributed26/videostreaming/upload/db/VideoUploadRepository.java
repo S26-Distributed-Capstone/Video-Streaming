@@ -10,6 +10,8 @@ import java.util.UUID;
 import java.util.Optional;
 
 public class VideoUploadRepository {
+    private static final org.apache.logging.log4j.Logger logger =
+        org.apache.logging.log4j.LogManager.getLogger(VideoUploadRepository.class);
     private final String jdbcUrl;
     private final String username;
     private final String password;
@@ -75,6 +77,7 @@ public class VideoUploadRepository {
             ps.setInt(1, totalSegments);
             ps.setObject(2, UUID.fromString(videoId));
             ps.executeUpdate();
+            logger.info("Persisted totalSegments={} for videoId={}", totalSegments, videoId);
         } catch (SQLException e) {
             throw new RuntimeException("Failed to update video_upload total_segments", e);
         }
