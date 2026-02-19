@@ -8,6 +8,7 @@ import com.distributed26.videostreaming.shared.upload.JobTaskBus;
 import com.distributed26.videostreaming.upload.db.VideoUploadRepository;
 import io.javalin.Javalin;
 import io.javalin.config.SizeUnit;
+import io.javalin.http.staticfiles.Location;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Properties;
@@ -33,6 +34,7 @@ public class UploadServiceApplication {
     }
 
     static Javalin createApp(JobTaskBus jobTaskBus) {
+        ensureLogsDirectory();
         StorageConfig storageConfig = loadStorageConfig();
         ObjectStorageClient storageClient = new S3StorageClient(storageConfig);
 
@@ -51,8 +53,13 @@ public class UploadServiceApplication {
         UploadStatusWebSocket uploadStatusWebSocket = new UploadStatusWebSocket(jobTaskBus);
         UploadInfoHandler uploadInfoHandler = new UploadInfoHandler(videoUploadRepository);
 
-		Javalin app = Javalin.create(config -> {
+        Javalin app = Javalin.create(config -> {
             config.jetty.multipartConfig.maxFileSize(10, SizeUnit.GB);
+            config.staticFiles.add(staticFiles -> {
+                staticFiles.hostedPath = "/";
+                staticFiles.directory = "frontend";
+                staticFiles.location = Location.EXTERNAL;
+            });
         });
 
         app.post("/upload", uploadHandler::upload);
@@ -97,12 +104,25 @@ public class UploadServiceApplication {
         }
     }
 
+    private static void ensureLogsDirectory() {
+        try {
+            java.nio.file.Files.createDirectories(java.nio.file.Path.of("logs"));
+        } catch (java.io.IOException e) {
+            logger.warn("Failed to create logs directory", e);
+        }
+    }
+
+    private static final io.github.cdimascio.dotenv.Dotenv DOTENV = io.github.cdimascio.dotenv.Dotenv.configure().directory("./").ignoreIfMissing().load();
+
     private static String resolveMachineId() {
         String machineId = System.getenv("MACHINE_ID");
         if (machineId != null && !machineId.isBlank()) {
             return machineId;
         }
-        return System.getenv("HOSTNAME");
+        
+        machineId = DOTENV.get("MACHINE_ID");
+
+        return machineId;
     }
 
 	static Javalin startApp(int port) {

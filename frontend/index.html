@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Upload Console</title>
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+  <main class="app">
+    <header class="header">
+      <div>
+        <h1>Upload Console</h1>
+        <p>Upload a video, then stream status updates in real time.</p>
+      </div>
+    </header>
+
+    <section class="panel">
+      <div class="field">
+        <label for="fileInput">Video File</label>
+        <input id="fileInput" type="file" accept="video/*" />
+      </div>
+
+      <div class="actions">
+        <button id="uploadBtn">Upload</button>
+      </div>
+      <div id="doneMessage" class="done hidden">Upload complete.</div>
+
+      <div class="progress-block">
+        <div class="progress-labels">
+          <span>Upload</span>
+          <span id="uploadPercent"></span>
+        </div>
+        <div class="progress">
+          <div id="uploadBar" class="bar"></div>
+        </div>
+      </div>
+
+      <div class="progress-block hidden" id="processingBlock">
+        <div class="progress-labels">
+          <span>Processing</span>
+          <span id="processingPercent"></span>
+        </div>
+        <div class="progress indeterminate" id="processingTrack">
+          <div id="processingBar" class="bar"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Response, upload info, and status stream removed as requested -->
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

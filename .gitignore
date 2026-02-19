@@ -4,6 +4,9 @@
 # Log file
 *.log
 
+#json files
+*.json
+
 # BlueJ files
 *.ctxt
 .idea/           # JetBrains/IntelliJ IDE files
