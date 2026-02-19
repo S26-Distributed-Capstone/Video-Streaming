@@ -118,7 +118,6 @@ function connectWebSocket(wsUrl, videoId) {
             doneMessage.classList.remove("hidden");
             uploadBtn.disabled = false;
             uploadInFlight = false;
-            resetStateForNextUpload();
           }
         } else {
           processingPercent.textContent = `${completedSegments} events`;

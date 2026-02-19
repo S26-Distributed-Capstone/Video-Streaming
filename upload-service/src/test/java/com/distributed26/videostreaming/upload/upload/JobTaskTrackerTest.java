@@ -1,6 +1,5 @@
 package com.distributed26.videostreaming.upload.upload;
 
-import com.distributed26.videostreaming.shared.upload.InMemoryJobTaskBus;
 import com.distributed26.videostreaming.shared.upload.JobTaskBus;
 import com.distributed26.videostreaming.shared.upload.JobTaskEvent;
 import com.distributed26.videostreaming.upload.db.JobTaskRepository;
@@ -26,7 +25,7 @@ public class JobTaskTrackerTest {
 
         JobTaskRepository repo = JobTaskRepository.fromEnv();
 
-        JobTaskBus bus = new InMemoryJobTaskBus();
+        JobTaskBus bus = new TestJobTaskBus();
         JobTaskTracker tracker = new JobTaskTracker(repo, bus);
 
         tracker.start(jobId);

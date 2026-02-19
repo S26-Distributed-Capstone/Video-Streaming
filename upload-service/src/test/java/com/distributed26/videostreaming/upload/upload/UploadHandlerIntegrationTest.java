@@ -8,7 +8,6 @@ import static org.mockito.Mockito.*;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
-import com.distributed26.videostreaming.shared.upload.InMemoryJobTaskBus;
 import io.javalin.Javalin;
 import io.javalin.testtools.JavalinTest;
 import okhttp3.MediaType;
@@ -89,7 +88,7 @@ public class UploadHandlerIntegrationTest {
             return null;
         }).when(mockStorageClient).uploadFile(anyString(), any(InputStream.class), anyLong());
 
-        UploadHandler handler = new UploadHandler(mockStorageClient, new InMemoryJobTaskBus());
+        UploadHandler handler = new UploadHandler(mockStorageClient, new TestJobTaskBus());
         Javalin app = Javalin.create();
         app.post("/upload", handler::upload);
 
@@ -166,7 +165,7 @@ public class UploadHandlerIntegrationTest {
             return null;
         }).when(mockStorageClient).uploadFile(anyString(), any(InputStream.class), anyLong());
 
-        UploadHandler handler = new UploadHandler(mockStorageClient, new InMemoryJobTaskBus());
+        UploadHandler handler = new UploadHandler(mockStorageClient, new TestJobTaskBus());
         Javalin app = Javalin.create();
         app.post("/upload", handler::upload);
 
@@ -204,7 +203,7 @@ public class UploadHandlerIntegrationTest {
         doThrow(new RuntimeException("Storage unavailable"))
             .when(mockStorageClient).uploadFile(anyString(), any(InputStream.class), anyLong());
 
-        UploadHandler handler = new UploadHandler(mockStorageClient, new InMemoryJobTaskBus());
+        UploadHandler handler = new UploadHandler(mockStorageClient, new TestJobTaskBus());
         Javalin app = Javalin.create();
         app.post("/upload", handler::upload);
 
@@ -266,7 +265,7 @@ public class UploadHandlerIntegrationTest {
             return null;
         }).when(mockStorageClient).uploadFile(anyString(), any(InputStream.class), anyLong());
 
-        UploadHandler handler = new UploadHandler(mockStorageClient, new InMemoryJobTaskBus());
+        UploadHandler handler = new UploadHandler(mockStorageClient, new TestJobTaskBus());
         Javalin app = Javalin.create();
         app.post("/upload", handler::upload);
 
@@ -347,7 +346,6 @@ public class UploadHandlerIntegrationTest {
         return testVideo;
     }
 }
-
 
 
 
