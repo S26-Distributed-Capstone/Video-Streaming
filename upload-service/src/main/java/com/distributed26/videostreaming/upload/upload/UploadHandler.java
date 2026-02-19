@@ -1,6 +1,9 @@
 package com.distributed26.videostreaming.upload.upload;
 
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
+import com.distributed26.videostreaming.shared.upload.JobTaskBus;
+import com.distributed26.videostreaming.shared.upload.JobTaskEvent;
+import com.distributed26.videostreaming.upload.db.VideoUploadRepository;
 import io.javalin.http.Context;
 import io.javalin.http.UploadedFile;
 import java.io.File;
@@ -12,6 +15,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -31,15 +35,30 @@ import io.github.cdimascio.dotenv.Dotenv;
 public class UploadHandler {
     private static final Logger logger = LogManager.getLogger(UploadHandler.class);
     private final ObjectStorageClient storageClient;
+    private final JobTaskBus jobTaskBus;
+    private final VideoUploadRepository videoUploadRepository;
+    private final String machineId;
     private final int segmentDuration;
     private final ExecutorService ffmpegExecutor;
     private final ExecutorService supervisionExecutor;
     private final long processingTimeoutMillis;
     private final long pollingIntervalMillis;
 
-    public UploadHandler(ObjectStorageClient storageClient) {
+    public UploadHandler(ObjectStorageClient storageClient, JobTaskBus jobTaskBus) {
+        this(storageClient, jobTaskBus, null, null);
+    }
+
+    public UploadHandler(
+            ObjectStorageClient storageClient,
+            JobTaskBus jobTaskBus,
+            VideoUploadRepository videoUploadRepository,
+            String machineId
+    ) {
         Dotenv dotenv = Dotenv.configure().directory("./").ignoreIfMissing().load();
         this.storageClient = storageClient;
+        this.jobTaskBus = Objects.requireNonNull(jobTaskBus, "jobTaskBus is null");
+        this.videoUploadRepository = videoUploadRepository;
+        this.machineId = machineId;
 
         this.segmentDuration = dotenv.get("CHUNK_DURATION_SECONDS") == null ? 10 : Integer.parseInt(dotenv.get("CHUNK_DURATION_SECONDS"));
 
@@ -80,6 +99,9 @@ public class UploadHandler {
         // Create UUID for the video
         String videoId = UUID.randomUUID().toString();
         logger.info("Assigned video ID: {}", videoId);
+        if (videoUploadRepository != null) {
+            videoUploadRepository.create(videoId, 0, "PROCESSING", machineId);
+        }
 
         // We need to copy the uploaded file to a safe location because Javalin cleans up
         // the uploaded file once the request handler returns.
@@ -100,7 +122,17 @@ public class UploadHandler {
             processVideo(videoId, inputPath, startTime);
         }, supervisionExecutor);
 
-        ctx.status(202).json(videoId);
+        String uploadStatusUrl = buildUploadStatusUrl(ctx, videoId);
+        ctx.status(202).json(new UploadResponse(videoId, uploadStatusUrl));
+    }
+
+    private String buildUploadStatusUrl(Context ctx, String videoId) {
+        String scheme = ctx.scheme();
+        String wsScheme = "https".equalsIgnoreCase(scheme) ? "wss" : "ws";
+        return wsScheme + "://" + ctx.host() + "/upload-status?jobId=" + videoId;
+    }
+
+    private record UploadResponse(String videoId, String uploadStatusUrl) {
     }
 
     private void processVideo(String videoId, Path inputPath, long startTime) {
@@ -187,15 +219,21 @@ public class UploadHandler {
 
             // 5. Final sweep - upload remaining files (last segment + playlist)
             uploadReadySegments(tempOutput, videoId, uploadedFiles, true);
-
+            //right now it doesn't add the amount of segments - to do for Jason
             int totalChunks = uploadedFiles.size();
             long duration = System.currentTimeMillis() - startTime;
             logger.info("Successfully segmented and uploaded video: {}. Uploaded {} chunks (including playlist). Total time: {} ms", videoId, totalChunks, duration);
+            if (videoUploadRepository != null) {
+                videoUploadRepository.updateStatus(videoId, "COMPLETED");
+            }
 
             // Here you would typically update a database status to "COMPLETED"
 
         } catch (Exception e) {
             logger.error("Upload/Processing failed for video: " + videoId, e);
+            if (videoUploadRepository != null) {
+                videoUploadRepository.updateStatus(videoId, "FAILED");
+            }
             // Here you would typically update a database status to "FAILED"
         } finally {
             // Give the OS a moment to release file locks if the process was just killed
@@ -285,10 +323,12 @@ public class UploadHandler {
 
             try (InputStream is = new FileInputStream(path.toFile())) {
                 storageClient.uploadFile(objectKey, is, size);
+                jobTaskBus.publish(new JobTaskEvent(videoId, objectKey));
                 logger.info("Finished uploading segment: {}", objectKey);
             }
         } catch (IOException e) {
             throw new RuntimeException("Failed to upload segment: " + path, e);
         }
     }
+
 }
