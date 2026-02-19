@@ -38,7 +38,7 @@ RabbitMQ serves as the message broker for asynchronous inter-service communicati
 - **Processing service** subscribes to upload events to trigger transcoding
 - **Upload service** receives status updates from the processing service and pushes them to connected clients via WebSocket
 
-This decouples the services — no service calls another directly. Each service only talks to RabbitMQ.
+This decouples the services — no service calls another directly, instead communicating through RabbitMQ.
 
 ## Stopping and Removing Data
 
@@ -59,8 +59,11 @@ docker-compose -f rabbitmq_docker_compose.yaml down
 ### Container won't start
 - Check if ports `5672` or `15672` are already in use:
   ```bash
+  # Windows
   netstat -ano | findstr :5672
   netstat -ano | findstr :15672
+  # Linux
+  ss -ltnp | grep 5672
   ```
 - Check Docker logs:
   ```bash
