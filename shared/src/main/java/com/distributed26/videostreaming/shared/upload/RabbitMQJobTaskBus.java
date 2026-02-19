@@ -15,14 +15,15 @@ import java.util.concurrent.TimeoutException;
 
 public class RabbitMQJobTaskBus implements JobTaskBus, AutoCloseable {
     private static final ObjectMapper objectMapper = new ObjectMapper();
+    private static final org.apache.logging.log4j.Logger logger =
+        org.apache.logging.log4j.LogManager.getLogger(RabbitMQJobTaskBus.class);
 
     private final Connection connection;
-    private final Channel channel;
+    private final Channel publishChannel;
+    private final Channel consumeChannel;
     private final String exchange;
     private final String statusQueue;
-    private final String taskQueue;
     private final String statusBinding;
-    private final String taskBinding;
     private final Map<String, List<JobTaskListener>> listenersByJobId = new ConcurrentHashMap<>();
 
     public static RabbitMQJobTaskBus fromEnv() {
@@ -34,10 +35,8 @@ public class RabbitMQJobTaskBus implements JobTaskBus, AutoCloseable {
         String vhost = getEnvOrDotenv(dotenv, "RABBITMQ_VHOST", "/");
         String exchange = getEnvOrDotenv(dotenv, "RABBITMQ_EXCHANGE", "upload.events");
         String statusQueue = getEnvOrDotenv(dotenv, "RABBITMQ_STATUS_QUEUE", "upload.status.queue");
-        String taskQueue = getEnvOrDotenv(dotenv, "RABBITMQ_TASK_QUEUE", "upload.task.queue");
         String statusBinding = getEnvOrDotenv(dotenv, "RABBITMQ_STATUS_BINDING", "upload.status.*");
-        String taskBinding = getEnvOrDotenv(dotenv, "RABBITMQ_TASK_BINDING", "upload.task.*");
-        return new RabbitMQJobTaskBus(host, port, user, pass, vhost, exchange, statusQueue, taskQueue, statusBinding, taskBinding);
+        return new RabbitMQJobTaskBus(host, port, user, pass, vhost, exchange, statusQueue, statusBinding);
     }
 
     public RabbitMQJobTaskBus(
@@ -48,15 +47,11 @@ public class RabbitMQJobTaskBus implements JobTaskBus, AutoCloseable {
             String vhost,
             String exchange,
             String statusQueue,
-            String taskQueue,
-            String statusBinding,
-            String taskBinding
+            String statusBinding
     ) {
         this.exchange = Objects.requireNonNull(exchange, "exchange is null");
         this.statusQueue = Objects.requireNonNull(statusQueue, "statusQueue is null");
-        this.taskQueue = Objects.requireNonNull(taskQueue, "taskQueue is null");
         this.statusBinding = Objects.requireNonNull(statusBinding, "statusBinding is null");
-        this.taskBinding = Objects.requireNonNull(taskBinding, "taskBinding is null");
 
         try {
             ConnectionFactory factory = new ConnectionFactory();
@@ -66,14 +61,13 @@ public class RabbitMQJobTaskBus implements JobTaskBus, AutoCloseable {
             factory.setPassword(password);
             factory.setVirtualHost(vhost);
             this.connection = factory.newConnection("upload-service-jobtaskbus");
-            this.channel = connection.createChannel();
+            this.publishChannel = connection.createChannel();
+            this.consumeChannel = connection.createChannel();
 
-            channel.exchangeDeclare(this.exchange, BuiltinExchangeType.TOPIC, true);
+            publishChannel.exchangeDeclare(this.exchange, BuiltinExchangeType.TOPIC, true);
 
-            channel.queueDeclare(this.statusQueue, true, false, false, null);
-            channel.queueDeclare(this.taskQueue, true, false, false, null);
-            channel.queueBind(this.statusQueue, this.exchange, this.statusBinding);
-            channel.queueBind(this.taskQueue, this.exchange, this.taskBinding);
+            publishChannel.queueDeclare(this.statusQueue, true, false, false, null);
+            publishChannel.queueBind(this.statusQueue, this.exchange, this.statusBinding);
 
             startStatusConsumer();
         } catch (IOException | TimeoutException e) {
@@ -88,15 +82,13 @@ public class RabbitMQJobTaskBus implements JobTaskBus, AutoCloseable {
             byte[] body = objectMapper.writeValueAsBytes(event);
             String jobId = event.getJobId();
             String statusKey = "upload.status." + jobId;
-            String taskKey = "upload.task." + jobId;
 
             // Status stream should include both meta and task progress events.
-            channel.basicPublish(exchange, statusKey, null, body);
-
-            if (!(event instanceof UploadMetaEvent)) {
-                channel.basicPublish(exchange, taskKey, null, body);
+            synchronized (publishChannel) {
+                publishChannel.basicPublish(exchange, statusKey, null, body);
             }
         } catch (IOException e) {
+            logger.error("Failed to publish job task event", e);
             throw new RuntimeException("Failed to publish job task event", e);
         }
     }
@@ -145,7 +137,7 @@ public class RabbitMQJobTaskBus implements JobTaskBus, AutoCloseable {
                 // Swallow malformed messages for now.
             }
         };
-        channel.basicConsume(statusQueue, true, callback, consumerTag -> {});
+        consumeChannel.basicConsume(statusQueue, true, callback, consumerTag -> {});
     }
 
     private JobTaskEvent toEvent(JsonNode node) {
@@ -171,8 +163,11 @@ public class RabbitMQJobTaskBus implements JobTaskBus, AutoCloseable {
 
     @Override
     public void close() throws Exception {
-        if (channel != null && channel.isOpen()) {
-            channel.close();
+        if (publishChannel != null && publishChannel.isOpen()) {
+            publishChannel.close();
+        }
+        if (consumeChannel != null && consumeChannel.isOpen()) {
+            consumeChannel.close();
         }
         if (connection != null && connection.isOpen()) {
             connection.close();
