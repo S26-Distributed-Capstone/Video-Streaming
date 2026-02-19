@@ -1,8 +1,3 @@
-CREATE TABLE IF NOT EXISTS job_tasks (
-    job_id TEXT PRIMARY KEY,
-    num_tasks INTEGER NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS video_upload (
     id SERIAL PRIMARY KEY,
     video_id UUID NOT NULL UNIQUE,
