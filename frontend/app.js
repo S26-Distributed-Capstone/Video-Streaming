@@ -21,6 +21,12 @@ let currentWsUrl = null;
 let processingComplete = false;
 let uploadInFlight = false;
 
+function resetStateForNextUpload() {
+  totalSegments = null;
+  completedSegments = 0;
+  processingComplete = false;
+}
+
 function appendLog(message, tone = "") {
   if (!logEl) {
     return;
@@ -51,10 +57,7 @@ function resetProgress() {
     doneMessage.classList.add("hidden");
     doneMessage.textContent = "Upload complete.";
   }
-  totalSegments = null;
-  completedSegments = 0;
-  processingComplete = false;
-  uploadInFlight = true;
+  resetStateForNextUpload();
 }
 
 function resolveBaseUrl() {
@@ -115,6 +118,7 @@ function connectWebSocket(wsUrl, videoId) {
             doneMessage.classList.remove("hidden");
             uploadBtn.disabled = false;
             uploadInFlight = false;
+            resetStateForNextUpload();
           }
         } else {
           processingPercent.textContent = `${completedSegments} events`;
@@ -130,6 +134,7 @@ function connectWebSocket(wsUrl, videoId) {
     if (!processingComplete) {
       uploadBtn.disabled = false;
       uploadInFlight = false;
+      resetStateForNextUpload();
       if (doneMessage) {
         doneMessage.textContent = "Upload failed.";
         doneMessage.classList.remove("hidden");
@@ -142,6 +147,7 @@ function connectWebSocket(wsUrl, videoId) {
     if (!processingComplete) {
       uploadBtn.disabled = false;
       uploadInFlight = false;
+      resetStateForNextUpload();
       if (doneMessage) {
         doneMessage.textContent = "Upload failed.";
         doneMessage.classList.remove("hidden");
@@ -240,6 +246,7 @@ function uploadFile() {
       }
       uploadBtn.disabled = false;
       uploadInFlight = false;
+      resetStateForNextUpload();
       return;
     }
 
@@ -252,6 +259,7 @@ function uploadFile() {
       }
       uploadBtn.disabled = false;
       uploadInFlight = false;
+      resetStateForNextUpload();
       return;
     }
 
@@ -272,6 +280,7 @@ function uploadFile() {
     uploadBtn.disabled = false;
     uploadInFlight = false;
     appendLog("Upload failed due to a network error.", "error");
+    resetStateForNextUpload();
     if (doneMessage) {
       doneMessage.textContent = "Upload failed.";
       doneMessage.classList.remove("hidden");
@@ -279,16 +288,6 @@ function uploadFile() {
   });
 
   xhr.send(formData);
-}
-
-function reconnect() {
-  if (!currentVideoId) {
-    appendLog("No videoId available to reconnect.", "error");
-    return;
-  }
-  const baseUrl = resolveBaseUrl();
-  const wsUrl = currentWsUrl || deriveWsUrl(baseUrl, currentVideoId);
-  connectWebSocket(wsUrl, currentVideoId);
 }
 
 uploadBtn.addEventListener("click", uploadFile);

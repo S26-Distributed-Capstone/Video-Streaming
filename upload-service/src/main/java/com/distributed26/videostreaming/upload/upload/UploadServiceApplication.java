@@ -112,20 +112,17 @@ public class UploadServiceApplication {
         }
     }
 
+    private static final io.github.cdimascio.dotenv.Dotenv DOTENV = io.github.cdimascio.dotenv.Dotenv.configure().directory("./").ignoreIfMissing().load();
+
     private static String resolveMachineId() {
         String machineId = System.getenv("MACHINE_ID");
         if (machineId != null && !machineId.isBlank()) {
             return machineId;
         }
-        io.github.cdimascio.dotenv.Dotenv dotenv = io.github.cdimascio.dotenv.Dotenv.configure()
-            .directory("./")
-            .ignoreIfMissing()
-            .load();
-        machineId = dotenv.get("MACHINE_ID");
-        if (machineId != null && !machineId.isBlank()) {
-            return machineId;
-        }
-        return System.getenv("HOSTNAME");
+        
+        machineId = DOTENV.get("MACHINE_ID");
+
+        return machineId;
     }
 
 	static Javalin startApp(int port) {
