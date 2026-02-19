@@ -1,7 +1,5 @@
 package com.distributed26.videostreaming.upload.db;
 
-import com.distributed26.videostreaming.upload.db.JobTaskRecord;
-import com.distributed26.videostreaming.upload.db.JobTaskRepository;
 import java.util.Optional;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
