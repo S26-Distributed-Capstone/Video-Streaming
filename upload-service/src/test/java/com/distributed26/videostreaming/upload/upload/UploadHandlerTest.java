@@ -6,7 +6,6 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
-import com.distributed26.videostreaming.shared.upload.InMemoryJobTaskBus;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.javalin.Javalin;
@@ -70,7 +69,7 @@ public class UploadHandlerTest {
         @Test
         @DisplayName("Should return 400 when no file is provided")
         void shouldReturn400WhenNoFileProvided() {
-            UploadHandler handler = new UploadHandler(mockStorageClient, new InMemoryJobTaskBus());
+            UploadHandler handler = new UploadHandler(mockStorageClient, new TestJobTaskBus());
             Javalin app = Javalin.create();
             app.post("/upload", handler::upload);
 
@@ -87,7 +86,7 @@ public class UploadHandlerTest {
         @Test
         @DisplayName("Should return 202 Accepted with video ID for valid upload")
         void shouldReturn202WithVideoIdForValidUpload() {
-            UploadHandler handler = new UploadHandler(mockStorageClient, new InMemoryJobTaskBus());
+            UploadHandler handler = new UploadHandler(mockStorageClient, new TestJobTaskBus());
             Javalin app = Javalin.create();
             app.post("/upload", handler::upload);
 
@@ -131,7 +130,7 @@ public class UploadHandlerTest {
                 ArgumentCaptor<String> keyCaptor = ArgumentCaptor.forClass(String.class);
                 doNothing().when(mockStorageClient).uploadFile(keyCaptor.capture(), any(InputStream.class), anyLong());
 
-                UploadHandler handler = new UploadHandler(mockStorageClient, new InMemoryJobTaskBus());
+                UploadHandler handler = new UploadHandler(mockStorageClient, new TestJobTaskBus());
                 Javalin app = Javalin.create();
                 app.post("/upload", handler::upload);
 
@@ -176,7 +175,7 @@ public class UploadHandlerTest {
             doThrow(new RuntimeException("Storage unavailable"))
                 .when(mockStorageClient).uploadFile(anyString(), any(InputStream.class), anyLong());
 
-            UploadHandler handler = new UploadHandler(mockStorageClient, new InMemoryJobTaskBus());
+            UploadHandler handler = new UploadHandler(mockStorageClient, new TestJobTaskBus());
             Javalin app = Javalin.create();
             app.post("/upload", handler::upload);
 
@@ -228,7 +227,7 @@ public class UploadHandlerTest {
                 return null;
             }).when(mockStorageClient).uploadFile(anyString(), any(InputStream.class), anyLong());
 
-            UploadHandler handler = new UploadHandler(mockStorageClient, new InMemoryJobTaskBus());
+            UploadHandler handler = new UploadHandler(mockStorageClient, new TestJobTaskBus());
             Javalin app = Javalin.create();
             app.post("/upload", handler::upload);
 
@@ -266,7 +265,7 @@ public class UploadHandlerTest {
         @Test
         @DisplayName("Should cleanup temporary files after processing")
         void shouldCleanupTemporaryFilesAfterProcessing() throws Exception {
-            UploadHandler handler = new UploadHandler(mockStorageClient, new InMemoryJobTaskBus());
+            UploadHandler handler = new UploadHandler(mockStorageClient, new TestJobTaskBus());
             Javalin app = Javalin.create();
             app.post("/upload", handler::upload);
 
@@ -322,7 +321,7 @@ public class UploadHandlerTest {
         @Test
         @DisplayName("Should generate unique video IDs for each upload")
         void shouldGenerateUniqueVideoIds() throws Exception {
-            UploadHandler handler = new UploadHandler(mockStorageClient, new InMemoryJobTaskBus());
+            UploadHandler handler = new UploadHandler(mockStorageClient, new TestJobTaskBus());
             Javalin app = Javalin.create();
             app.post("/upload", handler::upload);
 
@@ -416,4 +415,3 @@ public class UploadHandlerTest {
         return json.get("videoId").asText();
     }
 }
-

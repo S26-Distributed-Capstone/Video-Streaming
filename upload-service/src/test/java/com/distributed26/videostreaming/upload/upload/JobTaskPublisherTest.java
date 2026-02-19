@@ -1,6 +1,5 @@
 package com.distributed26.videostreaming.upload.upload;
 
-import com.distributed26.videostreaming.shared.upload.InMemoryJobTaskBus;
 import com.distributed26.videostreaming.shared.upload.JobTaskBus;
 import com.distributed26.videostreaming.shared.upload.JobTaskEvent;
 
@@ -14,7 +13,7 @@ public class JobTaskPublisherTest {
     @Disabled
     @Test 
     void publishJobTasksPeriodically() throws Exception {
-        JobTaskBus jobTaskBus = new InMemoryJobTaskBus();
+        JobTaskBus jobTaskBus = new TestJobTaskBus();
 
         Javalin app = UploadServiceApplication.createApp(jobTaskBus);
         app.start(8080);

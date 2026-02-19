@@ -1,12 +1,15 @@
-package com.distributed26.videostreaming.shared.upload;
+package com.distributed26.videostreaming.upload.upload;
 
+import com.distributed26.videostreaming.shared.upload.JobTaskBus;
+import com.distributed26.videostreaming.shared.upload.JobTaskEvent;
+import com.distributed26.videostreaming.shared.upload.JobTaskListener;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
-public class InMemoryJobTaskBus implements JobTaskBus {
+class TestJobTaskBus implements JobTaskBus {
     private final Map<String, List<JobTaskListener>> listenersByJobId = new ConcurrentHashMap<>();
 
     @Override
@@ -26,8 +29,8 @@ public class InMemoryJobTaskBus implements JobTaskBus {
         Objects.requireNonNull(jobId, "jobId is null");
         Objects.requireNonNull(listener, "listener is null");
         listenersByJobId
-                .computeIfAbsent(jobId, key -> new CopyOnWriteArrayList<>())
-                .add(listener);
+            .computeIfAbsent(jobId, key -> new CopyOnWriteArrayList<>())
+            .add(listener);
     }
 
     @Override

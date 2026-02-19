@@ -3,8 +3,8 @@ package com.distributed26.videostreaming.upload.upload;
 import com.distributed26.videostreaming.shared.config.StorageConfig;
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
 import com.distributed26.videostreaming.shared.storage.S3StorageClient;
-import com.distributed26.videostreaming.shared.upload.InMemoryJobTaskBus;
 import com.distributed26.videostreaming.shared.upload.JobTaskBus;
+import com.distributed26.videostreaming.shared.upload.RabbitMQJobTaskBus;
 import com.distributed26.videostreaming.upload.db.VideoUploadRepository;
 import io.javalin.Javalin;
 import io.javalin.config.SizeUnit;
@@ -28,8 +28,8 @@ public class UploadServiceApplication {
 
 	}
 
-	static Javalin createApp() {
-        JobTaskBus jobTaskBus = new InMemoryJobTaskBus();
+    static Javalin createApp() {
+        JobTaskBus jobTaskBus = RabbitMQJobTaskBus.fromEnv();
         return createApp(jobTaskBus);
     }
 
