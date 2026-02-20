@@ -20,44 +20,46 @@ cp .env.example .env
 Edit `.env` with your credentials. See `.env` for required variables:
 - MinIO credentials (`MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`)
 - RabbitMQ credentials (`RABBITMQ_USER`, `RABBITMQ_PASS`)
-- PostgreSQL credentials (`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`)
+- PostgreSQL credentials (`PG_USER`, `PG_PASSWORD`, `PG_DB`)
 
 ### 2) Start All Services (MinIO, RabbitMQ, PostgreSQL)
 
 ```bash
-docker-compose -f docker_compose.yaml up -d
-# OR
-docker compose -f docker_compose.yaml up -d
+docker compose -f docker_compose.yaml up -d --build
 ```
 
 This starts:
 - **MinIO** at `http://localhost:9000` (console at `http://localhost:9001`)
 - **RabbitMQ** at `http://localhost:15672`
 - **PostgreSQL** at `localhost:5432`
+- **Upload Service** at `http://localhost:8080` (container `upload-service`)
+- **Status Service** at `http://localhost:8081` (container `status-service`)
 
-### 3) Set Up Postgres Tables
+### 3) Postgres Schema (Auto-Loaded)
 
-Once PostgreSQL is running, apply the schema:
-
-```bash
-docker exec -i video-streaming-postgres psql -U $POSTGRES_USER -d $POSTGRES_DB < upload-service/docs/db/schema.sql
+The schema is mounted into the Postgres container and **automatically applied on first startup**:
+```
+upload-service/docs/db/schema.sql -> /docker-entrypoint-initdb.d/schema.sql
 ```
 
-Or source your `.env` first and use psql directly:
+If you already have a `postgres_data` volume and need to re-run the schema:
+Note: `docker compose down -v` deletes **all** Postgres data, not just the schema.
+
+A safer alternative for existing installations is to apply the schema manually:
 ```bash
 source .env
-psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f upload-service/docs/db/schema.sql
+psql -h localhost -U "$PG_USER" -d "$PG_DB" -f upload-service/docs/db/schema.sql
+```
+
+If you are OK with wiping all data, you can reset the volume:
+```bash
+docker compose -f docker_compose.yaml down -v
+docker compose -f docker_compose.yaml up -d --build
 ```
 
 ## Run (Frontend + Upload Service)
 
-From the repo root:
-```bash
-mvn install -DskipTests
-mvn exec:java -pl upload-service -Dexec.mainClass="com.distributed26.videostreaming.upload.upload.UploadServiceApplication"
-```
-
-Then open:
+With Docker Compose running, open:
 - `http://localhost:8080/`
 
 ## Notes
@@ -66,3 +68,5 @@ Then open:
 - Logs are written to `logs/upload-service.log` (and the service also prints to console).
 - All data is persisted in Docker named volumes (`rabbitmq_data`, `minio_data`, `postgres_data`).
 - The application reads credentials from the `.env` file in the project root.
+- Status endpoints are served separately at `http://localhost:8081`.
+- `SERVICE_MODE` is set in `docker_compose.yaml` to start either the upload or status service.

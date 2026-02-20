@@ -70,8 +70,26 @@ function renderJson(target, payload) {
 
 function deriveWsUrl(baseUrl, videoId) {
   const scheme = baseUrl.startsWith("https://") ? "wss" : "ws";
-  const host = baseUrl.replace(/^https?:\/\//, "");
-  return `${scheme}://${host}/upload-status?jobId=${videoId}`;
+  const host = baseUrl.replace(/^https?:\/\//, "").replace(/:\d+$/, "");
+  const statusPort = "8081";
+  return `${scheme}://${host}:${statusPort}/upload-status?jobId=${videoId}`;
+}
+
+function deriveUploadInfoUrl(baseUrl, videoId, uploadStatusUrl) {
+  if (uploadStatusUrl) {
+    try {
+      const httpUrl = uploadStatusUrl.replace(/^ws/, "http");
+      const url = new URL(httpUrl);
+      url.pathname = `/upload-info/${videoId}`;
+      url.search = "";
+      return url.toString();
+    } catch (err) {
+      // fall back to default if URL parsing fails
+    }
+  }
+  const host = baseUrl.replace(/^https?:\/\//, "").replace(/:\d+$/, "");
+  const statusPort = "8081";
+  return `${baseUrl.startsWith("https://") ? "https" : "http"}://${host}:${statusPort}/upload-info/${videoId}`;
 }
 
 function connectWebSocket(wsUrl, videoId) {
@@ -103,6 +121,24 @@ function connectWebSocket(wsUrl, videoId) {
         }
         if (processingTrack) {
           processingTrack.classList.remove("indeterminate");
+        }
+        return;
+      }
+      if (payload && payload.type === "progress" && typeof payload.completedSegments === "number") {
+        completedSegments = payload.completedSegments;
+        if (totalSegments) {
+          const percent = Math.min(100, Math.round((completedSegments / totalSegments) * 100));
+          processingBar.style.width = `${percent}%`;
+          processingPercent.textContent = `${percent}% (${completedSegments}/${totalSegments})`;
+          processingTrack.classList.remove("indeterminate");
+          if (completedSegments >= totalSegments && doneMessage) {
+            processingComplete = true;
+            doneMessage.classList.remove("hidden");
+            uploadBtn.disabled = false;
+            uploadInFlight = false;
+          }
+        } else {
+          processingPercent.textContent = `${completedSegments} events`;
         }
         return;
       }
@@ -155,8 +191,8 @@ function connectWebSocket(wsUrl, videoId) {
   });
 }
 
-async function fetchUploadInfo(baseUrl, videoId) {
-  const infoUrl = `${baseUrl}/upload-info/${videoId}`;
+async function fetchUploadInfo(baseUrl, videoId, uploadStatusUrl) {
+  const infoUrl = deriveUploadInfoUrl(baseUrl, videoId, uploadStatusUrl);
   try {
     const resp = await fetch(infoUrl);
     const text = await resp.text();
@@ -269,7 +305,7 @@ function uploadFile() {
       processingPercent.textContent = "0%";
     }
 
-    await fetchUploadInfo(baseUrl, currentVideoId);
+    await fetchUploadInfo(baseUrl, currentVideoId, payload.uploadStatusUrl);
 
     const wsUrl = payload.uploadStatusUrl || deriveWsUrl(baseUrl, currentVideoId);
     connectWebSocket(wsUrl, currentVideoId);

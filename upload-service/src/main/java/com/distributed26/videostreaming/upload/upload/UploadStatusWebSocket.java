@@ -2,6 +2,8 @@ package com.distributed26.videostreaming.upload.upload;
 
 import com.distributed26.videostreaming.shared.upload.JobTaskBus;
 import com.distributed26.videostreaming.shared.upload.JobTaskListener;
+import com.distributed26.videostreaming.shared.upload.UploadProgressEvent;
+import com.distributed26.videostreaming.upload.db.SegmentUploadRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -15,17 +17,22 @@ import io.javalin.websocket.WsMessageContext;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 public class UploadStatusWebSocket {
+    private static final Logger logger = LogManager.getLogger(UploadStatusWebSocket.class);
     private static final ObjectMapper objectMapper = new ObjectMapper()
             .registerModule(new JavaTimeModule())
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
     private final JobTaskBus jobTaskBus;
+    private final SegmentUploadRepository segmentUploadRepository;
     private final Map<WsContext, JobTaskListener> jobListenersByContext = new ConcurrentHashMap<>();
     private final Map<WsContext, String> jobIdByContext = new ConcurrentHashMap<>();
 
-    public UploadStatusWebSocket(JobTaskBus jobTaskBus) {
+    public UploadStatusWebSocket(JobTaskBus jobTaskBus, SegmentUploadRepository segmentUploadRepository) {
         this.jobTaskBus = Objects.requireNonNull(jobTaskBus, "jobTaskBus is null");
+        this.segmentUploadRepository = segmentUploadRepository;
     }
 
     public void configure(WsConfig ws) {
@@ -75,6 +82,17 @@ public class UploadStatusWebSocket {
         jobIdByContext.put(ctx, jobId);
         jobListenersByContext.put(ctx, listener);
         jobTaskBus.subscribe(jobId, listener);
+
+        if (segmentUploadRepository != null) {
+            try {
+                sendProgressSnapshot(ctx, jobId);
+            } catch (Exception e) {
+                logger.warn("Failed to fetch progress for jobId={}", jobId, e);
+                ctx.send("{\"error\":\"progress_lookup_failed\"}");
+            }
+        } else {
+            logger.warn("SegmentUploadRepository is null; progress snapshot disabled");
+        }
     }
 
     private void cleanup(WsCloseContext ctx) {
@@ -91,5 +109,11 @@ public class UploadStatusWebSocket {
         if (jobId != null && jobListener != null) {
             jobTaskBus.unsubscribe(jobId, jobListener);
         }
+    }
+
+    private void sendProgressSnapshot(WsContext ctx, String jobId) throws JsonProcessingException {
+        int completedSegments = segmentUploadRepository.countByVideoId(jobId);
+        logger.info("WS progress snapshot for jobId={} completedSegments={}", jobId, completedSegments);
+        ctx.send(objectMapper.writeValueAsString(new UploadProgressEvent(jobId, completedSegments)));
     }
 }
