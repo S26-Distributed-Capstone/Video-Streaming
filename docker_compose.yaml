@@ -15,6 +15,20 @@ services:
       RABBITMQ_HOST: rabbitmq
       SERVICE_MODE: upload
       STATUS_PORT: 8081
+    command:
+      - /bin/sh
+      - -c
+      - |
+          if [ -f .env ]; then
+            if grep -q '^CONTAINER_ID=' .env; then
+              sed -i "s/^CONTAINER_ID=.*/CONTAINER_ID=$$HOSTNAME/" .env
+            else
+              echo "CONTAINER_ID=$$HOSTNAME" >> .env
+            fi
+          else
+            echo "CONTAINER_ID=$$HOSTNAME" > .env
+          fi
+          mvn -pl upload-service -DskipTests exec:java -Dexec.mainClass=com.distributed26.videostreaming.upload.upload.UploadServiceApplication
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -91,6 +105,31 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  node-watcher:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: node-watcher
+    env_file:
+      - .env
+    environment:
+      PG_URL: jdbc:postgresql://postgres:5432/${PG_DB}
+      RABBITMQ_HOST: rabbitmq
+      WATCH_CONTAINER_NAME_PREFIX: upload-service
+      FAILURE_REASON: container_died
+      UPDATE_DB_STATUS: "true"
+      PYTHONUNBUFFERED: "1"
+      DEBUG_EVENTS: "true"
+    entrypoint: ["python3", "/app/node-watcher/watcher.py"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   rabbitmq_data:

@@ -2,7 +2,7 @@ package com.distributed26.videostreaming.upload.upload;
 
 import com.distributed26.videostreaming.shared.upload.JobTaskBus;
 import com.distributed26.videostreaming.shared.upload.JobTaskListener;
-import com.distributed26.videostreaming.shared.upload.UploadProgressEvent;
+import com.distributed26.videostreaming.shared.upload.events.UploadProgressEvent;
 import com.distributed26.videostreaming.upload.db.SegmentUploadRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;

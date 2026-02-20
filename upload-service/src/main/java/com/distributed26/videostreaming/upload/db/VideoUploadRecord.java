@@ -7,12 +7,14 @@ public class VideoUploadRecord {
     private final int totalSegments;
     private final String status;
     private final String machineId;
+    private final String containerId;
 
-    public VideoUploadRecord(String videoId, int totalSegments, String status, String machineId) {
+    public VideoUploadRecord(String videoId, int totalSegments, String status, String machineId, String containerId) {
         this.videoId = Objects.requireNonNull(videoId, "videoId is null");
         this.totalSegments = totalSegments;
         this.status = Objects.requireNonNull(status, "status is null");
         this.machineId = machineId;
+        this.containerId = containerId;
     }
 
     public String getVideoId() {
@@ -29,5 +31,9 @@ public class VideoUploadRecord {
 
     public String getMachineId() {
         return machineId;
+    }
+
+    public String getContainerId() {
+        return containerId;
     }
 }

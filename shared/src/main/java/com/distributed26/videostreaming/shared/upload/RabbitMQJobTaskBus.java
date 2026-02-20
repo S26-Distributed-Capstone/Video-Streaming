@@ -1,5 +1,8 @@
 package com.distributed26.videostreaming.shared.upload;
 
+import com.distributed26.videostreaming.shared.upload.events.JobTaskEvent;
+import com.distributed26.videostreaming.shared.upload.events.UploadFailedEvent;
+import com.distributed26.videostreaming.shared.upload.events.UploadMetaEvent;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.rabbitmq.client.*;
@@ -159,7 +162,14 @@ public class RabbitMQJobTaskBus implements JobTaskBus, AutoCloseable {
 
     private JobTaskEvent toEvent(JsonNode node) {
         String jobId = node.path("jobId").asText();
-        if ("meta".equals(node.path("type").asText()) && node.has("totalSegments")) {
+        String type = node.path("type").asText();
+        if ("failed".equals(type)) {
+            String reason = node.path("reason").asText(null);
+            String machineId = node.path("machineId").asText(null);
+            String containerId = node.path("containerId").asText(null);
+            return new UploadFailedEvent(jobId, reason, machineId, containerId);
+        }
+        if ("meta".equals(type) && node.has("totalSegments")) {
             return new UploadMetaEvent(jobId, node.path("totalSegments").asInt());
         }
         String taskId = node.path("taskId").asText("task");

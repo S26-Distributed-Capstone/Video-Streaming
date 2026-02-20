@@ -142,6 +142,16 @@ function connectWebSocket(wsUrl, videoId) {
         }
         return;
       }
+      if (payload && payload.type === "failed") {
+        uploadBtn.disabled = false;
+        uploadInFlight = false;
+        resetStateForNextUpload();
+        if (doneMessage) {
+          doneMessage.textContent = "Container died.";
+          doneMessage.classList.remove("hidden");
+        }
+        return;
+      }
       if (payload && payload.taskId) {
         completedSegments += 1;
         if (totalSegments) {

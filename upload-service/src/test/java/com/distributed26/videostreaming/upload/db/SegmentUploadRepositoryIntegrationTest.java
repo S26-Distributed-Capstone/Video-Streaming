@@ -40,7 +40,7 @@ public class SegmentUploadRepositoryIntegrationTest {
         videoRepo = new VideoUploadRepository(jdbcUrl, username, password);
 
         videoId = UUID.randomUUID().toString();
-        videoRepo.create(videoId, 3, "UPLOADING", "test-machine");
+        videoRepo.create(videoId, 3, "UPLOADING", "test-machine", "test-container");
     }
 
     @AfterEach

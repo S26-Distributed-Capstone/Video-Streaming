@@ -30,7 +30,8 @@ public class UploadInfoHandler {
                 r.getVideoId(),
                 r.getStatus(),
                 r.getTotalSegments(),
-                r.getMachineId()
+                r.getMachineId(),
+                r.getContainerId()
         ));
     }
 
@@ -38,7 +39,8 @@ public class UploadInfoHandler {
             String videoId,
             String status,
             int totalSegments,
-            String machineId
+            String machineId,
+            String containerId
     ) {
     }
 }
