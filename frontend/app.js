@@ -75,6 +75,23 @@ function deriveWsUrl(baseUrl, videoId) {
   return `${scheme}://${host}:${statusPort}/upload-status?jobId=${videoId}`;
 }
 
+function deriveUploadInfoUrl(baseUrl, videoId, uploadStatusUrl) {
+  if (uploadStatusUrl) {
+    try {
+      const httpUrl = uploadStatusUrl.replace(/^ws/, "http");
+      const url = new URL(httpUrl);
+      url.pathname = `/upload-info/${videoId}`;
+      url.search = "";
+      return url.toString();
+    } catch (err) {
+      // fall back to default if URL parsing fails
+    }
+  }
+  const host = baseUrl.replace(/^https?:\/\//, "").replace(/:\d+$/, "");
+  const statusPort = "8081";
+  return `${baseUrl.startsWith("https://") ? "https" : "http"}://${host}:${statusPort}/upload-info/${videoId}`;
+}
+
 function connectWebSocket(wsUrl, videoId) {
   if (ws) {
     ws.close();
@@ -174,10 +191,8 @@ function connectWebSocket(wsUrl, videoId) {
   });
 }
 
-async function fetchUploadInfo(baseUrl, videoId) {
-  const host = baseUrl.replace(/^https?:\/\//, "").replace(/:\d+$/, "");
-  const statusPort = "8081";
-  const infoUrl = `${baseUrl.startsWith("https://") ? "https" : "http"}://${host}:${statusPort}/upload-info/${videoId}`;
+async function fetchUploadInfo(baseUrl, videoId, uploadStatusUrl) {
+  const infoUrl = deriveUploadInfoUrl(baseUrl, videoId, uploadStatusUrl);
   try {
     const resp = await fetch(infoUrl);
     const text = await resp.text();
@@ -290,7 +305,7 @@ function uploadFile() {
       processingPercent.textContent = "0%";
     }
 
-    await fetchUploadInfo(baseUrl, currentVideoId);
+    await fetchUploadInfo(baseUrl, currentVideoId, payload.uploadStatusUrl);
 
     const wsUrl = payload.uploadStatusUrl || deriveWsUrl(baseUrl, currentVideoId);
     connectWebSocket(wsUrl, currentVideoId);

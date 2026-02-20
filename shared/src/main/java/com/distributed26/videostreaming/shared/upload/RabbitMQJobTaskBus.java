@@ -24,6 +24,7 @@ public class RabbitMQJobTaskBus implements JobTaskBus, AutoCloseable {
     private final String exchange;
     private final String statusQueue;
     private final String statusBinding;
+    private final boolean consumeStatus;
     private final Map<String, List<JobTaskListener>> listenersByJobId = new ConcurrentHashMap<>();
 
     public static RabbitMQJobTaskBus fromEnv() {
@@ -36,7 +37,9 @@ public class RabbitMQJobTaskBus implements JobTaskBus, AutoCloseable {
         String exchange = getEnvOrDotenv(dotenv, "RABBITMQ_EXCHANGE", "upload.events");
         String statusQueue = getEnvOrDotenv(dotenv, "RABBITMQ_STATUS_QUEUE", "upload.status.queue");
         String statusBinding = getEnvOrDotenv(dotenv, "RABBITMQ_STATUS_BINDING", "upload.status.*");
-        return new RabbitMQJobTaskBus(host, port, user, pass, vhost, exchange, statusQueue, statusBinding);
+        String serviceMode = getEnvOrDotenv(dotenv, "SERVICE_MODE", "");
+        boolean consumeStatus = !"upload".equalsIgnoreCase(serviceMode);
+        return new RabbitMQJobTaskBus(host, port, user, pass, vhost, exchange, statusQueue, statusBinding, consumeStatus);
     }
 
     public RabbitMQJobTaskBus(
@@ -47,11 +50,13 @@ public class RabbitMQJobTaskBus implements JobTaskBus, AutoCloseable {
             String vhost,
             String exchange,
             String statusQueue,
-            String statusBinding
+            String statusBinding,
+            boolean consumeStatus
     ) {
         this.exchange = Objects.requireNonNull(exchange, "exchange is null");
         this.statusQueue = Objects.requireNonNull(statusQueue, "statusQueue is null");
         this.statusBinding = Objects.requireNonNull(statusBinding, "statusBinding is null");
+        this.consumeStatus = consumeStatus;
 
         try {
             ConnectionFactory factory = new ConnectionFactory();
@@ -68,7 +73,11 @@ public class RabbitMQJobTaskBus implements JobTaskBus, AutoCloseable {
             channel.queueDeclare(this.statusQueue, true, false, false, null);
             channel.queueBind(this.statusQueue, this.exchange, this.statusBinding);
 
-            startStatusConsumer();
+            if (consumeStatus) {
+                startStatusConsumer();
+            } else {
+                logger.info("Status consumer disabled for {}", this.exchange);
+            }
         } catch (IOException | TimeoutException e) {
             throw new RuntimeException("Failed to initialize RabbitMQJobTaskBus", e);
         }
@@ -123,12 +132,15 @@ public class RabbitMQJobTaskBus implements JobTaskBus, AutoCloseable {
                 String type = node.path("type").asText("");
                 String taskId = node.path("taskId").asText("");
                 int totalSegments = node.path("totalSegments").asInt(-1);
+                int completedSegments = node.path("completedSegments").asInt(-1);
                 if (totalSegments >= 0) {
                     logger.info("Status event jobId={} type={} totalSegments={}", jobId, type, totalSegments);
+                } else if (completedSegments >= 0) {
+                    logger.info("Status event jobId={} type={} completedSegments={}", jobId, type, completedSegments);
                 } else if (!taskId.isBlank()) {
-                    logger.info("Status event jobId={} type={} taskId={}", jobId, type, taskId);
+                    logger.debug("Status event jobId={} type={} taskId={}", jobId, type, taskId);
                 } else {
-                    logger.info("Status event jobId={} type={}", jobId, type);
+                    logger.debug("Status event jobId={} type={}", jobId, type);
                 }
                 JobTaskEvent event = toEvent(node);
                 List<JobTaskListener> listeners = listenersByJobId.get(jobId);

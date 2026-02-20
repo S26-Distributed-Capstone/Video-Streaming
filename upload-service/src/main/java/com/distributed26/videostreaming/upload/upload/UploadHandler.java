@@ -403,8 +403,6 @@ public class UploadHandler {
                     } else {
                         logger.warn("SegmentUploadRepository is null; skipping segment_upload insert");
                     }
-                }
-                if (fileName.endsWith(".ts")) {
                     jobTaskBus.publish(new JobTaskEvent(videoId, objectKey));
                 }
                 logger.info("Finished uploading segment: {}", objectKey);

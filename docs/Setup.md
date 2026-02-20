@@ -43,6 +43,15 @@ upload-service/docs/db/schema.sql -> /docker-entrypoint-initdb.d/schema.sql
 ```
 
 If you already have a `postgres_data` volume and need to re-run the schema:
+Note: `docker compose down -v` deletes **all** Postgres data, not just the schema.
+
+A safer alternative for existing installations is to apply the schema manually:
+```bash
+source .env
+psql -h localhost -U "$PG_USER" -d "$PG_DB" -f upload-service/docs/db/schema.sql
+```
+
+If you are OK with wiping all data, you can reset the volume:
 ```bash
 docker compose -f docker_compose.yaml down -v
 docker compose -f docker_compose.yaml up -d --build
