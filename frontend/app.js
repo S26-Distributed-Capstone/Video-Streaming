@@ -70,8 +70,9 @@ function renderJson(target, payload) {
 
 function deriveWsUrl(baseUrl, videoId) {
   const scheme = baseUrl.startsWith("https://") ? "wss" : "ws";
-  const host = baseUrl.replace(/^https?:\/\//, "");
-  return `${scheme}://${host}/upload-status?jobId=${videoId}`;
+  const host = baseUrl.replace(/^https?:\/\//, "").replace(/:\d+$/, "");
+  const statusPort = "8081";
+  return `${scheme}://${host}:${statusPort}/upload-status?jobId=${videoId}`;
 }
 
 function connectWebSocket(wsUrl, videoId) {
@@ -103,6 +104,24 @@ function connectWebSocket(wsUrl, videoId) {
         }
         if (processingTrack) {
           processingTrack.classList.remove("indeterminate");
+        }
+        return;
+      }
+      if (payload && payload.type === "progress" && typeof payload.completedSegments === "number") {
+        completedSegments = payload.completedSegments;
+        if (totalSegments) {
+          const percent = Math.min(100, Math.round((completedSegments / totalSegments) * 100));
+          processingBar.style.width = `${percent}%`;
+          processingPercent.textContent = `${percent}% (${completedSegments}/${totalSegments})`;
+          processingTrack.classList.remove("indeterminate");
+          if (completedSegments >= totalSegments && doneMessage) {
+            processingComplete = true;
+            doneMessage.classList.remove("hidden");
+            uploadBtn.disabled = false;
+            uploadInFlight = false;
+          }
+        } else {
+          processingPercent.textContent = `${completedSegments} events`;
         }
         return;
       }
@@ -156,7 +175,9 @@ function connectWebSocket(wsUrl, videoId) {
 }
 
 async function fetchUploadInfo(baseUrl, videoId) {
-  const infoUrl = `${baseUrl}/upload-info/${videoId}`;
+  const host = baseUrl.replace(/^https?:\/\//, "").replace(/:\d+$/, "");
+  const statusPort = "8081";
+  const infoUrl = `${baseUrl.startsWith("https://") ? "https" : "http"}://${host}:${statusPort}/upload-info/${videoId}`;
   try {
     const resp = await fetch(infoUrl);
     const text = await resp.text();

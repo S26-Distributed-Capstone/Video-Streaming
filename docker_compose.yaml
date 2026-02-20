@@ -1,5 +1,49 @@
 version: '3.8'
 services:
+  upload-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: upload-service
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      PG_URL: jdbc:postgresql://postgres:5432/${PG_DB}
+      MINIO_ENDPOINT: http://minio:9000
+      RABBITMQ_HOST: rabbitmq
+      SERVICE_MODE: upload
+      STATUS_PORT: 8081
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  status-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: status-service
+    ports:
+      - "8081:8081"
+    env_file:
+      - .env
+    environment:
+      PG_URL: jdbc:postgresql://postgres:5432/${PG_DB}
+      RABBITMQ_HOST: rabbitmq
+      SERVICE_MODE: status
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
   rabbitmq:
     image: rabbitmq:3-management
     container_name: video-streaming-rabbitmq
@@ -41,8 +85,9 @@ services:
       POSTGRES_DB: ${PG_DB}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./upload-service/docs/db/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER}" ]
+      test: [ "CMD-SHELL", "pg_isready -U ${PG_USER}" ]
       interval: 10s
       timeout: 5s
       retries: 5

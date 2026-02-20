@@ -15,8 +15,8 @@ public class JobTaskPublisherTest {
     void publishJobTasksPeriodically() throws Exception {
         JobTaskBus jobTaskBus = new TestJobTaskBus();
 
-        Javalin app = UploadServiceApplication.createApp(jobTaskBus);
-        app.start(8080);
+        Javalin app = UploadServiceApplication.createStatusApp(jobTaskBus);
+        app.start(8081);
 
         String jobId = UUID.randomUUID().toString();
         System.out.println("JobId: " + jobId);

@@ -4,6 +4,7 @@ import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
 import com.distributed26.videostreaming.shared.upload.JobTaskBus;
 import com.distributed26.videostreaming.shared.upload.JobTaskEvent;
 import com.distributed26.videostreaming.shared.upload.UploadMetaEvent;
+import com.distributed26.videostreaming.upload.db.SegmentUploadRepository;
 import com.distributed26.videostreaming.upload.db.VideoUploadRepository;
 import io.javalin.http.Context;
 import io.javalin.http.UploadedFile;
@@ -17,6 +18,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
+import java.util.OptionalInt;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -24,6 +26,8 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import net.bramp.ffmpeg.FFmpeg;
 import net.bramp.ffmpeg.FFmpegExecutor;
@@ -38,6 +42,7 @@ public class UploadHandler {
     private final ObjectStorageClient storageClient;
     private final JobTaskBus jobTaskBus;
     private final VideoUploadRepository videoUploadRepository;
+    private final SegmentUploadRepository segmentUploadRepository;
     private final String machineId;
     private final int segmentDuration;
     private final ExecutorService ffmpegExecutor;
@@ -46,7 +51,7 @@ public class UploadHandler {
     private final long pollingIntervalMillis;
 
     public UploadHandler(ObjectStorageClient storageClient, JobTaskBus jobTaskBus) {
-        this(storageClient, jobTaskBus, null, null);
+        this(storageClient, jobTaskBus, null, null, null);
     }
 
     public UploadHandler(
@@ -55,10 +60,21 @@ public class UploadHandler {
             VideoUploadRepository videoUploadRepository,
             String machineId
     ) {
+        this(storageClient, jobTaskBus, videoUploadRepository, null, machineId);
+    }
+
+    public UploadHandler(
+            ObjectStorageClient storageClient,
+            JobTaskBus jobTaskBus,
+            VideoUploadRepository videoUploadRepository,
+            SegmentUploadRepository segmentUploadRepository,
+            String machineId
+    ) {
         Dotenv dotenv = Dotenv.configure().directory("./").ignoreIfMissing().load();
         this.storageClient = storageClient;
         this.jobTaskBus = Objects.requireNonNull(jobTaskBus, "jobTaskBus is null");
         this.videoUploadRepository = videoUploadRepository;
+        this.segmentUploadRepository = segmentUploadRepository;
         this.machineId = machineId;
 
         this.segmentDuration = dotenv.get("CHUNK_DURATION_SECONDS") == null ? 10 : Integer.parseInt(dotenv.get("CHUNK_DURATION_SECONDS"));
@@ -142,7 +158,20 @@ public class UploadHandler {
     private String buildUploadStatusUrl(Context ctx, String videoId) {
         String scheme = ctx.scheme();
         String wsScheme = "https".equalsIgnoreCase(scheme) ? "wss" : "ws";
-        return wsScheme + "://" + ctx.host() + "/upload-status?jobId=" + videoId;
+        String statusHost = resolveStatusHost(ctx);
+        return wsScheme + "://" + statusHost + "/upload-status?jobId=" + videoId;
+    }
+
+    private String resolveStatusHost(Context ctx) {
+        String statusHost = System.getenv("STATUS_HOST");
+        if (statusHost != null && !statusHost.isBlank()) {
+            return statusHost.trim();
+        }
+        String statusPort = System.getenv("STATUS_PORT");
+        if (statusPort != null && !statusPort.isBlank()) {
+            return ctx.host().replaceAll(":\\d+$", ":" + statusPort.trim());
+        }
+        return ctx.host();
     }
 
     private record UploadResponse(String videoId, String uploadStatusUrl) {
@@ -363,6 +392,19 @@ public class UploadHandler {
             try (InputStream is = new FileInputStream(path.toFile())) {
                 storageClient.uploadFile(objectKey, is, size);
                 if (fileName.endsWith(".ts")) {
+                    if (segmentUploadRepository != null) {
+                        OptionalInt segmentNumber = extractSegmentNumber(fileName);
+                        if (segmentNumber.isPresent()) {
+                            segmentUploadRepository.insert(videoId, segmentNumber.getAsInt());
+                            logger.info("Recorded segment_upload videoId={} segmentNumber={}", videoId, segmentNumber.getAsInt());
+                        } else {
+                            logger.warn("Could not parse segment number from {}", fileName);
+                        }
+                    } else {
+                        logger.warn("SegmentUploadRepository is null; skipping segment_upload insert");
+                    }
+                }
+                if (fileName.endsWith(".ts")) {
                     jobTaskBus.publish(new JobTaskEvent(videoId, objectKey));
                 }
                 logger.info("Finished uploading segment: {}", objectKey);
@@ -370,6 +412,15 @@ public class UploadHandler {
         } catch (IOException e) {
             throw new RuntimeException("Failed to upload segment: " + path, e);
         }
+    }
+
+    private OptionalInt extractSegmentNumber(String fileName) {
+        Matcher matcher = Pattern.compile("(\\d+)").matcher(fileName);
+        int last = -1;
+        while (matcher.find()) {
+            last = Integer.parseInt(matcher.group(1));
+        }
+        return last >= 0 ? OptionalInt.of(last) : OptionalInt.empty();
     }
 
 }
