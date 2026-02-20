@@ -60,7 +60,7 @@ public class VideoUploadRepositoryIntegrationTest {
     @Test
     @Tag("integration")
     void createAndFindByVideoId() {
-        repo.create(videoId, 3, "UPLOADING", "machine-a");
+        repo.create(videoId, 3, "UPLOADING", "machine-a", "container-a");
 
         Optional<VideoUploadRecord> record = repo.findByVideoId(videoId);
         assertTrue(record.isPresent(), "Expected record to exist");
@@ -75,7 +75,7 @@ public class VideoUploadRepositoryIntegrationTest {
     @Test
     @Tag("integration")
     void updateStatusAndTotalSegments() {
-        repo.create(videoId, 2, "UPLOADING", "machine-b");
+        repo.create(videoId, 2, "UPLOADING", "machine-b", "container-b");
 
         repo.updateStatus(videoId, "PROCESSING");
         repo.updateTotalSegments(videoId, 5);

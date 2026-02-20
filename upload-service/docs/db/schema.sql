@@ -3,7 +3,8 @@ CREATE TABLE IF NOT EXISTS video_upload (
     video_id UUID NOT NULL UNIQUE,
     total_segments INTEGER NOT NULL DEFAULT 0,
     status VARCHAR(32) NOT NULL,
-    machine_id VARCHAR(128)
+    machine_id VARCHAR(128),
+    container_id VARCHAR(128)
 );
 
 CREATE TABLE IF NOT EXISTS segment_upload (

@@ -1,8 +1,9 @@
 package com.distributed26.videostreaming.upload.upload;
 
 import com.distributed26.videostreaming.shared.upload.JobTaskBus;
-import com.distributed26.videostreaming.shared.upload.JobTaskEvent;
 import com.distributed26.videostreaming.shared.upload.JobTaskListener;
+import com.distributed26.videostreaming.shared.upload.events.JobTaskEvent;
+
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
