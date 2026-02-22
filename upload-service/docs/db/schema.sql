@@ -7,6 +7,9 @@ CREATE TABLE IF NOT EXISTS video_upload (
     container_id VARCHAR(128)
 );
 
+ALTER TABLE video_upload
+    ADD COLUMN IF NOT EXISTS container_id VARCHAR(128);
+
 CREATE TABLE IF NOT EXISTS segment_upload (
     id SERIAL PRIMARY KEY,
     video_id UUID NOT NULL REFERENCES video_upload(video_id) ON DELETE CASCADE,

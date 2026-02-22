@@ -20,11 +20,13 @@ let completedSegments = 0;
 let currentWsUrl = null;
 let processingComplete = false;
 let uploadInFlight = false;
+let failureTerminal = false;
 
 function resetStateForNextUpload() {
   totalSegments = null;
   completedSegments = 0;
   processingComplete = false;
+  failureTerminal = false;
 }
 
 function appendLog(message, tone = "") {
@@ -143,6 +145,8 @@ function connectWebSocket(wsUrl, videoId) {
         return;
       }
       if (payload && payload.type === "failed") {
+        failureTerminal = true;
+        processingComplete = true;
         uploadBtn.disabled = false;
         uploadInFlight = false;
         resetStateForNextUpload();
@@ -176,7 +180,7 @@ function connectWebSocket(wsUrl, videoId) {
 
   ws.addEventListener("close", () => {
     appendLog("WebSocket disconnected");
-    if (!processingComplete) {
+    if (!processingComplete && !failureTerminal) {
       uploadBtn.disabled = false;
       uploadInFlight = false;
       resetStateForNextUpload();
@@ -189,7 +193,7 @@ function connectWebSocket(wsUrl, videoId) {
 
   ws.addEventListener("error", () => {
     appendLog("WebSocket error", "error");
-    if (!processingComplete) {
+    if (!processingComplete && !failureTerminal) {
       uploadBtn.disabled = false;
       uploadInFlight = false;
       resetStateForNextUpload();

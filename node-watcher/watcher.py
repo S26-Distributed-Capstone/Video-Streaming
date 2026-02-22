@@ -169,6 +169,11 @@ def main():
                 print(f"node-watcher: event missing container id keys={list(event.keys())}", flush=True)
                 continue
             now = datetime.utcnow()
+            if seen_containers:
+                cutoff = now - timedelta(seconds=dedupe_window_seconds)
+                stale = [cid for cid, ts in seen_containers.items() if ts < cutoff]
+                for cid in stale:
+                    seen_containers.pop(cid, None)
             last_seen = seen_containers.get(container_id)
             if last_seen and now - last_seen < timedelta(seconds=dedupe_window_seconds):
                 if debug_events:

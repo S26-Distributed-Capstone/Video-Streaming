@@ -153,7 +153,14 @@ public class UploadServiceApplication {
     private static final io.github.cdimascio.dotenv.Dotenv DOTENV = io.github.cdimascio.dotenv.Dotenv.configure().directory("./").ignoreIfMissing().load();
 
     private static String resolveMachineId() {
-        return DOTENV.get("MACHINE_ID");
+        String machineId = DOTENV.get("MACHINE_ID");
+        if (machineId == null || machineId.isBlank()) {
+            machineId = System.getenv("MACHINE_ID");
+        }
+        if (machineId == null || machineId.isBlank()) {
+            return null;
+        }
+        return machineId;
     }
 
     private static String resolveContainerId() {
