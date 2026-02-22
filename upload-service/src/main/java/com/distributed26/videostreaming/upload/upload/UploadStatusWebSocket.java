@@ -72,8 +72,10 @@ public class UploadStatusWebSocket {
             ctx.closeSession();
             return;
         }
+        logger.debug("WS bind jobId={}", jobId);
         JobTaskListener listener = event -> {
             try {
+                logger.debug("WS send event jobId={} type={}", event.getJobId(), describeEventType(event));
                 ctx.send(objectMapper.writeValueAsString(event));
             } catch (JsonProcessingException e) {
                 ctx.send("{\"error\":\"serialization_failed\"}");
@@ -115,5 +117,15 @@ public class UploadStatusWebSocket {
         int completedSegments = segmentUploadRepository.countByVideoId(jobId);
         logger.info("WS progress snapshot for jobId={} completedSegments={}", jobId, completedSegments);
         ctx.send(objectMapper.writeValueAsString(new UploadProgressEvent(jobId, completedSegments)));
+    }
+
+    private String describeEventType(com.distributed26.videostreaming.shared.upload.events.JobTaskEvent event) {
+        if (event instanceof com.distributed26.videostreaming.shared.upload.events.UploadFailedEvent failed) {
+            return failed.getType();
+        }
+        if (event instanceof com.distributed26.videostreaming.shared.upload.events.UploadMetaEvent) {
+            return "meta";
+        }
+        return "task";
     }
 }

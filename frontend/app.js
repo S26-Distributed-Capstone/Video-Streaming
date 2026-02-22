@@ -67,7 +67,7 @@ function scheduleRetry(reason) {
   if (retrySecondsLeft <= 0) {
     retrySecondsLeft = RETRY_TOTAL_SECONDS;
   }
-  if (retrySecondsLeft < 1) {
+  if (retrySecondsLeft <= 1) {
     retryInFlight = false;
     clearRetryTimers();
     if (doneMessage) {
@@ -206,6 +206,7 @@ function connectWebSocket(wsUrl, videoId) {
     if (token !== wsToken) {
       return;
     }
+    console.log("[upload-ui] ws message raw", event.data);
     appendLog(event.data);
     try {
       const payload = JSON.parse(event.data);
@@ -360,7 +361,10 @@ function uploadFile({ preserveLog, isRetry } = {}) {
   }
 
   const baseUrl = resolveBaseUrl();
-  const uploadUrl = `${baseUrl}/upload`;
+  const uploadUrl =
+    isRetry && currentVideoId
+      ? `${baseUrl}/upload?videoId=${encodeURIComponent(currentVideoId)}`
+      : `${baseUrl}/upload`;
 
   uploadBtn.disabled = true;
   uploadInFlight = true;
@@ -385,6 +389,9 @@ function uploadFile({ preserveLog, isRetry } = {}) {
 
   const formData = new FormData();
   formData.append("file", file, file.name);
+  if (isRetry && currentVideoId) {
+    formData.append("videoId", currentVideoId);
+  }
 
   const xhr = new XMLHttpRequest();
   xhr.open("POST", uploadUrl, true);

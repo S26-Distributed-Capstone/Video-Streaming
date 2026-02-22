@@ -8,6 +8,9 @@ import static org.mockito.Mockito.*;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
+import com.distributed26.videostreaming.upload.db.SegmentUploadRepository;
+import com.distributed26.videostreaming.upload.db.VideoUploadRepository;
+import io.github.cdimascio.dotenv.Dotenv;
 import io.javalin.Javalin;
 import io.javalin.testtools.JavalinTest;
 import okhttp3.MediaType;
@@ -19,9 +22,14 @@ import org.junit.jupiter.api.condition.EnabledIf;
 import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
@@ -306,6 +314,77 @@ public class UploadHandlerIntegrationTest {
         }
     }
 
+    @Test
+    @Tag("integration")
+    @DisplayName("Should skip previously uploaded segments when retrying with same videoId")
+    void shouldSkipPreviouslyUploadedSegmentsOnRetry() throws Exception {
+        Dotenv dotenv = Dotenv.configure().directory("../").ignoreIfMissing().load();
+        String jdbcUrl = dotenv.get("PG_URL");
+        String username = dotenv.get("PG_USER");
+        String password = dotenv.get("PG_PASSWORD");
+        if (jdbcUrl == null || jdbcUrl.isBlank()) {
+            throw new IllegalStateException("PG_URL is not set");
+        }
+        if (username == null || username.isBlank()) {
+            throw new IllegalStateException("PG_USER is not set");
+        }
+
+        VideoUploadRepository videoRepo = new VideoUploadRepository(jdbcUrl, username, password);
+        SegmentUploadRepository segmentRepo = new SegmentUploadRepository(jdbcUrl, username, password);
+        String videoId = UUID.randomUUID().toString();
+        videoRepo.create(videoId, 0, "PROCESSING", "test-machine", "test-container");
+        segmentRepo.insert(videoId, 0);
+
+        List<String> uploadedKeys = new CopyOnWriteArrayList<>();
+        doAnswer(invocation -> {
+            String key = invocation.getArgument(0);
+            uploadedKeys.add(key);
+            return null;
+        }).when(mockStorageClient).uploadFile(anyString(), any(InputStream.class), anyLong());
+
+        UploadHandler handler = new UploadHandler(
+            mockStorageClient,
+            new TestJobTaskBus(),
+            videoRepo,
+            segmentRepo,
+            "test-machine",
+            "test-container"
+        );
+        Javalin app = Javalin.create();
+        app.post("/upload", handler::upload);
+
+        try {
+            JavalinTest.test(app, (server, client) -> {
+                byte[] videoBytes = Files.readAllBytes(testVideoFile);
+
+                RequestBody fileBody = RequestBody.create(
+                    videoBytes,
+                    MediaType.parse("video/mp4")
+                );
+
+                MultipartBody requestBody = new MultipartBody.Builder()
+                    .setType(MultipartBody.FORM)
+                    .addFormDataPart("file", "retry-test.mp4", fileBody)
+                    .addFormDataPart("videoId", videoId)
+                    .build();
+
+                try (var response = client.request("/upload", builder ->
+                    builder.post(requestBody))) {
+                    assertEquals(202, response.code());
+                }
+            });
+
+            await().atMost(Duration.ofSeconds(30))
+                .pollInterval(Duration.ofMillis(500))
+                .until(() -> uploadedKeys.stream().anyMatch(k -> k.endsWith(".m3u8")));
+
+            assertTrue(uploadedKeys.stream().noneMatch(k -> k.endsWith("output0.ts")),
+                "output0.ts should be skipped when already recorded");
+        } finally {
+            cleanupVideoRecords(jdbcUrl, username, password, videoId);
+        }
+    }
+
     /**
      * Creates a test video file using FFmpeg.
      * The video is 3 seconds long with color bars.
@@ -345,8 +424,27 @@ public class UploadHandlerIntegrationTest {
 
         return testVideo;
     }
-}
 
+    private void cleanupVideoRecords(String jdbcUrl, String username, String password, String videoId) {
+        if (jdbcUrl == null || username == null || videoId == null) {
+            return;
+        }
+        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password)) {
+            try (PreparedStatement ps = conn.prepareStatement(
+                "DELETE FROM segment_upload WHERE video_id = ?")) {
+                ps.setObject(1, UUID.fromString(videoId));
+                ps.executeUpdate();
+            }
+            try (PreparedStatement ps = conn.prepareStatement(
+                "DELETE FROM video_upload WHERE video_id = ?")) {
+                ps.setObject(1, UUID.fromString(videoId));
+                ps.executeUpdate();
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to clean up test data", e);
+        }
+    }
+}
 
 
 

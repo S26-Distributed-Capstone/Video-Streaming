@@ -127,11 +127,17 @@ public class UploadHandler {
         String filename = uploadedFile.filename();
         logger.info("Receiving upload for file: {}", filename);
 
-        // Create UUID for the video
-        String videoId = UUID.randomUUID().toString();
-        logger.info("Assigned video ID: {}", videoId);
+        final String videoId = resolveVideoId(ctx);
         if (videoUploadRepository != null) {
-            videoUploadRepository.create(videoId, 0, "PROCESSING", machineId, containerId);
+            int totalSegments = 0;
+            try {
+                totalSegments = videoUploadRepository.findByVideoId(videoId)
+                    .map(r -> r.getTotalSegments())
+                    .orElse(0);
+            } catch (Exception e) {
+                logger.warn("Failed to load existing upload record for videoId={}", videoId, e);
+            }
+            videoUploadRepository.create(videoId, totalSegments, "PROCESSING", machineId, containerId);
         }
 
         // We need to copy the uploaded file to a safe location because Javalin cleans up
@@ -190,6 +196,28 @@ public class UploadHandler {
     private record UploadResponse(String videoId, String uploadStatusUrl) {
     }
 
+    private String resolveVideoId(Context ctx) {
+        // Reuse caller-provided videoId when retrying, otherwise generate a new one
+        String requestedVideoId = ctx.formParam("videoId");
+        if (requestedVideoId == null || requestedVideoId.isBlank()) {
+            requestedVideoId = ctx.queryParam("videoId");
+        }
+        if (requestedVideoId != null && !requestedVideoId.isBlank()) {
+            try {
+                String videoId = UUID.fromString(requestedVideoId.trim()).toString();
+                logger.info("Using provided video ID: {}", videoId);
+                return videoId;
+            } catch (IllegalArgumentException e) {
+                String videoId = UUID.randomUUID().toString();
+                logger.warn("Invalid provided videoId '{}'; generated new video ID: {}", requestedVideoId, videoId);
+                return videoId;
+            }
+        }
+        String videoId = UUID.randomUUID().toString();
+        logger.info("Assigned video ID: {}", videoId);
+        return videoId;
+    }
+
     private void processVideo(String videoId, Path inputPath, long startTime) {
         Path tempOutput = null;
 
@@ -227,6 +255,15 @@ public class UploadHandler {
             // 4. Upload generated files to S3 as they become available
             // Using thread-safe Set in case future changes introduce concurrent access
             Set<Path> uploadedFiles = ConcurrentHashMap.newKeySet();
+            Set<Integer> uploadedSegmentNumbers = ConcurrentHashMap.newKeySet();
+            if (segmentUploadRepository != null) {
+                try {
+                    uploadedSegmentNumbers.addAll(segmentUploadRepository.findSegmentNumbers(videoId));
+                    logger.info("Loaded {} existing uploaded segments for videoId={}", uploadedSegmentNumbers.size(), videoId);
+                } catch (Exception e) {
+                    logger.warn("Failed to load existing segment uploads for videoId={}", videoId, e);
+                }
+            }
 
             logger.info("Starting segment monitoring loop for video: {}", videoId);
 
@@ -245,7 +282,7 @@ public class UploadHandler {
                     throw new RuntimeException("Processing timed out after " + processingTimeoutMillis + "ms");
                 }
 
-                int uploadedCount = uploadReadySegments(tempOutput, videoId, uploadedFiles, false);
+                int uploadedCount = uploadReadySegments(tempOutput, videoId, uploadedFiles, uploadedSegmentNumbers, false);
 
                 // Adaptive polling:
                 // If we found segments, we might find more soon (fast processing), so keep interval short/default.
@@ -291,7 +328,7 @@ public class UploadHandler {
             }
 
             // 5. Final sweep - upload remaining files (last segment + playlist)
-            uploadReadySegments(tempOutput, videoId, uploadedFiles, true);
+            uploadReadySegments(tempOutput, videoId, uploadedFiles, uploadedSegmentNumbers, true);
             int totalChunks = uploadedFiles.size();
             long duration = System.currentTimeMillis() - startTime;
             logger.info("Successfully segmented and uploaded video: {}. Uploaded {} chunks (including playlist). Total time: {} ms", videoId, totalChunks, duration);
@@ -303,6 +340,8 @@ public class UploadHandler {
 
         } catch (Exception e) {
             logger.error("Upload/Processing failed for video: " + videoId, e);
+            logger.warn("Recording failure for videoId={} machineId={} containerId={} reason={}",
+                videoId, machineId, containerId, e.getMessage());
             if (videoUploadRepository != null) {
                 videoUploadRepository.updateStatus(videoId, "FAILED");
             }
@@ -337,7 +376,13 @@ public class UploadHandler {
     /**
      * @return number of files uploaded in this pass
      */
-    private int uploadReadySegments(Path tempOutput, String videoId, Set<Path> uploadedFiles, boolean isFinalSweep) {
+    private int uploadReadySegments(
+            Path tempOutput,
+            String videoId,
+            Set<Path> uploadedFiles,
+            Set<Integer> uploadedSegmentNumbers,
+            boolean isFinalSweep
+    ) {
         List<Path> files;
         try (Stream<Path> stream = Files.list(tempOutput)) {
              files = stream.toList();
@@ -362,8 +407,17 @@ public class UploadHandler {
             Path path = tsFiles.get(i);
             if (!uploadedFiles.contains(path)) {
                 try {
+                    OptionalInt segmentNumber = extractSegmentNumber(path.getFileName().toString());
+                    if (segmentNumber.isPresent() && uploadedSegmentNumbers.contains(segmentNumber.getAsInt())) {
+                        logger.info("Skipping already uploaded segment {} for videoId={}", segmentNumber.getAsInt(), videoId);
+                        uploadedFiles.add(path);
+                        continue;
+                    }
                     uploadFile(path, videoId);
                     uploadedFiles.add(path);
+                    if (segmentNumber.isPresent()) {
+                        uploadedSegmentNumbers.add(segmentNumber.getAsInt());
+                    }
                     uploadedCount++;
                 } catch (Exception e) {
                     logger.error("Failed to upload segment: {}", path, e);
