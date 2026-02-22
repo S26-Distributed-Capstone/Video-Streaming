@@ -96,10 +96,16 @@ input[type="file"] {
   margin-top: 12px;
   padding: 10px 12px;
   border-radius: 10px;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.12);
+  color: #fca5a5;
+  font-weight: 600;
+}
+
+.done.success {
   border: 1px solid rgba(72, 187, 120, 0.4);
   background: rgba(72, 187, 120, 0.12);
   color: #68d391;
-  font-weight: 600;
 }
 
 button {

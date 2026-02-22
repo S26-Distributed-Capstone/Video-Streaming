@@ -21,12 +21,78 @@ let currentWsUrl = null;
 let processingComplete = false;
 let uploadInFlight = false;
 let failureTerminal = false;
+let containerDeathRetries = 0;
+let retryInFlight = false;
+let wsToken = 0;
+let retryTimerId = null;
+let retryCountdownId = null;
+const RETRY_TOTAL_SECONDS = 10;
+const RETRY_INTERVAL_MS = 1000;
+let retrySecondsLeft = 0;
+
+function clearRetryTimers() {
+  if (retryTimerId) {
+    clearTimeout(retryTimerId);
+    retryTimerId = null;
+  }
+  if (retryCountdownId) {
+    clearInterval(retryCountdownId);
+    retryCountdownId = null;
+  }
+}
+
+function updateRetryCountdown() {
+  if (!doneMessage) {
+    return;
+  }
+  const start = Date.now();
+  const targetSeconds = retrySecondsLeft;
+  const initialSeconds = Math.max(1, targetSeconds);
+  setDoneMessage(`Retrying... ${initialSeconds}s`, { success: false });
+  if (retryCountdownId) {
+    clearInterval(retryCountdownId);
+  }
+  retryCountdownId = setInterval(() => {
+    const elapsed = Date.now() - start;
+    const remaining = Math.max(1, targetSeconds - Math.floor(elapsed / 1000));
+    setDoneMessage(`Retrying... ${remaining}s`, { success: false });
+    if (remaining <= 1) {
+      clearInterval(retryCountdownId);
+      retryCountdownId = null;
+    }
+  }, 250);
+}
+
+function scheduleRetry(reason) {
+  if (retrySecondsLeft <= 0) {
+    retrySecondsLeft = RETRY_TOTAL_SECONDS;
+  }
+  if (retrySecondsLeft < 1) {
+    retryInFlight = false;
+    clearRetryTimers();
+    if (doneMessage) {
+      setDoneMessage("Upload failed.", { success: false });
+    }
+    return;
+  }
+  updateRetryCountdown();
+  const nextDelay = RETRY_INTERVAL_MS;
+  clearRetryTimers();
+  retryTimerId = setTimeout(() => {
+    uploadFile({ preserveLog: true, isRetry: true });
+  }, nextDelay);
+  retrySecondsLeft -= 1;
+  appendLog(`Retry scheduled in ${Math.ceil(nextDelay / 1000)}s (${reason})`, "error");
+}
 
 function resetStateForNextUpload() {
   totalSegments = null;
   completedSegments = 0;
   processingComplete = false;
   failureTerminal = false;
+  retryInFlight = false;
+  retrySecondsLeft = 0;
+  clearRetryTimers();
 }
 
 function appendLog(message, tone = "") {
@@ -44,7 +110,20 @@ function appendLog(message, tone = "") {
   logEl.scrollTop = logEl.scrollHeight;
 }
 
-function resetProgress() {
+function setDoneMessage(text, { success = false, hidden = false } = {}) {
+  if (!doneMessage) {
+    return;
+  }
+  doneMessage.textContent = text;
+  doneMessage.classList.toggle("success", success);
+  if (hidden) {
+    doneMessage.classList.add("hidden");
+  } else {
+    doneMessage.classList.remove("hidden");
+  }
+}
+
+function resetProgress({ preserveRetry } = {}) {
   uploadBar.style.width = "0%";
   uploadPercent.textContent = "";
   processingBar.style.width = "0%";
@@ -55,11 +134,12 @@ function resetProgress() {
   if (processingBlock) {
     processingBlock.classList.add("hidden");
   }
-  if (doneMessage) {
-    doneMessage.classList.add("hidden");
-    doneMessage.textContent = "Upload complete.";
+  if (doneMessage && !preserveRetry) {
+    setDoneMessage("Upload complete.", { success: true, hidden: true });
   }
-  resetStateForNextUpload();
+  if (!preserveRetry) {
+    resetStateForNextUpload();
+  }
 }
 
 function resolveBaseUrl() {
@@ -99,6 +179,9 @@ function connectWebSocket(wsUrl, videoId) {
     ws.close();
   }
   currentWsUrl = wsUrl;
+  wsToken += 1;
+  const token = wsToken;
+  console.log("[upload-ui] connectWebSocket", { wsUrl, videoId, token });
   if (wsUrlLabel) {
     wsUrlLabel.textContent = wsUrl;
   }
@@ -106,13 +189,23 @@ function connectWebSocket(wsUrl, videoId) {
   ws = new WebSocket(wsUrl);
 
   ws.addEventListener("open", () => {
+    if (token !== wsToken) {
+      return;
+    }
     appendLog("WebSocket connected");
+    retryInFlight = false;
+    clearRetryTimers();
+    setDoneMessage("Upload complete.", { success: true, hidden: true });
+    console.log("[upload-ui] ws open", { wsUrl, videoId, token });
     if (videoId) {
       ws.send(`job:${videoId}`);
     }
   });
 
   ws.addEventListener("message", (event) => {
+    if (token !== wsToken) {
+      return;
+    }
     appendLog(event.data);
     try {
       const payload = JSON.parse(event.data);
@@ -135,7 +228,7 @@ function connectWebSocket(wsUrl, videoId) {
           processingTrack.classList.remove("indeterminate");
           if (completedSegments >= totalSegments && doneMessage) {
             processingComplete = true;
-            doneMessage.classList.remove("hidden");
+            setDoneMessage("Upload complete.", { success: true });
             uploadBtn.disabled = false;
             uploadInFlight = false;
           }
@@ -145,14 +238,29 @@ function connectWebSocket(wsUrl, videoId) {
         return;
       }
       if (payload && payload.type === "failed") {
+        const reason = `${payload.reason || ""}`.trim();
+        const normalizedReason = reason.toLowerCase().replace(/\s+/g, "_");
+        const isContainerDied =
+          normalizedReason === "container_died" ||
+          (normalizedReason.includes("container") && normalizedReason.includes("die"));
+        if (isContainerDied) {
+          containerDeathRetries += 1;
+          retryInFlight = true;
+          uploadBtn.disabled = false;
+          uploadInFlight = false;
+          retrySecondsLeft = RETRY_TOTAL_SECONDS;
+          appendLog(`Container died. Retrying upload (${containerDeathRetries})...`, "error");
+          console.log("[upload-ui] scheduling retry", { containerDeathRetries, reason });
+          scheduleRetry("container_died");
+          return;
+        }
         failureTerminal = true;
         processingComplete = true;
         uploadBtn.disabled = false;
         uploadInFlight = false;
         resetStateForNextUpload();
         if (doneMessage) {
-          doneMessage.textContent = "Container died.";
-          doneMessage.classList.remove("hidden");
+          setDoneMessage("Upload failed.", { success: false });
         }
         return;
       }
@@ -165,7 +273,7 @@ function connectWebSocket(wsUrl, videoId) {
           processingTrack.classList.remove("indeterminate");
           if (completedSegments >= totalSegments && doneMessage) {
             processingComplete = true;
-            doneMessage.classList.remove("hidden");
+            setDoneMessage("Upload complete.", { success: true });
             uploadBtn.disabled = false;
             uploadInFlight = false;
           }
@@ -179,27 +287,31 @@ function connectWebSocket(wsUrl, videoId) {
   });
 
   ws.addEventListener("close", () => {
+    if (token !== wsToken) {
+      return;
+    }
     appendLog("WebSocket disconnected");
-    if (!processingComplete && !failureTerminal) {
+    if (!processingComplete && !failureTerminal && !retryInFlight) {
       uploadBtn.disabled = false;
       uploadInFlight = false;
       resetStateForNextUpload();
       if (doneMessage) {
-        doneMessage.textContent = "Upload failed.";
-        doneMessage.classList.remove("hidden");
+        setDoneMessage("Upload failed.", { success: false });
       }
     }
   });
 
   ws.addEventListener("error", () => {
+    if (token !== wsToken) {
+      return;
+    }
     appendLog("WebSocket error", "error");
-    if (!processingComplete && !failureTerminal) {
+    if (!processingComplete && !failureTerminal && !retryInFlight) {
       uploadBtn.disabled = false;
       uploadInFlight = false;
       resetStateForNextUpload();
       if (doneMessage) {
-        doneMessage.textContent = "Upload failed.";
-        doneMessage.classList.remove("hidden");
+        setDoneMessage("Upload failed.", { success: false });
       }
     }
   });
@@ -236,10 +348,11 @@ async function fetchUploadInfo(baseUrl, videoId, uploadStatusUrl) {
   }
 }
 
-function uploadFile() {
+function uploadFile({ preserveLog, isRetry } = {}) {
   if (uploadInFlight || uploadBtn.disabled) {
     return;
   }
+  console.log("[upload-ui] uploadFile", { isRetry, preserveLog });
   const file = fileInput.files[0];
   if (!file) {
     appendLog("Select a video file before uploading.", "error");
@@ -251,14 +364,22 @@ function uploadFile() {
 
   uploadBtn.disabled = true;
   uploadInFlight = true;
-  resetProgress();
+  resetProgress({ preserveRetry: isRetry });
+  if (!isRetry) {
+    containerDeathRetries = 0;
+    retryInFlight = false;
+    retrySecondsLeft = 0;
+    clearRetryTimers();
+  } else {
+    retryInFlight = true;
+  }
   if (responseBox) {
     responseBox.textContent = "—";
   }
   if (infoBox) {
     infoBox.textContent = "—";
   }
-  if (logEl) {
+  if (logEl && !preserveLog) {
     logEl.textContent = "";
   }
 
@@ -283,15 +404,17 @@ function uploadFile() {
     } catch (err) {
       payload = { raw: xhr.responseText };
     }
+    console.log("[upload-ui] upload response", { status: xhr.status, payload });
     if (responseBox) {
       renderJson(responseBox, payload);
     }
 
     if (xhr.status !== 202) {
+      retryInFlight = false;
+      clearRetryTimers();
       appendLog(`Upload failed: ${xhr.status}`, "error");
       if (doneMessage) {
-        doneMessage.textContent = "Upload failed.";
-        doneMessage.classList.remove("hidden");
+        setDoneMessage("Upload failed.", { success: false });
       }
       uploadBtn.disabled = false;
       uploadInFlight = false;
@@ -303,14 +426,21 @@ function uploadFile() {
     if (!currentVideoId) {
       appendLog("Upload response missing videoId", "error");
       if (doneMessage) {
-        doneMessage.textContent = "Upload failed.";
-        doneMessage.classList.remove("hidden");
+        setDoneMessage("Upload failed.", { success: false });
       }
       uploadBtn.disabled = false;
       uploadInFlight = false;
+      retryInFlight = false;
+      clearRetryTimers();
       resetStateForNextUpload();
       return;
     }
+
+    if (doneMessage) {
+      setDoneMessage("Upload complete.", { success: true, hidden: true });
+    }
+    clearRetryTimers();
+    retryInFlight = false;
 
     if (processingBlock) {
       processingBlock.classList.remove("hidden");
@@ -328,11 +458,15 @@ function uploadFile() {
   xhr.addEventListener("error", () => {
     uploadBtn.disabled = false;
     uploadInFlight = false;
+    if (retryInFlight) {
+      scheduleRetry("network_error");
+      return;
+    }
     appendLog("Upload failed due to a network error.", "error");
+    clearRetryTimers();
     resetStateForNextUpload();
     if (doneMessage) {
-      doneMessage.textContent = "Upload failed.";
-      doneMessage.classList.remove("hidden");
+      setDoneMessage("Upload failed.", { success: false });
     }
   });
 
