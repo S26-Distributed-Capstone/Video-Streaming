@@ -143,6 +143,7 @@ public class UploadHandler {
         // We need to copy the uploaded file to a safe location because Javalin cleans up
         // the uploaded file once the request handler returns.
         Path inputPath;
+        long saveStart = System.currentTimeMillis();
         try {
             inputPath = Files.createTempFile("upload-" + videoId, ".tmp");
             try (InputStream is = uploadedFile.content()) {
@@ -153,13 +154,18 @@ public class UploadHandler {
             ctx.status(500).result("Failed to save uploaded file");
             return;
         }
+        logger.info("Saved upload videoId={} bytes={} in {} ms",
+            videoId, inputPath.toFile().length(), System.currentTimeMillis() - saveStart);
 
         if (videoUploadRepository != null) {
             try {
+                long estimateStart = System.currentTimeMillis();
                 int estimatedSegments = estimateTotalSegments(inputPath);
                 if (estimatedSegments > 0) {
                     videoUploadRepository.updateTotalSegments(videoId, estimatedSegments);
                 }
+                logger.info("Estimated total segments videoId={} totalSegments={} in {} ms",
+                    videoId, estimatedSegments, System.currentTimeMillis() - estimateStart);
             } catch (Exception e) {
                 logger.warn("Failed to estimate total segments for video: {}", videoId, e);
             }
@@ -220,6 +226,7 @@ public class UploadHandler {
 
     private void processVideo(String videoId, Path inputPath, long startTime) {
         Path tempOutput = null;
+        long processStart = System.currentTimeMillis();
 
         try {
             // 2. Create temp directory for segments
@@ -243,6 +250,7 @@ public class UploadHandler {
                     .done();
 
             logger.info("Starting FFmpeg segmentation for video: {}", videoId);
+            long ffmpegStart = System.currentTimeMillis();
 
             // Start FFmpeg process
             FFmpegExecutor executor = new FFmpegExecutor(ffmpeg, ffprobe);
@@ -282,7 +290,12 @@ public class UploadHandler {
                     throw new RuntimeException("Processing timed out after " + processingTimeoutMillis + "ms");
                 }
 
+                long batchStart = System.currentTimeMillis();
                 int uploadedCount = uploadReadySegments(tempOutput, videoId, uploadedFiles, uploadedSegmentNumbers, false);
+                if (uploadedCount > 0) {
+                    logger.info("Uploaded {} segments in {} ms (poll batch) videoId={}",
+                        uploadedCount, System.currentTimeMillis() - batchStart, videoId);
+                }
 
                 // Adaptive polling:
                 // If we found segments, we might find more soon (fast processing), so keep interval short/default.
@@ -311,6 +324,8 @@ public class UploadHandler {
                  // Ensure job is stopped if an exception occurred during execution
                 throw new RuntimeException("FFmpeg processing failed", e.getCause());
             }
+            logger.info("FFmpeg segmentation completed videoId={} in {} ms",
+                videoId, System.currentTimeMillis() - ffmpegStart);
 
             long totalSegments = 0;
             try (Stream<Path> stream = Files.list(tempOutput)) {
@@ -328,7 +343,10 @@ public class UploadHandler {
             }
 
             // 5. Final sweep - upload remaining files (last segment + playlist)
+            long finalSweepStart = System.currentTimeMillis();
             uploadReadySegments(tempOutput, videoId, uploadedFiles, uploadedSegmentNumbers, true);
+            logger.info("Final sweep completed videoId={} in {} ms",
+                videoId, System.currentTimeMillis() - finalSweepStart);
             int totalChunks = uploadedFiles.size();
             long duration = System.currentTimeMillis() - startTime;
             logger.info("Successfully segmented and uploaded video: {}. Uploaded {} chunks (including playlist). Total time: {} ms", videoId, totalChunks, duration);
@@ -361,6 +379,8 @@ public class UploadHandler {
                         .forEach(File::delete);
                 } catch (IOException ignored) {}
             }
+            logger.info("Upload pipeline finished videoId={} in {} ms",
+                videoId, System.currentTimeMillis() - processStart);
         }
     }
 
