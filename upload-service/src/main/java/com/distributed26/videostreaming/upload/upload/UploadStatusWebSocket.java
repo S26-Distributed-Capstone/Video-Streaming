@@ -72,10 +72,10 @@ public class UploadStatusWebSocket {
             ctx.closeSession();
             return;
         }
-        logger.info("WS bind jobId={}", jobId);
+        logger.debug("WS bind jobId={}", jobId);
         JobTaskListener listener = event -> {
             try {
-                logger.info("WS send event jobId={} type={}", event.getJobId(), describeEventType(event));
+                logger.debug("WS send event jobId={} type={}", event.getJobId(), describeEventType(event));
                 ctx.send(objectMapper.writeValueAsString(event));
             } catch (JsonProcessingException e) {
                 ctx.send("{\"error\":\"serialization_failed\"}");

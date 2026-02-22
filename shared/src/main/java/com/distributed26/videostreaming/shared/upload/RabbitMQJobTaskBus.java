@@ -94,7 +94,7 @@ public class RabbitMQJobTaskBus implements JobTaskBus, AutoCloseable {
             String jobId = event.getJobId();
             String statusKey = "upload.status." + jobId;
 
-            logger.info("Publishing status event jobId={} type={}", jobId, describeEventType(event));
+            logger.debug("Publishing status event jobId={} type={}", jobId, describeEventType(event));
             channel.basicPublish(exchange, statusKey, null, body);
         } catch (IOException e) {
             throw new RuntimeException("Failed to publish job task event", e);
@@ -147,7 +147,7 @@ public class RabbitMQJobTaskBus implements JobTaskBus, AutoCloseable {
                     logger.debug("Status event jobId={} type={}", jobId, type);
                 }
                 JobTaskEvent event = toEvent(node);
-                logger.info("Dispatching status event jobId={} type={}", jobId, describeEventType(event));
+                logger.debug("Dispatching status event jobId={} type={}", jobId, describeEventType(event));
                 List<JobTaskListener> listeners = listenersByJobId.get(jobId);
                 if (listeners == null) {
                     return;

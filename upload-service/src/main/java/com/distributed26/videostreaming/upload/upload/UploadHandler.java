@@ -340,7 +340,7 @@ public class UploadHandler {
 
         } catch (Exception e) {
             logger.error("Upload/Processing failed for video: " + videoId, e);
-            logger.warn("Emitting failure for videoId={} machineId={} containerId={} reason={}",
+            logger.warn("Recording failure for videoId={} machineId={} containerId={} reason={}",
                 videoId, machineId, containerId, e.getMessage());
             if (videoUploadRepository != null) {
                 videoUploadRepository.updateStatus(videoId, "FAILED");

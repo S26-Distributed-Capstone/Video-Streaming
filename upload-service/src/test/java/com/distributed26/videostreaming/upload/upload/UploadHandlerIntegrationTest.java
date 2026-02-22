@@ -315,6 +315,7 @@ public class UploadHandlerIntegrationTest {
     }
 
     @Test
+    @Tag("integration")
     @DisplayName("Should skip previously uploaded segments when retrying with same videoId")
     void shouldSkipPreviouslyUploadedSegmentsOnRetry() throws Exception {
         Dotenv dotenv = Dotenv.configure().directory("../").ignoreIfMissing().load();
