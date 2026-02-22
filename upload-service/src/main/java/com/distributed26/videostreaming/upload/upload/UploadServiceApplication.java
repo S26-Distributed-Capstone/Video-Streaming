@@ -54,13 +54,15 @@ public class UploadServiceApplication {
         VideoUploadRepository videoUploadRepository = createVideoUploadRepository();
         com.distributed26.videostreaming.upload.db.SegmentUploadRepository segmentUploadRepository = createSegmentUploadRepository();
         String machineId = resolveMachineId();
+        String containerId = resolveContainerId();
 
         UploadHandler uploadHandler = new UploadHandler(
                 storageClient,
                 jobTaskBus,
                 videoUploadRepository,
                 segmentUploadRepository,
-                machineId
+                machineId,
+                containerId
         );
 
         Javalin app = Javalin.create(config -> {
@@ -151,14 +153,22 @@ public class UploadServiceApplication {
     private static final io.github.cdimascio.dotenv.Dotenv DOTENV = io.github.cdimascio.dotenv.Dotenv.configure().directory("./").ignoreIfMissing().load();
 
     private static String resolveMachineId() {
-        String machineId = System.getenv("MACHINE_ID");
-        if (machineId != null && !machineId.isBlank()) {
-            return machineId;
+        String machineId = DOTENV.get("MACHINE_ID");
+        if (machineId == null || machineId.isBlank()) {
+            machineId = System.getenv("MACHINE_ID");
         }
-        
-        machineId = DOTENV.get("MACHINE_ID");
-
+        if (machineId == null || machineId.isBlank()) {
+            return null;
+        }
         return machineId;
+    }
+
+    private static String resolveContainerId() {
+        String containerId = DOTENV.get("CONTAINER_ID");
+        if (containerId != null && !containerId.isBlank()) {
+            return containerId;
+        }
+        return DOTENV.get("HOSTNAME");
     }
 
 	static void startUploadApp(int uploadPort) {

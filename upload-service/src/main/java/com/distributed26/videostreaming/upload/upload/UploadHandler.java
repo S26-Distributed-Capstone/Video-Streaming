@@ -2,8 +2,8 @@ package com.distributed26.videostreaming.upload.upload;
 
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
 import com.distributed26.videostreaming.shared.upload.JobTaskBus;
-import com.distributed26.videostreaming.shared.upload.JobTaskEvent;
-import com.distributed26.videostreaming.shared.upload.UploadMetaEvent;
+import com.distributed26.videostreaming.shared.upload.events.JobTaskEvent;
+import com.distributed26.videostreaming.shared.upload.events.UploadMetaEvent;
 import com.distributed26.videostreaming.upload.db.SegmentUploadRepository;
 import com.distributed26.videostreaming.upload.db.VideoUploadRepository;
 import io.javalin.http.Context;
@@ -44,6 +44,7 @@ public class UploadHandler {
     private final VideoUploadRepository videoUploadRepository;
     private final SegmentUploadRepository segmentUploadRepository;
     private final String machineId;
+    private final String containerId;
     private final int segmentDuration;
     private final ExecutorService ffmpegExecutor;
     private final ExecutorService supervisionExecutor;
@@ -51,7 +52,7 @@ public class UploadHandler {
     private final long pollingIntervalMillis;
 
     public UploadHandler(ObjectStorageClient storageClient, JobTaskBus jobTaskBus) {
-        this(storageClient, jobTaskBus, null, null, null);
+        this(storageClient, jobTaskBus, null, null, null, null);
     }
 
     public UploadHandler(
@@ -60,7 +61,7 @@ public class UploadHandler {
             VideoUploadRepository videoUploadRepository,
             String machineId
     ) {
-        this(storageClient, jobTaskBus, videoUploadRepository, null, machineId);
+        this(storageClient, jobTaskBus, videoUploadRepository, null, machineId, null);
     }
 
     public UploadHandler(
@@ -70,12 +71,24 @@ public class UploadHandler {
             SegmentUploadRepository segmentUploadRepository,
             String machineId
     ) {
+        this(storageClient, jobTaskBus, videoUploadRepository, segmentUploadRepository, machineId, null);
+    }
+
+    public UploadHandler(
+            ObjectStorageClient storageClient,
+            JobTaskBus jobTaskBus,
+            VideoUploadRepository videoUploadRepository,
+            SegmentUploadRepository segmentUploadRepository,
+            String machineId,
+            String containerId
+    ) {
         Dotenv dotenv = Dotenv.configure().directory("./").ignoreIfMissing().load();
         this.storageClient = storageClient;
         this.jobTaskBus = Objects.requireNonNull(jobTaskBus, "jobTaskBus is null");
         this.videoUploadRepository = videoUploadRepository;
         this.segmentUploadRepository = segmentUploadRepository;
         this.machineId = machineId;
+        this.containerId = containerId;
 
         this.segmentDuration = dotenv.get("CHUNK_DURATION_SECONDS") == null ? 10 : Integer.parseInt(dotenv.get("CHUNK_DURATION_SECONDS"));
         logger.info("CHUNK_DURATION_SECONDS resolved to {}", this.segmentDuration);
@@ -118,7 +131,7 @@ public class UploadHandler {
         String videoId = UUID.randomUUID().toString();
         logger.info("Assigned video ID: {}", videoId);
         if (videoUploadRepository != null) {
-            videoUploadRepository.create(videoId, 0, "PROCESSING", machineId);
+            videoUploadRepository.create(videoId, 0, "PROCESSING", machineId, containerId);
         }
 
         // We need to copy the uploaded file to a safe location because Javalin cleans up
