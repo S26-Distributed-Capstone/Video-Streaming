@@ -6,6 +6,8 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.UUID;
 
 public class SegmentUploadRepository {
@@ -71,6 +73,23 @@ public class SegmentUploadRepository {
             }
         } catch (SQLException e) {
             throw new RuntimeException("Failed to count segment_upload", e);
+        }
+    }
+
+    public Set<Integer> findSegmentNumbers(String videoId) {
+        String sql = "SELECT segment_number FROM segment_upload WHERE video_id = ?";
+        Set<Integer> segments = new HashSet<>();
+        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setObject(1, UUID.fromString(videoId));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    segments.add(rs.getInt(1));
+                }
+            }
+            return segments;
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to list segment_upload", e);
         }
     }
 }

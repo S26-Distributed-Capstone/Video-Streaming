@@ -94,6 +94,7 @@ public class RabbitMQJobTaskBus implements JobTaskBus, AutoCloseable {
             String jobId = event.getJobId();
             String statusKey = "upload.status." + jobId;
 
+            logger.info("Publishing status event jobId={} type={}", jobId, describeEventType(event));
             channel.basicPublish(exchange, statusKey, null, body);
         } catch (IOException e) {
             throw new RuntimeException("Failed to publish job task event", e);
@@ -146,6 +147,7 @@ public class RabbitMQJobTaskBus implements JobTaskBus, AutoCloseable {
                     logger.debug("Status event jobId={} type={}", jobId, type);
                 }
                 JobTaskEvent event = toEvent(node);
+                logger.info("Dispatching status event jobId={} type={}", jobId, describeEventType(event));
                 List<JobTaskListener> listeners = listenersByJobId.get(jobId);
                 if (listeners == null) {
                     return;
@@ -174,6 +176,16 @@ public class RabbitMQJobTaskBus implements JobTaskBus, AutoCloseable {
         }
         String taskId = node.path("taskId").asText("task");
         return new JobTaskEvent(jobId, taskId);
+    }
+
+    private String describeEventType(JobTaskEvent event) {
+        if (event instanceof UploadFailedEvent failed) {
+            return failed.getType();
+        }
+        if (event instanceof UploadMetaEvent) {
+            return "meta";
+        }
+        return "task";
     }
 
     private static String getEnvOrDotenv(Dotenv dotenv, String key, String defaultValue) {

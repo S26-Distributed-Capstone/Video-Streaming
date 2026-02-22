@@ -26,7 +26,9 @@ import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -199,6 +201,66 @@ public class UploadHandlerTest {
 
             // The error handling happens asynchronously - just ensure no exceptions leak
             Thread.sleep(1000);
+        }
+    }
+
+    @Nested
+    @DisplayName("Retry Skip Tests")
+    class RetrySkipTests {
+
+        @Test
+        @DisplayName("Should skip uploading segments already recorded for the video")
+        void shouldSkipPreviouslyUploadedSegments() throws Exception {
+            ArgumentCaptor<String> keyCaptor = ArgumentCaptor.forClass(String.class);
+            doNothing().when(mockStorageClient).uploadFile(keyCaptor.capture(), any(InputStream.class), anyLong());
+
+            Set<Integer> existingSegments = new HashSet<>();
+            existingSegments.add(0);
+            FakeSegmentUploadRepository fakeRepo = new FakeSegmentUploadRepository(existingSegments);
+
+            UploadHandler handler = new UploadHandler(
+                mockStorageClient,
+                new TestJobTaskBus(),
+                null,
+                fakeRepo,
+                "test-machine"
+            );
+
+            Path tempDir = Files.createTempDirectory("upload-test-segments-");
+            try {
+                Path seg0 = tempDir.resolve("output0.ts");
+                Path seg1 = tempDir.resolve("output1.ts");
+                Path playlist = tempDir.resolve("output.m3u8");
+                Files.writeString(seg0, "seg0");
+                Files.writeString(seg1, "seg1");
+                Files.writeString(playlist, "#EXTM3U");
+
+                Set<Path> uploadedFiles = new HashSet<>();
+                Set<Integer> uploadedSegmentNumbers = new HashSet<>(existingSegments);
+
+                var method = UploadHandler.class.getDeclaredMethod(
+                    "uploadReadySegments",
+                    Path.class,
+                    String.class,
+                    Set.class,
+                    Set.class,
+                    boolean.class
+                );
+                method.setAccessible(true);
+                String videoId = "123e4567-e89b-12d3-a456-426614174000";
+                method.invoke(handler, tempDir, videoId, uploadedFiles, uploadedSegmentNumbers, true);
+
+                List<String> uploadedKeys = keyCaptor.getAllValues();
+                Set<Integer> uploadedSegments = extractSegmentNumbersFromKeys(uploadedKeys);
+
+                assertFalse(uploadedSegments.contains(0), "segment 0 should be skipped");
+                assertTrue(uploadedSegments.contains(1), "segment 1 should be uploaded");
+                assertTrue(uploadedSegmentNumbers.contains(1), "uploaded segment numbers should be updated");
+            } finally {
+                try (var walk = Files.walk(tempDir)) {
+                    walk.sorted((a, b) -> b.compareTo(a)).forEach(path -> path.toFile().delete());
+                }
+            }
         }
     }
 
@@ -413,5 +475,49 @@ public class UploadHandlerTest {
     private static String extractVideoId(String body) throws Exception {
         JsonNode json = objectMapper.readTree(body);
         return json.get("videoId").asText();
+    }
+
+    private static Set<Integer> extractSegmentNumbersFromKeys(List<String> keys) {
+        Set<Integer> segments = new HashSet<>();
+        for (String key : keys) {
+            String fileName = key.substring(key.lastIndexOf('/') + 1);
+            if (!fileName.endsWith(".ts")) {
+                continue;
+            }
+            java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("(\\d+)").matcher(fileName);
+            int last = -1;
+            while (matcher.find()) {
+                last = Integer.parseInt(matcher.group(1));
+            }
+            if (last >= 0) {
+                segments.add(last);
+            }
+        }
+        return segments;
+    }
+
+    private static class FakeSegmentUploadRepository extends com.distributed26.videostreaming.upload.db.SegmentUploadRepository {
+        private final Set<Integer> existing;
+        private final Set<Integer> inserted = new HashSet<>();
+
+        FakeSegmentUploadRepository(Set<Integer> existing) {
+            super("jdbc:fake", "user", "pass");
+            this.existing = new HashSet<>(existing);
+        }
+
+        @Override
+        public Set<Integer> findSegmentNumbers(String videoId) {
+            return new HashSet<>(existing);
+        }
+
+        @Override
+        public void insert(String videoId, int segmentNumber) {
+            inserted.add(segmentNumber);
+        }
+
+        @Override
+        public int countByVideoId(String videoId) {
+            return existing.size() + inserted.size();
+        }
     }
 }
