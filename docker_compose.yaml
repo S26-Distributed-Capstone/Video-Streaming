@@ -121,6 +121,7 @@ services:
       UPDATE_DB_STATUS: "true"
       PYTHONUNBUFFERED: "1"
       DEBUG_EVENTS: "true"
+      DEDUP_WINDOW_SECONDS: "3"
     entrypoint: ["python3", "/app/node-watcher/watcher.py"]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
