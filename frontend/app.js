@@ -46,14 +46,15 @@ function updateRetryCountdown() {
     return;
   }
   const start = Date.now();
-  const initialSeconds = Math.max(1, retrySecondsLeft);
+  const targetSeconds = retrySecondsLeft;
+  const initialSeconds = Math.max(1, targetSeconds);
   setDoneMessage(`Retrying... ${initialSeconds}s`, { success: false });
   if (retryCountdownId) {
     clearInterval(retryCountdownId);
   }
   retryCountdownId = setInterval(() => {
     const elapsed = Date.now() - start;
-    const remaining = Math.max(1, retrySecondsLeft - Math.floor(elapsed / 1000));
+    const remaining = Math.max(1, targetSeconds - Math.floor(elapsed / 1000));
     setDoneMessage(`Retrying... ${remaining}s`, { success: false });
     if (remaining <= 1) {
       clearInterval(retryCountdownId);
@@ -66,7 +67,7 @@ function scheduleRetry(reason) {
   if (retrySecondsLeft <= 0) {
     retrySecondsLeft = RETRY_TOTAL_SECONDS;
   }
-  if (retrySecondsLeft <= 1) {
+  if (retrySecondsLeft < 1) {
     retryInFlight = false;
     clearRetryTimers();
     if (doneMessage) {
@@ -188,6 +189,9 @@ function connectWebSocket(wsUrl, videoId) {
   ws = new WebSocket(wsUrl);
 
   ws.addEventListener("open", () => {
+    if (token !== wsToken) {
+      return;
+    }
     appendLog("WebSocket connected");
     retryInFlight = false;
     clearRetryTimers();
