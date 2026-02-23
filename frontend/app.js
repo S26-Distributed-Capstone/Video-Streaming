@@ -12,6 +12,11 @@ const processingTrack = document.getElementById("processingTrack");
 const processingBlock = document.getElementById("processingBlock");
 const doneMessage = document.getElementById("doneMessage");
 const reconnectBtn = document.getElementById("reconnectBtn");
+const player = document.getElementById("player");
+const playerStatus = document.getElementById("playerStatus");
+const playBtn = document.getElementById("playBtn");
+const refreshReadyBtn = document.getElementById("refreshReadyBtn");
+const readyList = document.getElementById("readyList");
 
 let ws = null;
 let currentVideoId = null;
@@ -29,6 +34,8 @@ let retryCountdownId = null;
 const RETRY_TOTAL_SECONDS = 10;
 const RETRY_INTERVAL_MS = 1000;
 let retrySecondsLeft = 0;
+let hlsInstance = null;
+let selectedVideoId = null;
 
 function clearRetryTimers() {
   if (retryTimerId) {
@@ -93,6 +100,7 @@ function resetStateForNextUpload() {
   retryInFlight = false;
   retrySecondsLeft = 0;
   clearRetryTimers();
+  teardownPlayer();
 }
 
 function appendLog(message, tone = "") {
@@ -120,6 +128,135 @@ function setDoneMessage(text, { success = false, hidden = false } = {}) {
     doneMessage.classList.add("hidden");
   } else {
     doneMessage.classList.remove("hidden");
+  }
+}
+
+function setPlayerStatus(text, { success = false, hidden = false } = {}) {
+  if (!playerStatus) {
+    return;
+  }
+  playerStatus.textContent = text;
+  playerStatus.classList.toggle("success", success);
+  if (hidden) {
+    playerStatus.classList.add("hidden");
+  } else {
+    playerStatus.classList.remove("hidden");
+  }
+}
+
+function deriveStreamingUrl(baseUrl, videoId) {
+  const scheme = baseUrl.startsWith("https://") ? "https" : "http";
+  const host = baseUrl.replace(/^https?:\/\//, "").replace(/:\d+$/, "");
+  const streamingPort = "8082";
+  return `${scheme}://${host}:${streamingPort}/stream/${videoId}/manifest`;
+}
+
+function deriveReadyListUrl(baseUrl) {
+  const scheme = baseUrl.startsWith("https://") ? "https" : "http";
+  const host = baseUrl.replace(/^https?:\/\//, "").replace(/:\d+$/, "");
+  const streamingPort = "8082";
+  return `${scheme}://${host}:${streamingPort}/stream/ready`;
+}
+
+function teardownPlayer() {
+  if (hlsInstance) {
+    hlsInstance.destroy();
+    hlsInstance = null;
+  }
+  if (player) {
+    player.removeAttribute("src");
+    player.load();
+  }
+  setPlayerStatus("", { hidden: true });
+}
+
+function startStreamingPlayback(videoId) {
+  if (!player) {
+    return;
+  }
+  const baseUrl = resolveBaseUrl();
+  const manifestUrl = deriveStreamingUrl(baseUrl, videoId);
+  teardownPlayer();
+    setPlayerStatus("", { hidden: true });
+
+  if (window.Hls && window.Hls.isSupported()) {
+    hlsInstance = new window.Hls();
+    hlsInstance.loadSource(manifestUrl);
+    hlsInstance.attachMedia(player);
+    hlsInstance.on(window.Hls.Events.MANIFEST_PARSED, () => {
+      player.play().catch(() => {});
+      setPlayerStatus("", { hidden: true });
+    });
+    hlsInstance.on(window.Hls.Events.ERROR, () => {
+      setPlayerStatus("Streaming error.", { success: false });
+    });
+    return;
+  }
+
+  if (player.canPlayType("application/vnd.apple.mpegurl")) {
+    player.src = manifestUrl;
+    player.addEventListener("loadedmetadata", () => {
+      player.play().catch(() => {});
+      setPlayerStatus("", { hidden: true });
+    }, { once: true });
+    player.addEventListener("error", () => {
+      setPlayerStatus("Streaming error.", { success: false });
+    }, { once: true });
+    return;
+  }
+
+  setPlayerStatus("Streaming not supported in this browser.", { success: false });
+}
+
+function setSelectedVideoId(videoId) {
+  selectedVideoId = videoId;
+  if (!readyList) {
+    return;
+  }
+  Array.from(readyList.querySelectorAll("li")).forEach((item) => {
+    item.classList.toggle("selected", item.dataset.videoId === videoId);
+  });
+}
+
+function renderReadyList(videoIds) {
+  if (!readyList) {
+    return;
+  }
+  readyList.textContent = "";
+  if (!Array.isArray(videoIds) || videoIds.length === 0) {
+    const empty = document.createElement("li");
+    empty.className = "muted";
+    empty.textContent = "No completed videos yet.";
+    readyList.appendChild(empty);
+    return;
+  }
+  videoIds.forEach((videoId) => {
+    const item = document.createElement("li");
+    item.dataset.videoId = videoId;
+    item.textContent = videoId;
+    item.addEventListener("click", () => setSelectedVideoId(videoId));
+    readyList.appendChild(item);
+  });
+  if (currentVideoId && videoIds.includes(currentVideoId)) {
+    setSelectedVideoId(currentVideoId);
+  } else if (!selectedVideoId && videoIds.length > 0) {
+    setSelectedVideoId(videoIds[0]);
+  }
+}
+
+async function refreshReadyList() {
+  const baseUrl = resolveBaseUrl();
+  const readyUrl = deriveReadyListUrl(baseUrl);
+  try {
+    const resp = await fetch(readyUrl);
+    if (!resp.ok) {
+      setPlayerStatus(`Failed to load ready videos (${resp.status})`, { success: false });
+      return;
+    }
+    const videoIds = await resp.json();
+    renderReadyList(videoIds);
+  } catch (err) {
+    setPlayerStatus("Failed to load ready videos.", { success: false });
   }
 }
 
@@ -232,6 +369,8 @@ function connectWebSocket(wsUrl, videoId) {
             setDoneMessage("Upload complete.", { success: true });
             uploadBtn.disabled = false;
             uploadInFlight = false;
+            refreshReadyList();
+            setPlayerStatus("Ready to play. Select a video and press Play.", { success: true });
           }
         } else {
           processingPercent.textContent = `${completedSegments} events`;
@@ -277,6 +416,8 @@ function connectWebSocket(wsUrl, videoId) {
             setDoneMessage("Upload complete.", { success: true });
             uploadBtn.disabled = false;
             uploadInFlight = false;
+            refreshReadyList();
+            setPlayerStatus("Ready to play. Select a video and press Play.", { success: true });
           }
         } else {
           processingPercent.textContent = `${completedSegments} events`;
@@ -457,6 +598,7 @@ function uploadFile({ preserveLog, isRetry } = {}) {
     }
 
     await fetchUploadInfo(baseUrl, currentVideoId, payload.uploadStatusUrl);
+    setPlayerStatus("Ready list updates when processing completes.", { success: true });
 
     const wsUrl = payload.uploadStatusUrl || deriveWsUrl(baseUrl, currentVideoId);
     connectWebSocket(wsUrl, currentVideoId);
@@ -484,3 +626,17 @@ uploadBtn.addEventListener("click", uploadFile);
 if (reconnectBtn) {
   reconnectBtn.addEventListener("click", reconnect);
 }
+if (playBtn) {
+  playBtn.addEventListener("click", () => {
+    if (!selectedVideoId) {
+      setPlayerStatus("Select a video ID to play.", { success: false });
+      return;
+    }
+    startStreamingPlayback(selectedVideoId);
+  });
+}
+if (refreshReadyBtn) {
+  refreshReadyBtn.addEventListener("click", refreshReadyList);
+}
+
+refreshReadyList();

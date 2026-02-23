@@ -34,6 +34,7 @@ This starts:
 - **PostgreSQL** at `localhost:5432`
 - **Upload Service** at `http://localhost:8080` (container `upload-service`)
 - **Status Service** at `http://localhost:8081` (container `status-service`)
+- **Streaming Service** at `http://localhost:8082` (container `streaming-service`)
 
 ### 3) Postgres Schema (Auto-Loaded)
 
@@ -61,6 +62,11 @@ docker compose -f docker_compose.yaml up -d --build
 
 With Docker Compose running, open:
 - `http://localhost:8080/`
+
+To stream a completed video:
+1. Upload a video and wait until it is marked `COMPLETED`.
+2. In the UI, use the "Ready Video IDs" list and click **Play Selected**.
+3. The player uses HLS (Safari native, `hls.js` for other browsers) and streams from `http://localhost:8082`.
 
 ## Notes
 
