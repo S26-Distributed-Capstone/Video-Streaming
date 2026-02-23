@@ -10,8 +10,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 public class VideoStatusRepository {
+    private static final Logger logger = LogManager.getLogger(VideoStatusRepository.class);
     private final String jdbcUrl;
     private final String username;
     private final String password;

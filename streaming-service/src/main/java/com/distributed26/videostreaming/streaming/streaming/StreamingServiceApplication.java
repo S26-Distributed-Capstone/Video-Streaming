@@ -53,6 +53,9 @@ public class StreamingServiceApplication {
 
         // Route stubs - logic will be implemented in next steps.
         app.get("/stream/{videoId}/manifest", ctx -> {
+            if (!validateVideoId(ctx)) {
+                return;
+            }
             if (!requireCompleted(ctx, videoStatusRepository)) {
                 return;
             }
@@ -72,11 +75,18 @@ public class StreamingServiceApplication {
             }
         });
         app.get("/stream/{videoId}/segment/{segmentId}", ctx -> {
+            if (!validateVideoId(ctx)) {
+                return;
+            }
             if (!requireCompleted(ctx, videoStatusRepository)) {
                 return;
             }
             String videoId = ctx.pathParam("videoId");
             String segmentId = ctx.pathParam("segmentId");
+            if (!isValidSegmentId(segmentId)) {
+                ctx.status(HttpStatus.BAD_REQUEST).result("Invalid segment ID");
+                return;
+            }
             String fileName = segmentId.endsWith(".ts") ? segmentId : segmentId + ".ts";
             String objectKey = videoId + "/chunks/" + fileName;
             try (InputStream is = storageClient.downloadFile(objectKey)) {
@@ -175,6 +185,24 @@ public class StreamingServiceApplication {
             return false;
         }
         return true;
+    }
+
+    private static boolean validateVideoId(io.javalin.http.Context ctx) {
+        String videoId = ctx.pathParam("videoId");
+        try {
+            java.util.UUID.fromString(videoId);
+        } catch (IllegalArgumentException e) {
+            ctx.status(400).result("Invalid video ID");
+            return false;
+        }
+        return true;
+    }
+
+    private static boolean isValidSegmentId(String segmentId) {
+        if (segmentId == null || segmentId.isBlank()) {
+            return false;
+        }
+        return segmentId.matches("^[A-Za-z0-9_-]+(\\.ts)?$");
     }
 
     private static String rewriteManifest(String content) {

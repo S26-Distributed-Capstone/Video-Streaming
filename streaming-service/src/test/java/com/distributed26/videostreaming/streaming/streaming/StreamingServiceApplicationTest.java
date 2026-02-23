@@ -18,6 +18,7 @@ import java.util.Optional;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -101,6 +102,50 @@ class StreamingServiceApplicationTest {
         assertEquals(HttpURLConnection.HTTP_CONFLICT, response.statusCode());
     }
 
+    @Test
+    void returns404WhenVideoNotFound() throws Exception {
+        String videoId = "33333333-3333-3333-3333-333333333333";
+
+        HttpRequest request = HttpRequest.newBuilder()
+            .uri(URI.create("http://localhost:" + port + "/stream/" + videoId + "/manifest"))
+            .GET()
+            .build();
+
+        HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
+
+        assertEquals(HttpURLConnection.HTTP_NOT_FOUND, response.statusCode());
+    }
+
+    @Test
+    void returns404WhenManifestMissingFromStorage() throws Exception {
+        String videoId = "44444444-4444-4444-4444-444444444444";
+        statuses.put(videoId, "COMPLETED");
+
+        HttpRequest request = HttpRequest.newBuilder()
+            .uri(URI.create("http://localhost:" + port + "/stream/" + videoId + "/manifest"))
+            .GET()
+            .build();
+
+        HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
+
+        assertEquals(HttpURLConnection.HTTP_NOT_FOUND, response.statusCode());
+    }
+
+    @Test
+    void returns404WhenSegmentMissingFromStorage() throws Exception {
+        String videoId = "55555555-5555-5555-5555-555555555555";
+        statuses.put(videoId, "COMPLETED");
+
+        HttpRequest request = HttpRequest.newBuilder()
+            .uri(URI.create("http://localhost:" + port + "/stream/" + videoId + "/segment/999.ts"))
+            .GET()
+            .build();
+
+        HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
+
+        assertEquals(HttpURLConnection.HTTP_NOT_FOUND, response.statusCode());
+    }
+
     private static class FakeStatusRepository extends VideoStatusRepository {
         private final Map<String, String> statuses;
 
@@ -131,7 +176,7 @@ class StreamingServiceApplicationTest {
         public InputStream downloadFile(String key) {
             byte[] payload = storage.get(key);
             if (payload == null) {
-                throw new RuntimeException("Missing key: " + key);
+                throw NoSuchKeyException.builder().message("Missing key: " + key).build();
             }
             return new ByteArrayInputStream(payload);
         }
