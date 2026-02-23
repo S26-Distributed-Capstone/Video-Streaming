@@ -42,11 +42,18 @@ Provide a clear, shared reference for client interactions. Once merged, any chan
 #### Service status
 - Streaming endpoints serve clients requesting playback assets
 
+#### `GET /stream/ready`
+- Returns a list of video IDs that are ready for playback
+- Only includes videos that are `COMPLETED` and have a manifest in object storage
+- Success response: `200 OK`
+	- Body: JSON array of video IDs
+
 #### `GET /stream/{videoId}/manifest`
 - Returns the HLS manifest for a ready video
 - Success response: `200 OK`
 	- Body: HLS playlist (M3U8) manifest
 	- `Content-Type: application/vnd.apple.mpegurl`
+	- Segment URIs are rewritten to `segment/{segmentId}` so they resolve under this endpoint
 - Error responses:
 	- `404 Not Found` — unknown video ID
 	- `409 Conflict` — video exists but is not yet ready for streaming
@@ -56,7 +63,7 @@ Provide a clear, shared reference for client interactions. Once merged, any chan
 - Success response:
 	- `200 OK` — full segment response
 	- May return `206 Partial Content` when honoring `Range` requests
-	- Content-Type: `video/*` (exact encoding TBD, but represents a single segment)
+	- Content-Type: `video/MP2T` (represents a single `.ts` segment)
 	- Supports HTTP byte-range requests via the `Range` header
 	- Cacheable by CDNs/clients (specific `Cache-Control` directives TBD)
 - Error responses:
