@@ -17,6 +17,7 @@ import org.apache.logging.log4j.Logger;
 public class StreamingServiceApplication {
     private static final Logger logger = LogManager.getLogger(StreamingServiceApplication.class);
     private static final int DEFAULT_STREAMING_PORT = 8082;
+    private static final String INSTANCE_ID = resolveInstanceId();
 
     public static void main(String[] args) {
         int port = DEFAULT_STREAMING_PORT;
@@ -50,6 +51,15 @@ public class StreamingServiceApplication {
             ctx.header("Access-Control-Allow-Headers", "Content-Type,Range");
         });
         app.options("/*", ctx -> ctx.status(204));
+        app.before(ctx -> {
+            logger.info("streaming_request instance={} method={} path={} query={} remote={}",
+                INSTANCE_ID,
+                ctx.method(),
+                ctx.path(),
+                ctx.queryString(),
+                ctx.ip()
+            );
+        });
 
         // Route stubs - logic will be implemented in next steps.
         app.get("/stream/{videoId}/manifest", ctx -> {
@@ -203,6 +213,17 @@ public class StreamingServiceApplication {
             return false;
         }
         return segmentId.matches("^[A-Za-z0-9_-]+(\\.ts)?$");
+    }
+
+    private static String resolveInstanceId() {
+        String id = System.getenv("CONTAINER_ID");
+        if (id == null || id.isBlank()) {
+            id = System.getenv("HOSTNAME");
+        }
+        if (id == null || id.isBlank()) {
+            id = "local";
+        }
+        return id;
     }
 
     private static String rewriteManifest(String content) {
