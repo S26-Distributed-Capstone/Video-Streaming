@@ -63,8 +63,27 @@ Provide a clear, shared reference for client interactions. Once merged, any chan
 	- `404 Not Found` — unknown video or segment
 
 ## 3. Processing Service Endpoints
-- No external HTTP API by design at this stage
-- If an API is added later, document it here
+
+#### `GET /health`
+- Purpose: Liveness probe for Docker healthchecks and load balancers
+- Success response: `200 OK`
+	```json
+	{ "status": "ok" }
+	```
+
+#### `GET /workers`
+- Purpose: Operational snapshot of the transcoding worker pool
+- Success response: `200 OK`
+	```json
+	{
+		"queued": 12,
+		"workers": [
+			{ "id": "worker-0", "status": "BUSY" },
+			{ "id": "worker-1", "status": "IDLE" }
+		]
+	}
+	```
+- `status` values: `IDLE` | `BUSY` | `OFFLINE`
 
 ---
 ### Lifecycle and Visibility Guarantees
