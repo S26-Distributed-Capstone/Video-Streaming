@@ -25,6 +25,22 @@ import org.apache.logging.log4j.Logger;
 public class TranscodingTask extends Task {
     private static final Logger LOGGER = LogManager.getLogger(TranscodingTask.class);
 
+    /**
+     * Number of threads each FFmpeg process may use.
+     * Defaults to 2 so that multiple concurrent workers don't fight over all CPU cores.
+     * Override with the THREADS_PER_WORKER env var.
+     * Rule of thumb: WORKER_POOL_SIZE = floor(CPU_cores / THREADS_PER_WORKER).
+     */
+    static final int FFMPEG_THREADS;
+    static {
+        String val = System.getenv("THREADS_PER_WORKER");
+        int parsed = 2;
+        if (val != null && !val.isBlank()) {
+            try { parsed = Integer.parseInt(val.trim()); } catch (NumberFormatException ignored) {}
+        }
+        FFMPEG_THREADS = parsed;
+    }
+
     private final TranscodingProfile profile;
     private final String chunkKey;
     private final String outputKey;
@@ -39,6 +55,25 @@ public class TranscodingTask extends Task {
     public TranscodingProfile getProfile() { return profile; }
     public String getChunkKey() { return chunkKey; }
     public String getOutputKey() { return outputKey; }
+
+    /**
+     * FFmpeg / FFprobe are initialized once (lazily on first real execute) via the
+     * initialization-on-demand holder pattern.  This avoids running `ffmpeg -version`
+     * on every task and keeps the unit tests fast (they mock fileExists → true so the
+     * holder is never triggered in test runs).
+     */
+    private static final class FfmpegHolder {
+        static final FFmpeg  FFMPEG;
+        static final FFprobe FFPROBE;
+        static {
+            try {
+                FFMPEG  = new FFmpeg("ffmpeg");
+                FFPROBE = new FFprobe("ffprobe");
+            } catch (IOException e) {
+                throw new ExceptionInInitializerError(e);
+            }
+        }
+    }
 
     /**
      * Download source, transcode, upload result. Idempotent — skips if outputKey already exists.
@@ -59,19 +94,26 @@ public class TranscodingTask extends Task {
             }
 
             LOGGER.info("Transcoding chunk={} profile={}", chunkKey, profile.getName());
-            FFmpeg ffmpeg = new FFmpeg("ffmpeg");
-            FFprobe ffprobe = new FFprobe("ffprobe");
-
+            // Use CRF for quality-based encoding with a hard maxrate ceiling.
+            // -b:v alone is only an average target and libx264 can freely exceed it,
+            // causing the HIGH profile to inflate the file size above the source.
+            // -maxrate/-bufsize enforce the VBV ceiling; -crf avoids wasting bits on
+            // simple scenes that would otherwise be padded up to the ABR target.
+            String maxrate = profile.getBitrate() + ""; // bps string for ffmpeg
+            String bufsize = (profile.getBitrate() * 2) + "";
             FFmpegBuilder builder = new FFmpegBuilder()
                     .setInput(inputTemp.toString())
                     .addOutput(outputTemp.toString())
                         .addExtraArgs("-vf", "scale=-2:" + profile.getVerticalResolution())
-                        .addExtraArgs("-b:v", String.valueOf(profile.getBitrate()))
                         .addExtraArgs("-c:v", "libx264")
+                        .addExtraArgs("-crf", "23")
+                        .addExtraArgs("-maxrate", maxrate)
+                        .addExtraArgs("-bufsize", bufsize)
+                        .addExtraArgs("-threads", String.valueOf(FFMPEG_THREADS))
                         .addExtraArgs("-an")
                         .done();
 
-            new FFmpegExecutor(ffmpeg, ffprobe).createJob(builder).run();
+            new FFmpegExecutor(FfmpegHolder.FFMPEG, FfmpegHolder.FFPROBE).createJob(builder).run();
 
             long size = Files.size(outputTemp);
             LOGGER.info("Uploading transcoded output: {} ({} bytes)", outputKey, size);

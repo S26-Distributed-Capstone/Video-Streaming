@@ -33,17 +33,15 @@ class ProcessingServiceApplicationTest {
     // ── Task count ─────────────────────────────────────────────────────────────
 
     @Test
-    void oneChunk_threeProfies_queues3Tasks() {
+    void oneChunk_queues3Tasks() {
         sendChunks("vid1", "vid1/chunks/seg0.ts");
-        sendMeta("vid1", 1);
 
         assertEquals(3, taskQueue.size());
     }
 
     @Test
-    void twoChunks_threeProfiles_queues6Tasks() {
+    void twoChunks_queues6Tasks() {
         sendChunks("vid1", "vid1/chunks/seg0.ts", "vid1/chunks/seg1.ts");
-        sendMeta("vid1", 2);
 
         assertEquals(6, taskQueue.size());
     }
@@ -56,31 +54,36 @@ class ProcessingServiceApplicationTest {
             keys[i] = "vid1/chunks/seg" + i + ".ts";
         }
         sendChunks("vid1", keys);
-        sendMeta("vid1", chunkCount);
 
         assertEquals(chunkCount * ProcessingServiceApplication.PROFILES.length, taskQueue.size());
     }
 
-    // ── Ordering ───────────────────────────────────────────────────────────────
+    // ── Ordering: tasks are queued immediately, not on meta ───────────────────
 
     @Test
-    void metaBeforeChunks_tasksQueuedWhenLastChunkArrives() {
-        sendMeta("vid1", 2);
-        assertEquals(0, taskQueue.size(), "Should not queue before chunks arrive");
-
+    void chunkEvent_immediatelyQueues3Tasks() {
         sendChunks("vid1", "vid1/chunks/seg0.ts");
-        assertEquals(0, taskQueue.size(), "Should not queue until all chunks present");
+        assertEquals(3, taskQueue.size(), "Tasks should be queued on first chunk, not deferred");
 
         sendChunks("vid1", "vid1/chunks/seg1.ts");
-        assertEquals(6, taskQueue.size());
+        assertEquals(6, taskQueue.size(), "Each chunk independently queues 3 more tasks");
     }
 
     @Test
-    void chunksBeforeMeta_tasksQueuedOnMetaEvent() {
-        sendChunks("vid1", "vid1/chunks/seg0.ts", "vid1/chunks/seg1.ts");
-        assertEquals(0, taskQueue.size(), "Should not queue before meta arrives");
-
+    void metaEvent_doesNotQueueAnyTasks() {
         sendMeta("vid1", 2);
+        assertEquals(0, taskQueue.size(), "UploadMetaEvent alone queues nothing");
+
+        sendMeta("vid1", 2); // second meta also ignored
+        assertEquals(0, taskQueue.size());
+    }
+
+    @Test
+    void chunksAlreadyQueuedBeforeMeta_metaDoesNotAddMore() {
+        sendChunks("vid1", "vid1/chunks/seg0.ts", "vid1/chunks/seg1.ts");
+        assertEquals(6, taskQueue.size());
+
+        sendMeta("vid1", 2); // meta arrives after chunks — should change nothing
         assertEquals(6, taskQueue.size());
     }
 
@@ -89,7 +92,6 @@ class ProcessingServiceApplicationTest {
     @Test
     void queuedTasks_haveCreatedStatus() {
         sendChunks("vid1", "vid1/chunks/seg0.ts");
-        sendMeta("vid1", 1);
 
         for (TranscodingTask t : taskQueue) {
             assertEquals(Status.CREATED, t.getStatus());
@@ -99,7 +101,6 @@ class ProcessingServiceApplicationTest {
     @Test
     void queuedTasks_allThreeProfilesCovered() {
         sendChunks("vid1", "vid1/chunks/seg0.ts");
-        sendMeta("vid1", 1);
 
         boolean hasLow    = taskQueue.stream().anyMatch(t -> t.getProfile() == TranscodingProfile.LOW);
         boolean hasMedium = taskQueue.stream().anyMatch(t -> t.getProfile() == TranscodingProfile.MEDIUM);
@@ -113,7 +114,6 @@ class ProcessingServiceApplicationTest {
     @Test
     void queuedTasks_haveCorrectJobId() {
         sendChunks("vid1", "vid1/chunks/seg0.ts");
-        sendMeta("vid1", 1);
 
         for (TranscodingTask t : taskQueue) {
             assertEquals("vid1", t.getJobId());
@@ -123,7 +123,6 @@ class ProcessingServiceApplicationTest {
     @Test
     void queuedTasks_outputKeysAreUnderProcessedPath() {
         sendChunks("vid1", "vid1/chunks/seg0.ts");
-        sendMeta("vid1", 1);
 
         for (TranscodingTask t : taskQueue) {
             assertTrue(t.getOutputKey().startsWith("vid1/processed/"),
@@ -134,7 +133,6 @@ class ProcessingServiceApplicationTest {
     @Test
     void queuedTasks_haveUniqueIds() {
         sendChunks("vid1", "vid1/chunks/seg0.ts", "vid1/chunks/seg1.ts");
-        sendMeta("vid1", 2);
 
         long distinctIds = taskQueue.stream().map(TranscodingTask::getId).distinct().count();
         assertEquals(taskQueue.size(), distinctIds);
@@ -145,21 +143,16 @@ class ProcessingServiceApplicationTest {
     @Test
     void twoVideos_processedIndependently() {
         sendChunks("vidA", "vidA/chunks/seg0.ts");
-        sendChunks("vidB", "vidB/chunks/seg0.ts", "vidB/chunks/seg1.ts");
-
-        sendMeta("vidA", 1); // vidA complete: 1×3 = 3 tasks
         assertEquals(3, taskQueue.size());
 
-        sendMeta("vidB", 2); // vidB complete: 2×3 = 6 more tasks
+        sendChunks("vidB", "vidB/chunks/seg0.ts", "vidB/chunks/seg1.ts");
         assertEquals(9, taskQueue.size());
     }
 
     @Test
     void twoVideos_tasksHaveCorrectJobIds() {
         sendChunks("vidA", "vidA/chunks/seg0.ts");
-        sendMeta("vidA", 1);
         sendChunks("vidB", "vidB/chunks/seg0.ts");
-        sendMeta("vidB", 1);
 
         long forA = taskQueue.stream().filter(t -> "vidA".equals(t.getJobId())).count();
         long forB = taskQueue.stream().filter(t -> "vidB".equals(t.getJobId())).count();
@@ -167,66 +160,28 @@ class ProcessingServiceApplicationTest {
         assertEquals(3, forB);
     }
 
-    // ── No premature queuing ───────────────────────────────────────────────────
-
-    @Test
-    void partialChunks_noTasksQueued() {
-        sendMeta("vid1", 3);
-        sendChunks("vid1", "vid1/chunks/seg0.ts", "vid1/chunks/seg1.ts");
-
-        assertEquals(0, taskQueue.size(), "Should not queue until all 3 chunks present");
-    }
-
-    @Test
-    void metaOnly_noTasksQueued() {
-        sendMeta("vid1", 2);
-        assertEquals(0, taskQueue.size());
-    }
-
-    @Test
-    void chunksOnly_noTasksQueued() {
-        sendChunks("vid1", "vid1/chunks/seg0.ts", "vid1/chunks/seg1.ts");
-        assertEquals(0, taskQueue.size());
-    }
-
-    // ── Idempotency / duplicates ───────────────────────────────────────────────
+    // ── Deduplication ─────────────────────────────────────────────────────────
 
     @Test
     void duplicateChunkKey_countedOnce() {
         sendChunks("vid1", "vid1/chunks/seg0.ts");
-        sendChunks("vid1", "vid1/chunks/seg0.ts"); // duplicate
-        sendMeta("vid1", 1);
+        sendChunks("vid1", "vid1/chunks/seg0.ts"); // duplicate publish / retry
 
         // Only 1 unique chunk → 3 tasks, not 6
         assertEquals(3, taskQueue.size());
     }
 
-    @Test
-    void lateMetaAfterAlreadyQueued_doesNotRequeue() {
-        sendChunks("vid1", "vid1/chunks/seg0.ts");
-        sendMeta("vid1", 1);
-        assertEquals(3, taskQueue.size());
-
-        // A spurious second meta event should not requeue
-        sendMeta("vid1", 1);
-        assertEquals(3, taskQueue.size());
-    }
-
     // ── Bus subscription ───────────────────────────────────────────────────────
 
+    /**
+     * onEvent() must NOT call bus.subscribe() — subscribeAll() is wired once in
+     * main(), so per-event subscriptions would register duplicate listeners.
+     */
     @Test
-    void firstChunkEvent_subscribesListenerForVideoId() {
-        sendChunks("vid1", "vid1/chunks/seg0.ts");
-
-        verify(bus, times(1)).subscribe(eq("vid1"), any());
-    }
-
-    @Test
-    void secondChunkEvent_doesNotResubscribe() {
+    void chunkEvent_doesNotCallPerJobIdSubscribe() {
         sendChunks("vid1", "vid1/chunks/seg0.ts", "vid1/chunks/seg1.ts");
 
-        // subscribe called exactly once for the videoId
-        verify(bus, times(1)).subscribe(eq("vid1"), any());
+        verify(bus, never()).subscribe(any(), any());
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────

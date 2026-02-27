@@ -43,11 +43,8 @@ public class ProcessingServiceApplication {
         TranscodingProfile.HIGH
     };
 
-    /** Chunk keys received so far, keyed by videoId. */
+    /** Chunk keys already queued for transcoding, keyed by videoId. Used for dedup only. */
     private static final Map<String, Set<String>> CHUNKS_BY_VIDEO = new ConcurrentHashMap<>();
-
-    /** Expected segment count per videoId; set when UploadMetaEvent arrives. */
-    private static final Map<String, Integer> TOTAL_BY_VIDEO = new ConcurrentHashMap<>();
 
     public static void main(String[] args) throws Exception {
         Dotenv dotenv = Dotenv.configure().directory("./").ignoreIfMissing().load();
@@ -82,10 +79,9 @@ public class ProcessingServiceApplication {
         RabbitMQJobTaskBus bus = RabbitMQJobTaskBus.fromEnv();
         LOGGER.info("RabbitMQJobTaskBus connected");
 
-        // Pre-subscribe all videoIds already present in MinIO so in-flight events
-        // for ongoing uploads are not silently dropped by the bus's per-jobId
-        // listener map.  New videoIds are subscribed lazily on first chunk event.
-        preSubscribeFromStorage(storageClient, taskQueue, bus);
+        // subscribeAll ensures every incoming event reaches onEvent() regardless
+        // of whether we've seen that videoId before — fixing the first-event drop.
+        bus.subscribeAll(ev -> onEvent(ev, taskQueue, bus));
 
         LOGGER.info("Processing service ready — waiting for upload events...");
 
@@ -156,66 +152,28 @@ public class ProcessingServiceApplication {
         String videoId = event.getJobId();
 
         if (event instanceof UploadMetaEvent meta) {
-            LOGGER.info("UploadMetaEvent: videoId={} totalSegments={}", videoId, meta.getTotalSegments());
-            TOTAL_BY_VIDEO.put(videoId, meta.getTotalSegments());
-            maybeQueueTasks(videoId, taskQueue);
+            // All chunks have already been queued as they arrived; nothing to do here.
+            LOGGER.info("UploadMetaEvent: videoId={} totalSegments={} (tasks already in flight)",
+                        videoId, meta.getTotalSegments());
             return;
         }
 
-        // JobTaskEvent: taskId is the chunk storage key published by upload-service
+        // Queue transcoding tasks immediately — each .ts chunk is self-contained.
+        // The CHUNKS_BY_VIDEO set guards against duplicate chunk keys (e.g. retried publishes).
         String chunkKey = event.getTaskId();
-        Set<String> chunks = CHUNKS_BY_VIDEO.computeIfAbsent(videoId, k -> {
-            LOGGER.info("New videoId={}, subscribing listener", videoId);
-            bus.subscribe(videoId, ev -> onEvent(ev, taskQueue, bus));
-            return ConcurrentHashMap.newKeySet();
-        });
-        chunks.add(chunkKey);
-        LOGGER.debug("Chunk: videoId={} key={} acc={}", videoId, chunkKey, chunks.size());
-        maybeQueueTasks(videoId, taskQueue);
-    }
-
-    private static void maybeQueueTasks(String videoId, BlockingQueue<TranscodingTask> taskQueue) {
-        Set<String> chunks = CHUNKS_BY_VIDEO.get(videoId);
-        Integer total = TOTAL_BY_VIDEO.get(videoId);
-        if (chunks == null || total == null || chunks.size() < total) {
+        Set<String> seen = CHUNKS_BY_VIDEO.computeIfAbsent(videoId, k -> ConcurrentHashMap.newKeySet());
+        if (!seen.add(chunkKey)) {
+            LOGGER.debug("Duplicate chunk key={}, skipping", chunkKey);
             return;
         }
-        long taskCount = (long) chunks.size() * PROFILES.length;
-        LOGGER.info("All {} segment(s) received for videoId={} — queuing {} tasks", total, videoId, taskCount);
-        for (String chunkKey : chunks) {
-            for (TranscodingProfile profile : PROFILES) {
-                taskQueue.offer(new TranscodingTask(UUID.randomUUID().toString(), videoId, chunkKey, profile));
-            }
+        LOGGER.info("Chunk received: videoId={} key={} — queuing {} tasks",
+                    videoId, chunkKey, PROFILES.length);
+        for (TranscodingProfile profile : PROFILES) {
+            taskQueue.offer(new TranscodingTask(UUID.randomUUID().toString(), videoId, chunkKey, profile));
         }
-        // Remove to prevent re-queuing on late/duplicate events
-        CHUNKS_BY_VIDEO.remove(videoId);
-        TOTAL_BY_VIDEO.remove(videoId);
     }
 
     // ── Startup helpers ────────────────────────────────────────────────────────
-
-    /**
-     * Discovers videoIds from existing MinIO keys and pre-registers bus listeners
-     * so in-flight events for those videos are not dropped on first receipt.
-     */
-    private static void preSubscribeFromStorage(ObjectStorageClient storageClient,
-                                                 BlockingQueue<TranscodingTask> taskQueue,
-                                                 RabbitMQJobTaskBus bus) {
-        try {
-            List<String> keys = storageClient.listFiles("");
-            Set<String> videoIds = ConcurrentHashMap.newKeySet();
-            for (String key : keys) {
-                int slash = key.indexOf('/');
-                if (slash > 0) { videoIds.add(key.substring(0, slash)); }
-            }
-            for (String vid : videoIds) {
-                bus.subscribe(vid, ev -> onEvent(ev, taskQueue, bus));
-                LOGGER.info("Pre-subscribed existing videoId={}", vid);
-            }
-        } catch (Exception e) {
-            LOGGER.warn("Could not pre-subscribe from storage: {}", e.getMessage());
-        }
-    }
 
     private static String getEnvOrDotenv(Dotenv dotenv, String key, String defaultValue) {
         String envVal = System.getenv(key);
@@ -227,6 +185,5 @@ public class ProcessingServiceApplication {
     /** Clears accumulated per-video state. Package-private for use in tests only. */
     static void resetState() {
         CHUNKS_BY_VIDEO.clear();
-        TOTAL_BY_VIDEO.clear();
     }
 }
