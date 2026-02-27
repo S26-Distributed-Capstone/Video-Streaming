@@ -47,9 +47,26 @@
       </div>
     </section>
 
+    <section class="panel">
+      <div class="field">
+        <label for="player">Stream Preview</label>
+        <video id="player" controls playsinline preload="metadata"></video>
+      </div>
+      <div class="actions">
+        <button id="playBtn" type="button">Play Selected</button>
+        <button id="refreshReadyBtn" type="button">Refresh Ready Videos</button>
+      </div>
+      <div class="field">
+        <label>Ready Video IDs</label>
+        <ul id="readyList" class="ready-list"></ul>
+      </div>
+      <div id="playerStatus" class="done hidden"></div>
+    </section>
+
     <!-- Response, upload info, and status stream removed as requested -->
   </main>
 
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.18"></script>
   <script src="/app.js"></script>
 </body>
 </html>

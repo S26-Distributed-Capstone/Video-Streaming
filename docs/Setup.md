@@ -22,8 +22,11 @@ Edit `.env` with your credentials. See `.env` for required variables:
 - RabbitMQ credentials (`RABBITMQ_USER`, `RABBITMQ_PASS`)
 - PostgreSQL credentials (`PG_USER`, `PG_PASSWORD`, `PG_DB`)
 
-### 2) Start All Services (MinIO, RabbitMQ, PostgreSQL)
+### 2) Start All Services (Choose One)
 
+Use **Docker Compose** *or* **Docker Swarm**. You do not need both.
+
+#### Option A: Docker Compose
 ```bash
 docker compose up -d --build
 ```
@@ -35,6 +38,10 @@ This starts:
 - **Upload Service** at `http://localhost:8080` (container `upload-service`)
 - **Status Service** at `http://localhost:8081` (container `status-service`)
 - **Processing Service** at `http://localhost:8082` (container `processing-service`)
+- **Streaming Service** at `http://localhost:8083` (container `streaming-service`)
+
+#### Option B: Docker Swarm
+See **Run With Docker Swarm (Single Machine)** below.
 
 ### 3) Postgres Schema (Auto-Loaded)
 
@@ -62,6 +69,33 @@ docker compose up -d --build
 
 With Docker Compose running, open:
 - `http://localhost:8080/`
+
+To stream a completed video:
+1. Upload a video and wait until it is marked `COMPLETED`.
+2. In the UI, use the "Ready Video IDs" list and click **Play Selected**.
+3. The player uses HLS (Safari native, `hls.js` for other browsers) and streams from `http://localhost:8083`.
+
+## Run With Docker Swarm (Single Machine)
+
+### 1) Build the image
+```bash
+docker build -t video-streaming-app:latest .
+```
+
+### 2) Deploy the Swarm stack
+```bash
+./deploy_swarm.sh
+```
+
+This will:
+- Create the `video_default` overlay network (if missing)
+- Deploy the stack from `docker_compose.swarm.yaml`
+- Start 3 replicas of the streaming service
+
+### 3) Stop the Swarm stack
+```bash
+docker stack rm video
+```
 
 ## Notes
 
