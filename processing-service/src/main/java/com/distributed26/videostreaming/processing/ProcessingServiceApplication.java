@@ -23,9 +23,11 @@ import org.apache.logging.log4j.Logger;
  * Entry point for the processing service.
  *
  * <p>Listens on the {@code upload.events} TOPIC exchange for {@link JobTaskEvent}s
- * published by the upload service.  Once all segments for a video have arrived
- * (signalled by {@link UploadMetaEvent}), a {@link TranscodingTask} is queued for
- * every (chunk × profile) combination and executed by the worker pool.
+ * published by the upload service. For each received video segment (chunk), a
+ * {@link TranscodingTask} is queued immediately for every (chunk × profile)
+ * combination and executed by the worker pool. {@link UploadMetaEvent}s may be
+ * consumed for auxiliary metadata, but are not used to defer queuing until all
+ * segments have arrived.
  *
  * <p>Required .env additions:
  * <pre>
