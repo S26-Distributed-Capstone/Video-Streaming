@@ -147,14 +147,14 @@ function setPlayerStatus(text, { success = false, hidden = false } = {}) {
 function deriveStreamingUrl(baseUrl, videoId) {
   const scheme = baseUrl.startsWith("https://") ? "https" : "http";
   const host = baseUrl.replace(/^https?:\/\//, "").replace(/:\d+$/, "");
-  const streamingPort = "8082";
+  const streamingPort = "8083";
   return `${scheme}://${host}:${streamingPort}/stream/${videoId}/manifest`;
 }
 
 function deriveReadyListUrl(baseUrl) {
   const scheme = baseUrl.startsWith("https://") ? "https" : "http";
   const host = baseUrl.replace(/^https?:\/\//, "").replace(/:\d+$/, "");
-  const streamingPort = "8082";
+  const streamingPort = "8083";
   return `${scheme}://${host}:${streamingPort}/stream/ready`;
 }
 

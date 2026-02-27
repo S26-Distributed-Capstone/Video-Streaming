@@ -29,6 +29,7 @@ public class RabbitMQJobTaskBus implements JobTaskBus, AutoCloseable {
     private final String statusBinding;
     private final boolean consumeStatus;
     private final Map<String, List<JobTaskListener>> listenersByJobId = new ConcurrentHashMap<>();
+    private final List<JobTaskListener> globalListeners = new CopyOnWriteArrayList<>();
 
     public static RabbitMQJobTaskBus fromEnv() {
         Dotenv dotenv = Dotenv.configure().directory("./").ignoreIfMissing().load();
@@ -102,6 +103,12 @@ public class RabbitMQJobTaskBus implements JobTaskBus, AutoCloseable {
     }
 
     @Override
+    public void subscribeAll(JobTaskListener listener) {
+        Objects.requireNonNull(listener, "listener is null");
+        globalListeners.add(listener);
+    }
+
+    @Override
     public void subscribe(String jobId, JobTaskListener listener) {
         Objects.requireNonNull(jobId, "jobId is null");
         Objects.requireNonNull(listener, "listener is null");
@@ -148,6 +155,9 @@ public class RabbitMQJobTaskBus implements JobTaskBus, AutoCloseable {
                 }
                 JobTaskEvent event = toEvent(node);
                 logger.debug("Dispatching status event jobId={} type={}", jobId, describeEventType(event));
+                for (JobTaskListener global : globalListeners) {
+                    global.onTask(event);
+                }
                 List<JobTaskListener> listeners = listenersByJobId.get(jobId);
                 if (listeners == null) {
                     return;

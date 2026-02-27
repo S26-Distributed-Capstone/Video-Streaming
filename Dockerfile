@@ -9,7 +9,7 @@ COPY . .
 
 RUN python3 -m pip install --no-cache-dir -r node-watcher/requirements.txt
 
-RUN mvn -pl upload-service,streaming-service -am -DskipTests install
+RUN mvn -pl upload-service,processing-service,streaming-service -am -DskipTests install
 
 EXPOSE 8080 8081
 

@@ -16,7 +16,7 @@ import org.apache.logging.log4j.Logger;
 
 public class StreamingServiceApplication {
     private static final Logger logger = LogManager.getLogger(StreamingServiceApplication.class);
-    private static final int DEFAULT_STREAMING_PORT = 8082;
+    private static final int DEFAULT_STREAMING_PORT = 8083;
     private static final String INSTANCE_ID = resolveInstanceId();
 
     public static void main(String[] args) {

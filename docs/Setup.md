@@ -28,7 +28,7 @@ Use **Docker Compose** *or* **Docker Swarm**. You do not need both.
 
 #### Option A: Docker Compose
 ```bash
-docker compose -f docker_compose.yaml up -d --build
+docker compose up -d --build
 ```
 
 This starts:
@@ -37,7 +37,8 @@ This starts:
 - **PostgreSQL** at `localhost:5432`
 - **Upload Service** at `http://localhost:8080` (container `upload-service`)
 - **Status Service** at `http://localhost:8081` (container `status-service`)
-- **Streaming Service** at `http://localhost:8082` (container `streaming-service`)
+- **Processing Service** at `http://localhost:8082` (container `processing-service`)
+- **Streaming Service** at `http://localhost:8083` (container `streaming-service`)
 
 #### Option B: Docker Swarm
 See **Run With Docker Swarm (Single Machine)** below.
@@ -60,8 +61,8 @@ psql -h localhost -U "$PG_USER" -d "$PG_DB" -f upload-service/docs/db/schema.sql
 
 If you are OK with wiping all data, you can reset the volume:
 ```bash
-docker compose -f docker_compose.yaml down -v
-docker compose -f docker_compose.yaml up -d --build
+docker compose down -v
+docker compose up -d --build
 ```
 
 ## Run (Frontend + Upload Service)
@@ -72,7 +73,7 @@ With Docker Compose running, open:
 To stream a completed video:
 1. Upload a video and wait until it is marked `COMPLETED`.
 2. In the UI, use the "Ready Video IDs" list and click **Play Selected**.
-3. The player uses HLS (Safari native, `hls.js` for other browsers) and streams from `http://localhost:8082`.
+3. The player uses HLS (Safari native, `hls.js` for other browsers) and streams from `http://localhost:8083`.
 
 ## Run With Docker Swarm (Single Machine)
 
@@ -103,4 +104,4 @@ docker stack rm video
 - All data is persisted in Docker named volumes (`rabbitmq_data`, `minio_data`, `postgres_data`).
 - The application reads credentials from the `.env` file in the project root.
 - Status endpoints are served separately at `http://localhost:8081`.
-- `SERVICE_MODE` is set in `docker_compose.yaml` to start either the upload or status service.
+- `SERVICE_MODE` is set in `docker-compose.yaml` to start either the upload or status service.
