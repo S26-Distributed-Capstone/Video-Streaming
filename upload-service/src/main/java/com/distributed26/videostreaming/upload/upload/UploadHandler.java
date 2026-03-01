@@ -256,14 +256,7 @@ public class UploadHandler {
             // Using thread-safe Set in case future changes introduce concurrent access
             Set<Path> uploadedFiles = ConcurrentHashMap.newKeySet();
             Set<Integer> uploadedSegmentNumbers = ConcurrentHashMap.newKeySet();
-            if (segmentUploadRepository != null) {
-                try {
-                    uploadedSegmentNumbers.addAll(segmentUploadRepository.findSegmentNumbers(videoId));
-                    logger.info("Loaded {} existing uploaded segments for videoId={}", uploadedSegmentNumbers.size(), videoId);
-                } catch (Exception e) {
-                    logger.warn("Failed to load existing segment uploads for videoId={}", videoId, e);
-                }
-            }
+            // Stateless uploads: do not attempt to resume from previously uploaded segments.
 
             logger.info("Starting segment monitoring loop for video: {}", videoId);
 

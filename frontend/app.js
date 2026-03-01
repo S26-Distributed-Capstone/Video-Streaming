@@ -433,12 +433,14 @@ function connectWebSocket(wsUrl, videoId) {
       return;
     }
     appendLog("WebSocket disconnected");
-    if (!processingComplete && !failureTerminal && !retryInFlight) {
-      uploadBtn.disabled = false;
-      uploadInFlight = false;
-      resetStateForNextUpload();
-      if (doneMessage) {
-        setDoneMessage("Upload failed.", { success: false });
+    if (!processingComplete && !failureTerminal) {
+      if (!retryInFlight) {
+        retryInFlight = true;
+        uploadBtn.disabled = false;
+        uploadInFlight = false;
+        retrySecondsLeft = RETRY_TOTAL_SECONDS;
+        appendLog("Upload service disconnected. Retrying...", "error");
+        scheduleRetry("ws_disconnected");
       }
     }
   });
@@ -448,12 +450,14 @@ function connectWebSocket(wsUrl, videoId) {
       return;
     }
     appendLog("WebSocket error", "error");
-    if (!processingComplete && !failureTerminal && !retryInFlight) {
-      uploadBtn.disabled = false;
-      uploadInFlight = false;
-      resetStateForNextUpload();
-      if (doneMessage) {
-        setDoneMessage("Upload failed.", { success: false });
+    if (!processingComplete && !failureTerminal) {
+      if (!retryInFlight) {
+        retryInFlight = true;
+        uploadBtn.disabled = false;
+        uploadInFlight = false;
+        retrySecondsLeft = RETRY_TOTAL_SECONDS;
+        appendLog("Upload service error. Retrying...", "error");
+        scheduleRetry("ws_error");
       }
     }
   });
@@ -502,10 +506,7 @@ function uploadFile({ preserveLog, isRetry } = {}) {
   }
 
   const baseUrl = resolveBaseUrl();
-  const uploadUrl =
-    isRetry && currentVideoId
-      ? `${baseUrl}/upload?videoId=${encodeURIComponent(currentVideoId)}`
-      : `${baseUrl}/upload`;
+  const uploadUrl = `${baseUrl}/upload`;
 
   uploadBtn.disabled = true;
   uploadInFlight = true;
@@ -517,6 +518,7 @@ function uploadFile({ preserveLog, isRetry } = {}) {
     clearRetryTimers();
   } else {
     retryInFlight = true;
+    currentVideoId = null;
   }
   if (responseBox) {
     responseBox.textContent = "—";
@@ -530,9 +532,7 @@ function uploadFile({ preserveLog, isRetry } = {}) {
 
   const formData = new FormData();
   formData.append("file", file, file.name);
-  if (isRetry && currentVideoId) {
-    formData.append("videoId", currentVideoId);
-  }
+  // Stateless upload: always let the server assign a new videoId.
 
   const xhr = new XMLHttpRequest();
   xhr.open("POST", uploadUrl, true);

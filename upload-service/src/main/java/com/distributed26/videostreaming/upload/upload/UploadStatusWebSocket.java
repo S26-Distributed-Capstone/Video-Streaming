@@ -113,6 +113,7 @@ public class UploadStatusWebSocket {
         }
     }
 
+
     private void sendProgressSnapshot(WsContext ctx, String jobId) throws JsonProcessingException {
         int completedSegments = segmentUploadRepository.countByVideoId(jobId);
         logger.info("WS progress snapshot for jobId={} completedSegments={}", jobId, completedSegments);
