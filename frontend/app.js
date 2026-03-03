@@ -1,4 +1,5 @@
 const fileInput = document.getElementById("fileInput");
+const videoNameInput = document.getElementById("videoName");
 const uploadBtn = document.getElementById("uploadBtn");
 const responseBox = document.getElementById("responseBox");
 const infoBox = document.getElementById("infoBox");
@@ -218,29 +219,41 @@ function setSelectedVideoId(videoId) {
   });
 }
 
-function renderReadyList(videoIds) {
+function renderReadyList(videos) {
   if (!readyList) {
     return;
   }
   readyList.textContent = "";
-  if (!Array.isArray(videoIds) || videoIds.length === 0) {
+  if (!Array.isArray(videos) || videos.length === 0) {
     const empty = document.createElement("li");
     empty.className = "muted";
     empty.textContent = "No completed videos yet.";
     readyList.appendChild(empty);
     return;
   }
-  videoIds.forEach((videoId) => {
+  const normalized = videos.map((item) => {
+    if (typeof item === "string") {
+      return { videoId: item, videoName: item };
+    }
+    return {
+      videoId: item.videoId || item.video_id || item.id,
+      videoName: item.videoName || item.video_name || item.name
+    };
+  }).filter((item) => item.videoId);
+
+  normalized.forEach((video) => {
     const item = document.createElement("li");
-    item.dataset.videoId = videoId;
-    item.textContent = videoId;
-    item.addEventListener("click", () => setSelectedVideoId(videoId));
+    item.dataset.videoId = video.videoId;
+    item.textContent = video.videoName || video.videoId;
+    item.addEventListener("click", () => setSelectedVideoId(video.videoId));
     readyList.appendChild(item);
   });
-  if (currentVideoId && videoIds.includes(currentVideoId)) {
+
+  const ids = normalized.map((video) => video.videoId);
+  if (currentVideoId && ids.includes(currentVideoId)) {
     setSelectedVideoId(currentVideoId);
-  } else if (!selectedVideoId && videoIds.length > 0) {
-    setSelectedVideoId(videoIds[0]);
+  } else if (!selectedVideoId && ids.length > 0) {
+    setSelectedVideoId(ids[0]);
   }
 }
 
@@ -253,8 +266,8 @@ async function refreshReadyList() {
       setPlayerStatus(`Failed to load ready videos (${resp.status})`, { success: false });
       return;
     }
-    const videoIds = await resp.json();
-    renderReadyList(videoIds);
+    const videos = await resp.json();
+    renderReadyList(videos);
   } catch (err) {
     setPlayerStatus("Failed to load ready videos.", { success: false });
   }
@@ -504,6 +517,11 @@ function uploadFile({ preserveLog, isRetry } = {}) {
     appendLog("Select a video file before uploading.", "error");
     return;
   }
+  const videoName = videoNameInput ? videoNameInput.value.trim() : "";
+  if (!videoName) {
+    appendLog("Enter a video name before uploading.", "error");
+    return;
+  }
 
   const baseUrl = resolveBaseUrl();
   const uploadUrl = `${baseUrl}/upload`;
@@ -532,6 +550,7 @@ function uploadFile({ preserveLog, isRetry } = {}) {
 
   const formData = new FormData();
   formData.append("file", file, file.name);
+  formData.append("name", videoName);
   // Stateless upload: always let the server assign a new videoId.
 
   const xhr = new XMLHttpRequest();

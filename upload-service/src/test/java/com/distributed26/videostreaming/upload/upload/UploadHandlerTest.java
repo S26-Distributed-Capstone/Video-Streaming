@@ -102,6 +102,7 @@ public class UploadHandlerTest {
                 MultipartBody requestBody = new MultipartBody.Builder()
                     .setType(MultipartBody.FORM)
                     .addFormDataPart("file", "test-video.mp4", fileBody)
+                    .addFormDataPart("name", "Test Video")
                     .build();
 
                 try (var response = client.request("/upload", builder ->
@@ -112,6 +113,31 @@ public class UploadHandlerTest {
                     assertNotNull(body);
                     assertTrue(body.contains("\"videoId\""), "Response should contain videoId");
                     assertTrue(body.contains("\"uploadStatusUrl\""), "Response should contain uploadStatusUrl");
+                }
+            });
+        }
+
+        @Test
+        @DisplayName("Should return 400 when no name is provided")
+        void shouldReturn400WhenNoNameProvided() {
+            UploadHandler handler = new UploadHandler(mockStorageClient, new TestJobTaskBus());
+            Javalin app = Javalin.create();
+            app.post("/upload", handler::upload);
+
+            JavalinTest.test(app, (server, client) -> {
+                RequestBody fileBody = RequestBody.create(
+                    "test video content".getBytes(),
+                    MediaType.parse("video/mp4")
+                );
+
+                MultipartBody requestBody = new MultipartBody.Builder()
+                    .setType(MultipartBody.FORM)
+                    .addFormDataPart("file", "test-video.mp4", fileBody)
+                    .build();
+
+                try (var response = client.request("/upload", builder ->
+                    builder.post(requestBody))) {
+                    assertEquals(400, response.code());
                 }
             });
         }
@@ -146,6 +172,7 @@ public class UploadHandlerTest {
                     MultipartBody requestBody = new MultipartBody.Builder()
                         .setType(MultipartBody.FORM)
                         .addFormDataPart("file", "test-video.mp4", fileBody)
+                        .addFormDataPart("name", "Test Video")
                         .build();
 
                     try (var response = client.request("/upload", builder ->
@@ -190,16 +217,15 @@ public class UploadHandlerTest {
                 MultipartBody requestBody = new MultipartBody.Builder()
                     .setType(MultipartBody.FORM)
                     .addFormDataPart("file", "test-video.mp4", fileBody)
+                    .addFormDataPart("name", "Test Video")
                     .build();
 
                 try (var response = client.request("/upload", builder ->
                     builder.post(requestBody))) {
-                    // Initial response should still be 202 (async processing)
-                    assertEquals(202, response.code());
+                    assertEquals(500, response.code());
                 }
             });
 
-            // The error handling happens asynchronously - just ensure no exceptions leak
             Thread.sleep(1000);
         }
     }
@@ -306,6 +332,7 @@ public class UploadHandlerTest {
                     MultipartBody requestBody = new MultipartBody.Builder()
                         .setType(MultipartBody.FORM)
                         .addFormDataPart("file", "test-video-" + i + ".mp4", fileBody)
+                        .addFormDataPart("name", "Test Video " + i)
                         .build();
 
                     try (var response = client.request("/upload", builder ->
@@ -346,6 +373,7 @@ public class UploadHandlerTest {
                 MultipartBody requestBody = new MultipartBody.Builder()
                     .setType(MultipartBody.FORM)
                     .addFormDataPart("file", "test-video.mp4", fileBody)
+                    .addFormDataPart("name", "Test Video")
                     .build();
 
                 try (var response = client.request("/upload", builder ->
@@ -399,6 +427,7 @@ public class UploadHandlerTest {
                 MultipartBody requestBody1 = new MultipartBody.Builder()
                     .setType(MultipartBody.FORM)
                     .addFormDataPart("file", "test1.mp4", fileBody1)
+                    .addFormDataPart("name", "Test Video 1")
                     .build();
 
                 try (var response = client.request("/upload", builder ->
@@ -414,6 +443,7 @@ public class UploadHandlerTest {
                 MultipartBody requestBody2 = new MultipartBody.Builder()
                     .setType(MultipartBody.FORM)
                     .addFormDataPart("file", "test2.mp4", fileBody2)
+                    .addFormDataPart("name", "Test Video 2")
                     .build();
 
                 try (var response = client.request("/upload", builder ->

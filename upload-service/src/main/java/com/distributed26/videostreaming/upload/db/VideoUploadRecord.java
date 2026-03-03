@@ -4,13 +4,22 @@ import java.util.Objects;
 
 public class VideoUploadRecord {
     private final String videoId;
+    private final String videoName;
     private final int totalSegments;
     private final String status;
     private final String machineId;
     private final String containerId;
 
-    public VideoUploadRecord(String videoId, int totalSegments, String status, String machineId, String containerId) {
+    public VideoUploadRecord(
+            String videoId,
+            String videoName,
+            int totalSegments,
+            String status,
+            String machineId,
+            String containerId
+    ) {
         this.videoId = Objects.requireNonNull(videoId, "videoId is null");
+        this.videoName = Objects.requireNonNull(videoName, "videoName is null");
         this.totalSegments = totalSegments;
         this.status = Objects.requireNonNull(status, "status is null");
         this.machineId = machineId;
@@ -19,6 +28,10 @@ public class VideoUploadRecord {
 
     public String getVideoId() {
         return videoId;
+    }
+
+    public String getVideoName() {
+        return videoName;
     }
 
     public int getTotalSegments() {

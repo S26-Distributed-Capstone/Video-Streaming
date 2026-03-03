@@ -1,6 +1,7 @@
 CREATE TABLE IF NOT EXISTS video_upload (
     id SERIAL PRIMARY KEY,
     video_id UUID NOT NULL UNIQUE,
+    video_name VARCHAR(256) NOT NULL DEFAULT '',
     total_segments INTEGER NOT NULL DEFAULT 0,
     status VARCHAR(32) NOT NULL,
     machine_id VARCHAR(128),
@@ -9,6 +10,9 @@ CREATE TABLE IF NOT EXISTS video_upload (
 
 ALTER TABLE video_upload
     ADD COLUMN IF NOT EXISTS container_id VARCHAR(128);
+
+ALTER TABLE video_upload
+    ADD COLUMN IF NOT EXISTS video_name VARCHAR(256) NOT NULL DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS segment_upload (
     id SERIAL PRIMARY KEY,

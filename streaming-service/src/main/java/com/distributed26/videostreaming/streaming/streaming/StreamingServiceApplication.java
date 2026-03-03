@@ -126,14 +126,21 @@ public class StreamingServiceApplication {
                     // Keep default limit.
                 }
             }
-            var candidates = videoStatusRepository.findCompletedVideoIds(limit);
+            var candidates = videoStatusRepository.findCompletedVideos(limit);
             var filtered = candidates.stream()
-                .filter(videoId -> storageClient.fileExists(videoId + "/chunks/output.m3u8"))
+                .filter(video -> storageClient.fileExists(video.videoId() + "/chunks/output.m3u8"))
+                .map(video -> new ReadyVideoResponse(
+                    video.videoId(),
+                    video.videoName() == null || video.videoName().isBlank() ? video.videoId() : video.videoName()
+                ))
                 .toList();
             ctx.status(HttpStatus.OK).json(filtered);
         });
 
         return app;
+    }
+
+    private record ReadyVideoResponse(String videoId, String videoName) {
     }
 
     private static StorageConfig loadStorageConfig() {

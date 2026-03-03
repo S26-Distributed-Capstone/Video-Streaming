@@ -60,13 +60,14 @@ public class VideoUploadRepositoryIntegrationTest {
     @Test
     @Tag("integration")
     void createAndFindByVideoId() {
-        repo.create(videoId, 3, "UPLOADING", "machine-a", "container-a");
+        repo.create(videoId, "Test Video", 3, "UPLOADING", "machine-a", "container-a");
 
         Optional<VideoUploadRecord> record = repo.findByVideoId(videoId);
         assertTrue(record.isPresent(), "Expected record to exist");
 
         VideoUploadRecord r = record.get();
         assertEquals(videoId, r.getVideoId());
+        assertEquals("Test Video", r.getVideoName());
         assertEquals(3, r.getTotalSegments());
         assertEquals("UPLOADING", r.getStatus());
         assertEquals("machine-a", r.getMachineId());
@@ -75,7 +76,7 @@ public class VideoUploadRepositoryIntegrationTest {
     @Test
     @Tag("integration")
     void updateStatusAndTotalSegments() {
-        repo.create(videoId, 2, "UPLOADING", "machine-b", "container-b");
+        repo.create(videoId, "Test Video", 2, "UPLOADING", "machine-b", "container-b");
 
         repo.updateStatus(videoId, "PROCESSING");
         repo.updateTotalSegments(videoId, 5);
@@ -84,6 +85,7 @@ public class VideoUploadRepositoryIntegrationTest {
         assertTrue(record.isPresent(), "Expected record to exist");
 
         VideoUploadRecord r = record.get();
+        assertEquals("Test Video", r.getVideoName());
         assertEquals("PROCESSING", r.getStatus());
         assertEquals(5, r.getTotalSegments());
         assertEquals("machine-b", r.getMachineId());

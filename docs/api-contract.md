@@ -7,13 +7,14 @@ Provide a clear, shared reference for client interactions. Once merged, any chan
 ## 1. Upload Service Endpoints
 
 #### `POST /upload`
-- Request format: multipart form, field name `file`
-- Success response: `201 Created`
+- Request format: multipart form
+	- Fields: `file` (video) and `name` (video title)
+- Success response: `202 Accepted`
 	```json
-	{ "videoId": "<uuid>" }
+	{ "videoId": "<uuid>", "uploadStatusUrl": "<ws-url>" }
 	```
 - Error responses:
-	- `400 Bad Request` — no file provided
+	- `400 Bad Request` — no file or name provided
 	- `500 Internal Server Error` — storage failure
 
 #### `GET /video/{videoId}/status/stream`
@@ -43,10 +44,13 @@ Provide a clear, shared reference for client interactions. Once merged, any chan
 - Streaming endpoints serve clients requesting playback assets
 
 #### `GET /stream/ready`
-- Returns a list of video IDs that are ready for playback
+- Returns a list of videos that are ready for playback (ID + name)
 - Only includes videos that are `COMPLETED` and have a manifest in object storage
 - Success response: `200 OK`
-	- Body: JSON array of video IDs
+	- Body: JSON array of objects:
+		```json
+		{ "videoId": "<uuid>", "videoName": "<string>" }
+		```
 
 #### `GET /stream/{videoId}/manifest`
 - Returns the HLS manifest for a ready video

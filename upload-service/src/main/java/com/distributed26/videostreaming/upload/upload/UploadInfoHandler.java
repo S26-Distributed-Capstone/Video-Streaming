@@ -28,6 +28,7 @@ public class UploadInfoHandler {
         VideoUploadRecord r = record.get();
         ctx.json(new UploadInfoResponse(
                 r.getVideoId(),
+                r.getVideoName(),
                 r.getStatus(),
                 r.getTotalSegments(),
                 r.getMachineId(),
@@ -37,6 +38,7 @@ public class UploadInfoHandler {
 
     private record UploadInfoResponse(
             String videoId,
+            String videoName,
             String status,
             int totalSegments,
             String machineId,
