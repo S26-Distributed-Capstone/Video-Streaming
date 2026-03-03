@@ -188,8 +188,9 @@ public class UploadHandler {
         }
 
         // Run the supervision logic on the supervision executor
+        final Path inputPathFinal = inputPath;
         CompletableFuture.runAsync(() -> {
-            processVideo(videoId, inputPath, startTime);
+            processVideo(videoId, inputPathFinal, startTime);
         }, supervisionExecutor);
 
         String uploadStatusUrl = buildUploadStatusUrl(ctx, videoId);
