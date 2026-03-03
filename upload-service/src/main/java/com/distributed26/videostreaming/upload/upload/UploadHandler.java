@@ -262,7 +262,7 @@ public class UploadHandler {
         try {
             String key = videoId + "/metadata.json";
             byte[] payload = OBJECT_MAPPER.writeValueAsBytes(
-                java.util.Map.of("videoId", videoId, "name", videoName)
+                java.util.Map.of("videoId", videoId, "videoName", videoName)
             );
             storageClient.uploadFile(key, new ByteArrayInputStream(payload), payload.length);
             logger.info("Stored video metadata at {}", key);
