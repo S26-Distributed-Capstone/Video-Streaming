@@ -6,8 +6,10 @@ import com.distributed26.videostreaming.shared.upload.events.JobTaskEvent;
 import com.distributed26.videostreaming.shared.upload.events.UploadMetaEvent;
 import com.distributed26.videostreaming.upload.db.SegmentUploadRepository;
 import com.distributed26.videostreaming.upload.db.VideoUploadRepository;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.javalin.http.Context;
 import io.javalin.http.UploadedFile;
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -39,6 +41,8 @@ import io.github.cdimascio.dotenv.Dotenv;
 
 public class UploadHandler {
     private static final Logger logger = LogManager.getLogger(UploadHandler.class);
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final int MAX_VIDEO_NAME_LENGTH = 200;
     private final ObjectStorageClient storageClient;
     private final JobTaskBus jobTaskBus;
     private final VideoUploadRepository videoUploadRepository;
@@ -127,22 +131,17 @@ public class UploadHandler {
         String filename = uploadedFile.filename();
         logger.info("Receiving upload for file: {}", filename);
 
-        final String videoId = resolveVideoId(ctx);
-        if (videoUploadRepository != null) {
-            int totalSegments = 0;
-            try {
-                totalSegments = videoUploadRepository.findByVideoId(videoId)
-                    .map(r -> r.getTotalSegments())
-                    .orElse(0);
-            } catch (Exception e) {
-                logger.warn("Failed to load existing upload record for videoId={}", videoId, e);
-            }
-            videoUploadRepository.create(videoId, totalSegments, "PROCESSING", machineId, containerId);
+        String videoName = resolveVideoName(ctx);
+        if (videoName == null) {
+            ctx.status(400).result("Missing or empty 'name' field");
+            return;
         }
+
+        final String videoId = resolveVideoId(ctx);
 
         // We need to copy the uploaded file to a safe location because Javalin cleans up
         // the uploaded file once the request handler returns.
-        Path inputPath;
+        Path inputPath = null;
         try {
             inputPath = Files.createTempFile("upload-" + videoId, ".tmp");
             try (InputStream is = uploadedFile.content()) {
@@ -152,6 +151,29 @@ public class UploadHandler {
             logger.error("Failed to save uploaded file", e);
             ctx.status(500).result("Failed to save uploaded file");
             return;
+        }
+
+        try {
+            storeVideoMetadata(videoId, videoName);
+        } catch (RuntimeException e) {
+            logger.error("Failed to store video metadata for videoId={}", videoId, e);
+            if (inputPath != null) {
+                try { Files.deleteIfExists(inputPath); } catch (IOException ignored) {}
+            }
+            ctx.status(500).result("Failed to store video metadata");
+            return;
+        }
+
+        if (videoUploadRepository != null) {
+            int totalSegments = 0;
+            try {
+                totalSegments = videoUploadRepository.findByVideoId(videoId)
+                    .map(r -> r.getTotalSegments())
+                    .orElse(0);
+            } catch (Exception e) {
+                logger.warn("Failed to load existing upload record for videoId={}", videoId, e);
+            }
+            videoUploadRepository.create(videoId, videoName, totalSegments, "PROCESSING", machineId, containerId);
         }
 
         if (videoUploadRepository != null) {
@@ -166,8 +188,9 @@ public class UploadHandler {
         }
 
         // Run the supervision logic on the supervision executor
+        final Path inputPathFinal = inputPath;
         CompletableFuture.runAsync(() -> {
-            processVideo(videoId, inputPath, startTime);
+            processVideo(videoId, inputPathFinal, startTime);
         }, supervisionExecutor);
 
         String uploadStatusUrl = buildUploadStatusUrl(ctx, videoId);
@@ -218,6 +241,49 @@ public class UploadHandler {
         return videoId;
     }
 
+    private String resolveVideoName(Context ctx) {
+        String name = ctx.formParam("name");
+        if (name == null || name.isBlank()) {
+            name = ctx.formParam("videoName");
+        }
+        if (name == null || name.isBlank()) {
+            name = ctx.queryParam("name");
+        }
+        if (name == null) {
+            return null;
+        }
+        String trimmed = name.trim();
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+        if (trimmed.length() > MAX_VIDEO_NAME_LENGTH) {
+            return null;
+        }
+        return trimmed;
+    }
+
+    private void storeVideoMetadata(String videoId, String videoName) {
+        try {
+            String key = videoId + "/metadata.json";
+            byte[] payload = OBJECT_MAPPER.writeValueAsBytes(
+                java.util.Map.of("videoId", videoId, "videoName", videoName)
+            );
+            storageClient.uploadFile(key, new ByteArrayInputStream(payload), payload.length);
+            logger.info("Stored video metadata at {}", key);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to store video metadata", e);
+        }
+    }
+
+    private void deleteVideoMetadata(String videoId) {
+        try {
+            storageClient.deleteFile(videoId + "/metadata.json");
+            logger.info("Deleted video metadata for videoId={}", videoId);
+        } catch (Exception e) {
+            logger.warn("Failed to delete video metadata for videoId={}", videoId, e);
+        }
+    }
+
     private void processVideo(String videoId, Path inputPath, long startTime) {
         Path tempOutput = null;
 
@@ -256,6 +322,13 @@ public class UploadHandler {
             // Using thread-safe Set in case future changes introduce concurrent access
             Set<Path> uploadedFiles = ConcurrentHashMap.newKeySet();
             Set<Integer> uploadedSegmentNumbers = ConcurrentHashMap.newKeySet();
+            if (segmentUploadRepository != null) {
+                try {
+                    uploadedSegmentNumbers.addAll(segmentUploadRepository.findSegmentNumbers(videoId));
+                } catch (Exception e) {
+                    logger.warn("Failed to load existing segments for videoId={}", videoId, e);
+                }
+            }
             // Track segments uploaded in this processing run only.
             // We do not load or consider previously uploaded segments from Postgres or object storage here.
 
@@ -339,6 +412,7 @@ public class UploadHandler {
             if (videoUploadRepository != null) {
                 videoUploadRepository.updateStatus(videoId, "FAILED");
             }
+            deleteVideoMetadata(videoId);
             // Here you would typically update a database status to "FAILED"
         } finally {
             // Give the OS a moment to release file locks if the process was just killed

@@ -17,6 +17,10 @@
 
     <section class="panel">
       <div class="field">
+        <label for="videoName">Video Name</label>
+        <input id="videoName" type="text" placeholder="Enter a title" maxlength="200" />
+      </div>
+      <div class="field">
         <label for="fileInput">Video File</label>
         <input id="fileInput" type="file" accept="video/*" />
       </div>
@@ -57,7 +61,7 @@
         <button id="refreshReadyBtn" type="button">Refresh Ready Videos</button>
       </div>
       <div class="field">
-        <label>Ready Video IDs</label>
+        <label>Ready Videos</label>
         <ul id="readyList" class="ready-list"></ul>
       </div>
       <div id="playerStatus" class="done hidden"></div>

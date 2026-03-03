@@ -113,6 +113,7 @@ public class UploadHandlerIntegrationTest {
             MultipartBody requestBody = new MultipartBody.Builder()
                 .setType(MultipartBody.FORM)
                 .addFormDataPart("file", "integration-test.mp4", fileBody)
+                .addFormDataPart("name", "Integration Test Video")
                 .build();
 
             try (var response = client.request("/upload", builder ->
@@ -141,9 +142,14 @@ public class UploadHandlerIntegrationTest {
         assertTrue(uploadedKeys.stream().allMatch(k -> k.contains(finalVideoId)),
             "All keys should contain video ID");
 
-        // All keys should follow the pattern: {videoId}/chunks/{filename}
-        assertTrue(uploadedKeys.stream().allMatch(k -> k.matches("[a-f0-9-]+/chunks/.+")),
-            "All keys should follow expected pattern");
+        // Chunk keys should follow the pattern: {videoId}/chunks/{filename}
+        assertTrue(uploadedKeys.stream()
+                .filter(k -> k.contains("/chunks/"))
+                .allMatch(k -> k.matches("[a-f0-9-]+/chunks/.+")),
+            "Chunk keys should follow expected pattern");
+
+        assertTrue(uploadedKeys.stream().anyMatch(k -> k.endsWith("/metadata.json")),
+            "Should have uploaded metadata.json");
 
         // Verify playlist was uploaded
         assertTrue(uploadedKeys.stream().anyMatch(k -> k.endsWith("output.m3u8")),
@@ -188,6 +194,7 @@ public class UploadHandlerIntegrationTest {
             MultipartBody requestBody = new MultipartBody.Builder()
                 .setType(MultipartBody.FORM)
                 .addFormDataPart("file", "fail-test.mp4", fileBody)
+                .addFormDataPart("name", "Fail Test Video")
                 .build();
 
             try (var response = client.request("/upload", builder ->
@@ -236,11 +243,12 @@ public class UploadHandlerIntegrationTest {
             MultipartBody requestBody = new MultipartBody.Builder()
                 .setType(MultipartBody.FORM)
                 .addFormDataPart("file", "cleanup-test.mp4", fileBody)
+                .addFormDataPart("name", "Cleanup Test Video")
                 .build();
 
             try (var response = client.request("/upload", builder ->
                 builder.post(requestBody))) {
-                assertEquals(202, response.code());
+                assertEquals(500, response.code());
             }
         });
 
@@ -288,6 +296,7 @@ public class UploadHandlerIntegrationTest {
             MultipartBody requestBody = new MultipartBody.Builder()
                 .setType(MultipartBody.FORM)
                 .addFormDataPart("file", "progressive-test.mp4", fileBody)
+                .addFormDataPart("name", "Progressive Test Video")
                 .build();
 
             try (var response = client.request("/upload", builder ->
@@ -332,7 +341,7 @@ public class UploadHandlerIntegrationTest {
         VideoUploadRepository videoRepo = new VideoUploadRepository(jdbcUrl, username, password);
         SegmentUploadRepository segmentRepo = new SegmentUploadRepository(jdbcUrl, username, password);
         String videoId = UUID.randomUUID().toString();
-        videoRepo.create(videoId, 0, "PROCESSING", "test-machine", "test-container");
+        videoRepo.create(videoId, "Retry Test Video", 0, "PROCESSING", "test-machine", "test-container");
         segmentRepo.insert(videoId, 0);
 
         List<String> uploadedKeys = new CopyOnWriteArrayList<>();
@@ -365,6 +374,7 @@ public class UploadHandlerIntegrationTest {
                 MultipartBody requestBody = new MultipartBody.Builder()
                     .setType(MultipartBody.FORM)
                     .addFormDataPart("file", "retry-test.mp4", fileBody)
+                    .addFormDataPart("name", "Retry Test Video")
                     .addFormDataPart("videoId", videoId)
                     .build();
 
@@ -445,8 +455,5 @@ public class UploadHandlerIntegrationTest {
         }
     }
 }
-
-
-
 
 

@@ -37,12 +37,20 @@ public class VideoUploadRepository {
         return new VideoUploadRepository(url, user, pass);
     }
 
-    public void create(String videoId, int totalSegments, String status, String machineId, String containerId) {
+    public void create(
+            String videoId,
+            String videoName,
+            int totalSegments,
+            String status,
+            String machineId,
+            String containerId
+    ) {
         String sql = """
-            INSERT INTO video_upload (video_id, total_segments, status, machine_id, container_id)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO video_upload (video_id, video_name, total_segments, status, machine_id, container_id)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT (video_id) DO UPDATE
-            SET total_segments = EXCLUDED.total_segments,
+            SET video_name = EXCLUDED.video_name,
+                total_segments = EXCLUDED.total_segments,
                 status = EXCLUDED.status,
                 machine_id = EXCLUDED.machine_id,
                 container_id = EXCLUDED.container_id
@@ -50,10 +58,11 @@ public class VideoUploadRepository {
         try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setObject(1, UUID.fromString(videoId));
-            ps.setInt(2, totalSegments);
-            ps.setString(3, status);
-            ps.setString(4, machineId);
-            ps.setString(5, containerId);
+            ps.setString(2, videoName);
+            ps.setInt(3, totalSegments);
+            ps.setString(4, status);
+            ps.setString(5, machineId);
+            ps.setString(6, containerId);
             ps.executeUpdate();
         } catch (SQLException e) {
             throw new RuntimeException("Failed to insert video_upload", e);
@@ -86,7 +95,7 @@ public class VideoUploadRepository {
     }
 
     public Optional<VideoUploadRecord> findByVideoId(String videoId) {
-        String sql = "SELECT video_id, total_segments, status, machine_id, container_id FROM video_upload WHERE video_id = ?";
+        String sql = "SELECT video_id, video_name, total_segments, status, machine_id, container_id FROM video_upload WHERE video_id = ?";
         try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setObject(1, UUID.fromString(videoId));
@@ -95,11 +104,12 @@ public class VideoUploadRepository {
                     return Optional.empty();
                 }
                 String id = rs.getString("video_id");
+                String name = rs.getString("video_name");
                 int totalSegments = rs.getInt("total_segments");
                 String status = rs.getString("status");
                 String machineId = rs.getString("machine_id");
                 String containerId = rs.getString("container_id");
-                return Optional.of(new VideoUploadRecord(id, totalSegments, status, machineId, containerId));
+                return Optional.of(new VideoUploadRecord(id, name, totalSegments, status, machineId, containerId));
             }
         } catch (SQLException e) {
             throw new RuntimeException("Failed to query video_upload", e);

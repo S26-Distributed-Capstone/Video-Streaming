@@ -72,4 +72,27 @@ public class VideoStatusRepository {
             throw new RuntimeException("Failed to query completed video IDs", e);
         }
     }
+
+    public List<ReadyVideoRecord> findCompletedVideos(int limit) {
+        String sql = "SELECT video_id, video_name FROM video_upload WHERE status = 'COMPLETED' ORDER BY id DESC LIMIT ?";
+        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setInt(1, limit);
+            try (ResultSet rs = ps.executeQuery()) {
+                List<ReadyVideoRecord> results = new ArrayList<>();
+                while (rs.next()) {
+                    results.add(new ReadyVideoRecord(
+                        rs.getString("video_id"),
+                        rs.getString("video_name")
+                    ));
+                }
+                return results;
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to query completed videos", e);
+        }
+    }
+
+    public record ReadyVideoRecord(String videoId, String videoName) {
+    }
 }
