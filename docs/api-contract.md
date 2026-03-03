@@ -49,7 +49,10 @@ Provide a clear, shared reference for client interactions. Once merged, any chan
 - Success response: `200 OK`
 	- Body: JSON array of objects:
 		```json
-		{ "videoId": "<uuid>", "videoName": "<string>" }
+		[
+			{ "videoId": "<uuid-1>", "videoName": "Intro to Streaming" },
+			{ "videoId": "<uuid-2>", "videoName": "Advanced Encoding" }
+		]
 		```
 
 #### `GET /stream/{videoId}/manifest`
