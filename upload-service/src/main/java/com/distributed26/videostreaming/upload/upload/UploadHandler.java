@@ -139,10 +139,27 @@ public class UploadHandler {
 
         final String videoId = resolveVideoId(ctx);
 
+        // We need to copy the uploaded file to a safe location because Javalin cleans up
+        // the uploaded file once the request handler returns.
+        Path inputPath = null;
+        try {
+            inputPath = Files.createTempFile("upload-" + videoId, ".tmp");
+            try (InputStream is = uploadedFile.content()) {
+                Files.copy(is, inputPath, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } catch (IOException e) {
+            logger.error("Failed to save uploaded file", e);
+            ctx.status(500).result("Failed to save uploaded file");
+            return;
+        }
+
         try {
             storeVideoMetadata(videoId, videoName);
         } catch (RuntimeException e) {
             logger.error("Failed to store video metadata for videoId={}", videoId, e);
+            if (inputPath != null) {
+                try { Files.deleteIfExists(inputPath); } catch (IOException ignored) {}
+            }
             ctx.status(500).result("Failed to store video metadata");
             return;
         }
@@ -157,20 +174,6 @@ public class UploadHandler {
                 logger.warn("Failed to load existing upload record for videoId={}", videoId, e);
             }
             videoUploadRepository.create(videoId, videoName, totalSegments, "PROCESSING", machineId, containerId);
-        }
-
-        // We need to copy the uploaded file to a safe location because Javalin cleans up
-        // the uploaded file once the request handler returns.
-        Path inputPath;
-        try {
-            inputPath = Files.createTempFile("upload-" + videoId, ".tmp");
-            try (InputStream is = uploadedFile.content()) {
-                Files.copy(is, inputPath, StandardCopyOption.REPLACE_EXISTING);
-            }
-        } catch (IOException e) {
-            logger.error("Failed to save uploaded file", e);
-            ctx.status(500).result("Failed to save uploaded file");
-            return;
         }
 
         if (videoUploadRepository != null) {
@@ -268,6 +271,15 @@ public class UploadHandler {
             logger.info("Stored video metadata at {}", key);
         } catch (Exception e) {
             throw new RuntimeException("Failed to store video metadata", e);
+        }
+    }
+
+    private void deleteVideoMetadata(String videoId) {
+        try {
+            storageClient.deleteFile(videoId + "/metadata.json");
+            logger.info("Deleted video metadata for videoId={}", videoId);
+        } catch (Exception e) {
+            logger.warn("Failed to delete video metadata for videoId={}", videoId, e);
         }
     }
 
@@ -399,6 +411,7 @@ public class UploadHandler {
             if (videoUploadRepository != null) {
                 videoUploadRepository.updateStatus(videoId, "FAILED");
             }
+            deleteVideoMetadata(videoId);
             // Here you would typically update a database status to "FAILED"
         } finally {
             // Give the OS a moment to release file locks if the process was just killed

@@ -11,15 +11,15 @@ Provide a clear, shared reference for client interactions. Once merged, any chan
 	- Fields: `file` (video) and `name` (video title)
 - Success response: `202 Accepted`
 	```json
-	{ "videoId": "<uuid>", "uploadStatusUrl": "<ws-url>" }
+	{ "videoId": "<uuid>", "uploadStatusUrl": "ws(s)://<host>/upload-status?jobId=<uuid>" }
 	```
 - Error responses:
 	- `400 Bad Request` — no file or name provided
 	- `500 Internal Server Error` — storage failure
 
-#### `GET /video/{videoId}/status/stream`
+#### `GET /upload-status?jobId={videoId}`
 - Purpose: Real-time status updates via WebSocket, eliminating the need for polling
-- Protocol: HTTP upgrade to WebSocket
+- Protocol: HTTP upgrade to WebSocket (endpoint corresponds to `uploadStatusUrl`)
 - Message format: JSON status messages pushed to client as the video progresses through lifecycle states
 	```json
 	{
