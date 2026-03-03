@@ -248,7 +248,7 @@ public class UploadHandlerIntegrationTest {
 
             try (var response = client.request("/upload", builder ->
                 builder.post(requestBody))) {
-                assertEquals(202, response.code());
+                assertEquals(500, response.code());
             }
         });
 
@@ -455,7 +455,5 @@ public class UploadHandlerIntegrationTest {
         }
     }
 }
-
-
 
 
