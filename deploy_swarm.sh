@@ -1,5 +1,17 @@
 #!/bin/sh
 set -e
+set -a
+if [ -f ./.env ]; then
+  . ./.env
+elif [ -f ./.env.example ]; then
+  echo "Warning: .env not found, falling back to .env.example" >&2
+  . ./.env.example
+else
+  echo "Error: neither .env nor .env.example exists. Please create a .env file before running this script." >&2
+  exit 1
+fi
+set +a
+
 
 STACK_NAME="video"
 IMAGE_NAME="video-streaming-app:latest"
@@ -30,5 +42,11 @@ docker stack deploy -c "${STACK_FILE}" "${STACK_NAME}"
 
 echo "Scaling streaming-service to 3 replicas..."
 docker service scale "${STACK_NAME}_streaming-service=3"
+
+echo "Scaling upload-service to 3 replicas..."
+docker service scale "${STACK_NAME}_upload-service=3"
+
+echo "Scaling processing-service to 3 replicas..."
+docker service scale "${STACK_NAME}_processing-service=3"
 
 echo "Done."

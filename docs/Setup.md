@@ -71,18 +71,13 @@ With Docker Compose running, open:
 - `http://localhost:8080/`
 
 To stream a completed video:
-1. Upload a video and wait until it is marked `COMPLETED`.
-2. In the UI, use the "Ready Video IDs" list and click **Play Selected**.
+1. Upload a video and wait until it is processed.
+2. In the UI, use the "Ready Videos" list and click **Play Selected**.
 3. The player uses HLS (Safari native, `hls.js` for other browsers) and streams from `http://localhost:8083`.
 
 ## Run With Docker Swarm (Single Machine)
 
-### 1) Build the image
-```bash
-docker build -t video-streaming-app:latest .
-```
-
-### 2) Deploy the Swarm stack
+### 1) Deploy the Swarm stack
 ```bash
 ./deploy_swarm.sh
 ```
@@ -90,7 +85,16 @@ docker build -t video-streaming-app:latest .
 This will:
 - Create the `video_default` overlay network (if missing)
 - Deploy the stack from `docker_compose.swarm.yaml`
-- Start 3 replicas of the streaming service
+- Start 3 replicas each of the upload, processing, and streaming services
+
+Note: `docker stack deploy` does not automatically load `.env`, so `deploy_swarm.sh`
+exports `.env` into the environment before deploying.
+
+Swarm ports:
+- Upload Service: `http://localhost:8080`
+- Status Service: `http://localhost:8081`
+- Processing Service: `http://localhost:8082`
+- Streaming Service: `http://localhost:8083`
 
 ### 3) Stop the Swarm stack
 ```bash
@@ -103,5 +107,6 @@ docker stack rm video
 - Logs are written to `logs/upload-service.log` (and the service also prints to console).
 - All data is persisted in Docker named volumes (`rabbitmq_data`, `minio_data`, `postgres_data`).
 - The application reads credentials from the `.env` file in the project root.
+- For Swarm, `.env` should use service hostnames (`postgres`, `rabbitmq`, `minio`) rather than `localhost`.
 - Status endpoints are served separately at `http://localhost:8081`.
 - `SERVICE_MODE` is set in `docker-compose.yaml` to start either the upload or status service.
