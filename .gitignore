@@ -68,8 +68,3 @@ release.properties
 /out/             # IntelliJ output directory
 nbproject/        # NetBeans project files
 *.orig
-
-#Docker
-*.swarm.yaml
-# Local-only swarm config
-docker_compose.swarm.yaml

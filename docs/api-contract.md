@@ -4,6 +4,12 @@ This document captures the external HTTP API contract for the system. It is inte
 ## Objective
 Provide a clear, shared reference for client interactions. Once merged, any changes to endpoint signatures, request/response formats, or error behavior must be reviewed as breaking changes.
 
+## Default Ports (Docker Swarm)
+- Upload service: `8080`
+- Status service: `8081` (WebSocket `/upload-status`)
+- Processing service: `8082`
+- Streaming service: `8083`
+
 ## 1. Upload Service Endpoints
 
 #### `POST /upload`

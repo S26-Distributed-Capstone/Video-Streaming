@@ -99,8 +99,11 @@ def is_upload_container(event, name_prefix, label_filter):
         key, _, expected = label_filter.partition("=")
         if attrs.get(key) == expected:
             return True
-    if name_prefix and name.startswith(name_prefix):
-        return True
+    if name_prefix:
+        prefixes = [p.strip() for p in name_prefix.split(",") if p.strip()]
+        for prefix in prefixes:
+            if name.startswith(prefix) or prefix in name:
+                return True
     return False
 
 

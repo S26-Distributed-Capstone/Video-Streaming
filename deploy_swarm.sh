@@ -1,5 +1,9 @@
 #!/bin/sh
 set -e
+set -a
+. ./.env
+set +a
+
 
 STACK_NAME="video"
 IMAGE_NAME="video-streaming-app:latest"
@@ -30,5 +34,14 @@ docker stack deploy -c "${STACK_FILE}" "${STACK_NAME}"
 
 echo "Scaling streaming-service to 3 replicas..."
 docker service scale "${STACK_NAME}_streaming-service=3"
+
+echo "Scaling upload-service to 3 replicas..."
+docker service scale "${STACK_NAME}_upload-service=3"
+
+echo "Scaling processing-service to 3 replicas..."
+docker service scale "${STACK_NAME}_processing-service=3"
+
+echo "Scaling node-watcher to 3 replicas..."
+docker service scale "${STACK_NAME}_node-watcher=3"
 
 echo "Done."
