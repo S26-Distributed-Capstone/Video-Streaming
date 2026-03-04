@@ -49,7 +49,4 @@ docker service scale "${STACK_NAME}_upload-service=3"
 echo "Scaling processing-service to 3 replicas..."
 docker service scale "${STACK_NAME}_processing-service=3"
 
-echo "Scaling node-watcher to 3 replicas..."
-docker service scale "${STACK_NAME}_node-watcher=3"
-
 echo "Done."

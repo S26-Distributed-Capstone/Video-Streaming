@@ -241,6 +241,8 @@ services:
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
     ports:
       - "5672:5672"
       - "15672:15672"
@@ -253,6 +255,8 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+    volumes:
+      - minio_data:/data
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -315,9 +319,11 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     deploy:
-      replicas: 3
+      mode: global
 
 volumes:
+  rabbitmq_data:
+  minio_data:
   postgres_data:
 
 networks:
