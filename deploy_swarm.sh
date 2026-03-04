@@ -1,7 +1,15 @@
 #!/bin/sh
 set -e
 set -a
-. ./.env
+if [ -f ./.env ]; then
+  . ./.env
+elif [ -f ./.env.example ]; then
+  echo "Warning: .env not found, falling back to .env.example" >&2
+  . ./.env.example
+else
+  echo "Error: neither .env nor .env.example exists. Please create a .env file before running this script." >&2
+  exit 1
+fi
 set +a
 
 
