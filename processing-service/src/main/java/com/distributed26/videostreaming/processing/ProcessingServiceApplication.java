@@ -181,15 +181,20 @@ public class ProcessingServiceApplication {
                         videoId, meta.getTotalSegments());
 
             if (MANIFESTS_IN_FLIGHT.add(videoId)) {
-                manifestExecutor.execute(() -> {
-                    try {
-                        manifestService.generateIfNeeded(videoId, meta.getTotalSegments());
-                    } catch (Exception e) {
-                        LOGGER.error("Manifest generation failed for videoId={}", videoId, e);
-                    } finally {
-                        MANIFESTS_IN_FLIGHT.remove(videoId);
-                    }
-                });
+                try {
+                    manifestExecutor.execute(() -> {
+                        try {
+                            manifestService.generateIfNeeded(videoId, meta.getTotalSegments());
+                        } catch (Exception e) {
+                            LOGGER.error("Manifest generation failed for videoId={}", videoId, e);
+                        } finally {
+                            MANIFESTS_IN_FLIGHT.remove(videoId);
+                        }
+                    });
+                } catch (RuntimeException e) {
+                    MANIFESTS_IN_FLIGHT.remove(videoId);
+                    LOGGER.error("Failed to submit manifest generation task for videoId={}", videoId, e);
+                }
             } else {
                 LOGGER.debug("Manifest generation already running/skipped for videoId={}", videoId);
             }
