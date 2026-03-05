@@ -47,6 +47,9 @@ services:
     env_file:
       - .env
     environment:
+      PG_URL: jdbc:postgresql://postgres:5432/${PG_DB}
+      PG_USER: ${PG_USER}
+      PG_PASSWORD: ${PG_PASSWORD}
       MINIO_ENDPOINT: http://minio:9000
       RABBITMQ_HOST: rabbitmq
       SERVICE_MODE: processing

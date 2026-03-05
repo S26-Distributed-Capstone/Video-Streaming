@@ -2,8 +2,11 @@ package com.distributed26.videostreaming.upload.upload;
 
 import com.distributed26.videostreaming.shared.upload.JobTaskBus;
 import com.distributed26.videostreaming.shared.upload.JobTaskListener;
+import com.distributed26.videostreaming.shared.upload.events.TranscodeProgressEvent;
+import com.distributed26.videostreaming.shared.upload.events.TranscodeSegmentState;
 import com.distributed26.videostreaming.shared.upload.events.UploadProgressEvent;
 import com.distributed26.videostreaming.upload.db.SegmentUploadRepository;
+import com.distributed26.videostreaming.upload.db.TranscodedSegmentStatusRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -27,12 +30,18 @@ public class UploadStatusWebSocket {
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
     private final JobTaskBus jobTaskBus;
     private final SegmentUploadRepository segmentUploadRepository;
+    private final TranscodedSegmentStatusRepository transcodedSegmentStatusRepository;
     private final Map<WsContext, JobTaskListener> jobListenersByContext = new ConcurrentHashMap<>();
     private final Map<WsContext, String> jobIdByContext = new ConcurrentHashMap<>();
 
-    public UploadStatusWebSocket(JobTaskBus jobTaskBus, SegmentUploadRepository segmentUploadRepository) {
+    public UploadStatusWebSocket(
+            JobTaskBus jobTaskBus,
+            SegmentUploadRepository segmentUploadRepository,
+            TranscodedSegmentStatusRepository transcodedSegmentStatusRepository
+    ) {
         this.jobTaskBus = Objects.requireNonNull(jobTaskBus, "jobTaskBus is null");
         this.segmentUploadRepository = segmentUploadRepository;
+        this.transcodedSegmentStatusRepository = transcodedSegmentStatusRepository;
     }
 
     public void configure(WsConfig ws) {
@@ -95,6 +104,16 @@ public class UploadStatusWebSocket {
         } else {
             logger.warn("SegmentUploadRepository is null; progress snapshot disabled");
         }
+        if (transcodedSegmentStatusRepository != null) {
+            try {
+                sendTranscodeSnapshot(ctx, jobId);
+            } catch (Exception e) {
+                logger.warn("Failed to fetch transcode progress for jobId={}", jobId, e);
+                ctx.send("{\"error\":\"transcode_progress_lookup_failed\"}");
+            }
+        } else {
+            logger.warn("TranscodedSegmentStatusRepository is null; transcode snapshot disabled");
+        }
     }
 
     private void cleanup(WsCloseContext ctx) {
@@ -120,12 +139,25 @@ public class UploadStatusWebSocket {
         ctx.send(objectMapper.writeValueAsString(new UploadProgressEvent(jobId, completedSegments)));
     }
 
+    private void sendTranscodeSnapshot(WsContext ctx, String jobId) throws JsonProcessingException {
+        String[] profiles = {"low", "medium", "high"};
+        for (String profile : profiles) {
+            int done = transcodedSegmentStatusRepository.countByState(jobId, profile, TranscodeSegmentState.DONE.name());
+            ctx.send(objectMapper.writeValueAsString(
+                new TranscodeProgressEvent(jobId, profile, -1, TranscodeSegmentState.DONE, done, 0)
+            ));
+        }
+    }
+
     private String describeEventType(com.distributed26.videostreaming.shared.upload.events.JobTaskEvent event) {
         if (event instanceof com.distributed26.videostreaming.shared.upload.events.UploadFailedEvent failed) {
             return failed.getType();
         }
         if (event instanceof com.distributed26.videostreaming.shared.upload.events.UploadMetaEvent) {
             return "meta";
+        }
+        if (event instanceof TranscodeProgressEvent) {
+            return "transcode_progress";
         }
         return "task";
     }

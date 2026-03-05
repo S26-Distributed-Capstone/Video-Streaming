@@ -1,10 +1,13 @@
 package com.distributed26.videostreaming.processing;
 
+import com.distributed26.videostreaming.processing.db.TranscodedSegmentStatusRepository;
 import com.distributed26.videostreaming.shared.config.StorageConfig;
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
 import com.distributed26.videostreaming.shared.storage.S3StorageClient;
 import com.distributed26.videostreaming.shared.upload.RabbitMQJobTaskBus;
 import com.distributed26.videostreaming.shared.upload.events.JobTaskEvent;
+import com.distributed26.videostreaming.shared.upload.events.TranscodeProgressEvent;
+import com.distributed26.videostreaming.shared.upload.events.TranscodeSegmentState;
 import com.distributed26.videostreaming.shared.upload.events.UploadMetaEvent;
 import io.github.cdimascio.dotenv.Dotenv;
 import io.javalin.Javalin;
@@ -42,6 +45,11 @@ public class ProcessingServiceApplication {
     private static final Logger LOGGER = LogManager.getLogger(ProcessingServiceApplication.class);
     private static final String MANIFEST_PROCESSOR_EXECUTOR_NAME = "AbrManifestGenerator";
     private static final Set<String> MANIFESTS_IN_FLIGHT = ConcurrentHashMap.newKeySet();
+    private static final Map<String, Integer> TOTAL_SEGMENTS_BY_VIDEO = new ConcurrentHashMap<>();
+    private static volatile TranscodedSegmentStatusRepository transcodeStatusRepository;
+    private static volatile RabbitMQJobTaskBus statusBus;
+    private static volatile AbrManifestService manifestServiceRef;
+    private static volatile ExecutorService manifestExecutorRef;
 
     static final TranscodingProfile[] PROFILES = {
         TranscodingProfile.LOW,
@@ -67,30 +75,34 @@ public class ProcessingServiceApplication {
         storageClient.ensureBucketExists();
         LOGGER.info("Storage ready — bucket={}", storageConfig.getDefaultBucketName());
 
-        // Worker pool
-        int poolSize = Integer.parseInt(getEnvOrDotenv(dotenv, "WORKER_POOL_SIZE", "4"));
-        BlockingQueue<TranscodingTask> taskQueue = new LinkedBlockingQueue<>();
-        List<TranscodingWorker> workers = new ArrayList<>(poolSize);
-        for (int i = 0; i < poolSize; i++) {
-            TranscodingWorker w = new TranscodingWorker("worker-" + i, storageClient, taskQueue);
-            w.start();
-            workers.add(w);
-        }
-        LOGGER.info("Started {} transcoding worker(s)", poolSize);
-
         // RabbitMQ bus — fromEnv() reads SERVICE_MODE; any value other than
         // "upload" enables the AMQP consumer.  Set SERVICE_MODE=processing and
         // use a dedicated RABBITMQ_STATUS_QUEUE so the processing service gets
         // its own copy of every upload.status.* message (TOPIC fan-out).
         RabbitMQJobTaskBus bus = RabbitMQJobTaskBus.fromEnv();
+        statusBus = bus;
         AbrManifestService manifestService = new AbrManifestService(
                 storageClient,
                 Integer.parseInt(getEnvOrDotenv(dotenv, "ABR_MANIFEST_WAIT_SECONDS", "120"))
         );
+        manifestServiceRef = manifestService;
         ExecutorService manifestExecutor = Executors.newSingleThreadExecutor(
                 r -> new Thread(r, MANIFEST_PROCESSOR_EXECUTOR_NAME)
         );
+        manifestExecutorRef = manifestExecutor;
         LOGGER.info("RabbitMQJobTaskBus connected");
+
+        // Worker pool
+        int poolSize = Integer.parseInt(getEnvOrDotenv(dotenv, "WORKER_POOL_SIZE", "4"));
+        BlockingQueue<TranscodingTask> taskQueue = new LinkedBlockingQueue<>();
+        transcodeStatusRepository = createTranscodeStatusRepository();
+        List<TranscodingWorker> workers = new ArrayList<>(poolSize);
+        for (int i = 0; i < poolSize; i++) {
+            TranscodingWorker w = new TranscodingWorker("worker-" + i, storageClient, taskQueue, bus, transcodeStatusRepository);
+            w.start();
+            workers.add(w);
+        }
+        LOGGER.info("Started {} transcoding worker(s)", poolSize);
 
         // subscribeAll ensures every incoming event reaches onEvent() regardless
         // of whether we've seen that videoId before — fixing the first-event drop.
@@ -105,6 +117,8 @@ public class ProcessingServiceApplication {
             LOGGER.info("Shutdown: stopping workers...");
             workers.forEach(TranscodingWorker::stop);
             manifestExecutor.shutdownNow();
+            manifestExecutorRef = null;
+            manifestServiceRef = null;
             try { bus.close(); } catch (Exception e) { LOGGER.warn("Error closing bus", e); }
         }));
 
@@ -179,25 +193,8 @@ public class ProcessingServiceApplication {
             // Build variant + master manifests after source segmentation is done.
             LOGGER.info("UploadMetaEvent: videoId={} totalSegments={} (tasks already in flight)",
                         videoId, meta.getTotalSegments());
-
-            if (MANIFESTS_IN_FLIGHT.add(videoId)) {
-                try {
-                    manifestExecutor.execute(() -> {
-                        try {
-                            manifestService.generateIfNeeded(videoId, meta.getTotalSegments());
-                        } catch (Exception e) {
-                            LOGGER.error("Manifest generation failed for videoId={}", videoId, e);
-                        } finally {
-                            MANIFESTS_IN_FLIGHT.remove(videoId);
-                        }
-                    });
-                } catch (RuntimeException e) {
-                    MANIFESTS_IN_FLIGHT.remove(videoId);
-                    LOGGER.error("Failed to submit manifest generation task for videoId={}", videoId, e);
-                }
-            } else {
-                LOGGER.debug("Manifest generation already running/skipped for videoId={}", videoId);
-            }
+            TOTAL_SEGMENTS_BY_VIDEO.put(videoId, meta.getTotalSegments());
+            scheduleManifestGeneration(videoId, meta.getTotalSegments(), manifestService, manifestExecutor);
             return;
         }
 
@@ -211,8 +208,10 @@ public class ProcessingServiceApplication {
         }
         LOGGER.info("Chunk received: videoId={} key={} — queuing {} tasks",
                     videoId, chunkKey, PROFILES.length);
+        int segmentNumber = parseSegmentNumber(chunkKey);
         for (TranscodingProfile profile : PROFILES) {
             taskQueue.offer(new TranscodingTask(UUID.randomUUID().toString(), videoId, chunkKey, profile));
+            publishTranscodeState(videoId, profile.getName(), segmentNumber, TranscodeSegmentState.QUEUED);
         }
     }
 
@@ -229,5 +228,89 @@ public class ProcessingServiceApplication {
     static void resetState() {
         CHUNKS_BY_VIDEO.clear();
         MANIFESTS_IN_FLIGHT.clear();
+        TOTAL_SEGMENTS_BY_VIDEO.clear();
+    }
+
+    static void publishTranscodeState(String videoId, String profile, int segmentNumber, TranscodeSegmentState state) {
+        if (transcodeStatusRepository == null || statusBus == null || segmentNumber < 0) {
+            return;
+        }
+        try {
+            transcodeStatusRepository.upsertState(videoId, profile, segmentNumber, state);
+            int done = transcodeStatusRepository.countByState(videoId, profile, TranscodeSegmentState.DONE);
+            int total = TOTAL_SEGMENTS_BY_VIDEO.getOrDefault(videoId, 0);
+            statusBus.publish(new TranscodeProgressEvent(videoId, profile, segmentNumber, state, done, total));
+            if (state == TranscodeSegmentState.DONE && total > 0 && areAllProfilesDone(videoId, total)) {
+                scheduleManifestGeneration(videoId, total, manifestServiceRef, manifestExecutorRef);
+            }
+        } catch (Exception e) {
+            LOGGER.warn("Failed to persist/publish transcode progress videoId={} profile={} segment={} state={}",
+                    videoId, profile, segmentNumber, state, e);
+        }
+    }
+
+    private static boolean areAllProfilesDone(String videoId, int totalSegments) {
+        if (transcodeStatusRepository == null || totalSegments <= 0) {
+            return false;
+        }
+        for (TranscodingProfile profile : PROFILES) {
+            int done = transcodeStatusRepository.countByState(videoId, profile.getName(), TranscodeSegmentState.DONE);
+            if (done < totalSegments) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static void scheduleManifestGeneration(
+            String videoId,
+            int totalSegments,
+            AbrManifestService manifestService,
+            ExecutorService manifestExecutor
+    ) {
+        if (manifestService == null || manifestExecutor == null) {
+            LOGGER.warn("Cannot schedule manifest generation for videoId={} because manifest generator is not configured",
+                    videoId);
+            return;
+        }
+        if (!MANIFESTS_IN_FLIGHT.add(videoId)) {
+            LOGGER.debug("Manifest generation already running/skipped for videoId={}", videoId);
+            return;
+        }
+        try {
+            manifestExecutor.execute(() -> {
+                try {
+                    manifestService.generateIfNeeded(videoId, totalSegments);
+                } catch (Exception e) {
+                    LOGGER.error("Manifest generation failed for videoId={}", videoId, e);
+                } finally {
+                    MANIFESTS_IN_FLIGHT.remove(videoId);
+                }
+            });
+        } catch (RuntimeException e) {
+            MANIFESTS_IN_FLIGHT.remove(videoId);
+            LOGGER.error("Failed to submit manifest generation task for videoId={}", videoId, e);
+        }
+    }
+
+    private static int parseSegmentNumber(String chunkKey) {
+        if (chunkKey == null || chunkKey.isBlank()) {
+            return -1;
+        }
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("(\\d+)").matcher(chunkKey);
+        int last = -1;
+        while (matcher.find()) {
+            last = Integer.parseInt(matcher.group(1));
+        }
+        return last;
+    }
+
+    private static TranscodedSegmentStatusRepository createTranscodeStatusRepository() {
+        try {
+            return TranscodedSegmentStatusRepository.fromEnv();
+        } catch (IllegalStateException e) {
+            LOGGER.warn("Postgres not configured; transcoding progress disabled: {}", e.getMessage());
+            return null;
+        }
     }
 }

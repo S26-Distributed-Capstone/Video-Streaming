@@ -181,6 +181,9 @@ services:
   processing-service:
     image: video-streaming-app:latest
     environment:
+      PG_URL: ${PG_URL}
+      PG_USER: ${PG_USER}
+      PG_PASSWORD: ${PG_PASSWORD}
       MINIO_ENDPOINT: ${MINIO_ENDPOINT}
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
