@@ -6,10 +6,13 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.apache.logging.log4j.LogManager;
@@ -29,6 +32,9 @@ class AbrManifestService {
     private static final String MASTER_MANIFEST_KEY = "master.m3u8";
     private static final int DEFAULT_TARGET_SEGMENT_DURATION_SECONDS = 10;
     private static final long WAIT_INTERVAL_MILLIS = 1_000L;
+    private static final long INITIAL_POLL_INTERVAL_MILLIS = 500L;
+    private static final long MAX_POLL_INTERVAL_MILLIS = 10_000L;
+    private static final double BACKOFF_MULTIPLIER = 1.5;
 
     private final ObjectStorageClient storageClient;
     private final int maxWaitSeconds;
@@ -102,23 +108,33 @@ class AbrManifestService {
 
     private void waitForAllTranscodedSegments(String videoId, TranscodingProfile profile,
                                              List<SourceSegment> segments) throws IOException {
-        long deadline = System.currentTimeMillis() + (maxWaitSeconds * 1_000L);
-        while (System.currentTimeMillis() < deadline) {
-            boolean allReady = true;
-            for (SourceSegment segment : segments) {
-                String variantSegmentKey = videoId + "/processed/" + profile.getName() + "/" + segment.uri();
-                if (!storageClient.fileExists(variantSegmentKey)) {
-                    allReady = false;
-                    LOGGER.info("Waiting for transcoded segment: {}", variantSegmentKey);
-                    break;
-                }
-            }
+        String prefix = videoId + "/processed/" + profile.getName() + "/";
+        // Build the set of keys still outstanding; it shrinks as segments appear.
+        Set<String> remaining = new LinkedHashSet<>();
+        for (SourceSegment segment : segments) {
+            remaining.add(prefix + segment.uri());
+        }
 
-            if (allReady) {
+        long deadline = System.currentTimeMillis() + (maxWaitSeconds * 1_000L);
+        long pollInterval = INITIAL_POLL_INTERVAL_MILLIS;
+
+        while (!remaining.isEmpty() && System.currentTimeMillis() < deadline) {
+            // One listFiles() call per interval instead of one fileExists() per segment.
+            Set<String> existing = new HashSet<>(storageClient.listFiles(prefix));
+            remaining.removeIf(existing::contains);
+
+            if (remaining.isEmpty()) {
                 return;
             }
-            sleepQuietly(WAIT_INTERVAL_MILLIS);
+
+            LOGGER.debug("Profile {}: waiting for {}/{} transcoded segments (videoId={})",
+                    profile.getName(), remaining.size(), segments.size(), videoId);
+
+            sleepQuietly(pollInterval);
+            // Exponential backoff: slow down polling for long-running encodes.
+            pollInterval = Math.min((long) (pollInterval * BACKOFF_MULTIPLIER), MAX_POLL_INTERVAL_MILLIS);
         }
+
         throw new IOException("Timed out generating ABR manifests: missing segments for profile " +
                 profile.getName() + " on videoId=" + videoId);
     }
