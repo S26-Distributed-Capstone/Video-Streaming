@@ -15,7 +15,9 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.Executors;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -38,6 +40,8 @@ import org.apache.logging.log4j.Logger;
  */
 public class ProcessingServiceApplication {
     private static final Logger LOGGER = LogManager.getLogger(ProcessingServiceApplication.class);
+    private static final String MANIFEST_PROCESSOR_EXECUTOR_NAME = "AbrManifestGenerator";
+    private static final Set<String> MANIFESTS_IN_FLIGHT = ConcurrentHashMap.newKeySet();
 
     static final TranscodingProfile[] PROFILES = {
         TranscodingProfile.LOW,
@@ -79,11 +83,18 @@ public class ProcessingServiceApplication {
         // use a dedicated RABBITMQ_STATUS_QUEUE so the processing service gets
         // its own copy of every upload.status.* message (TOPIC fan-out).
         RabbitMQJobTaskBus bus = RabbitMQJobTaskBus.fromEnv();
+        AbrManifestService manifestService = new AbrManifestService(
+                storageClient,
+                Integer.parseInt(getEnvOrDotenv(dotenv, "ABR_MANIFEST_WAIT_SECONDS", "120"))
+        );
+        ExecutorService manifestExecutor = Executors.newSingleThreadExecutor(
+                r -> new Thread(r, MANIFEST_PROCESSOR_EXECUTOR_NAME)
+        );
         LOGGER.info("RabbitMQJobTaskBus connected");
 
         // subscribeAll ensures every incoming event reaches onEvent() regardless
         // of whether we've seen that videoId before — fixing the first-event drop.
-        bus.subscribeAll(ev -> onEvent(ev, taskQueue, bus));
+        bus.subscribeAll(ev -> onEvent(ev, taskQueue, manifestService, manifestExecutor));
 
         LOGGER.info("Processing service ready — waiting for upload events...");
 
@@ -93,6 +104,7 @@ public class ProcessingServiceApplication {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             LOGGER.info("Shutdown: stopping workers...");
             workers.forEach(TranscodingWorker::stop);
+            manifestExecutor.shutdownNow();
             try { bus.close(); } catch (Exception e) { LOGGER.warn("Error closing bus", e); }
         }));
 
@@ -151,12 +163,36 @@ public class ProcessingServiceApplication {
 
     static void onEvent(JobTaskEvent event, BlockingQueue<TranscodingTask> taskQueue,
                         RabbitMQJobTaskBus bus) {
+        onEvent(event, taskQueue, null, null);
+    }
+
+    static void onEvent(JobTaskEvent event, BlockingQueue<TranscodingTask> taskQueue,
+                        AbrManifestService manifestService, ExecutorService manifestExecutor) {
         String videoId = event.getJobId();
 
         if (event instanceof UploadMetaEvent meta) {
-            // All chunks have already been queued as they arrived; nothing to do here.
+            if (manifestService == null || manifestExecutor == null) {
+                LOGGER.warn("Ignoring UploadMetaEvent for videoId={} because manifest generator is not configured",
+                        videoId);
+                return;
+            }
+            // Build variant + master manifests after source segmentation is done.
             LOGGER.info("UploadMetaEvent: videoId={} totalSegments={} (tasks already in flight)",
                         videoId, meta.getTotalSegments());
+
+            if (MANIFESTS_IN_FLIGHT.add(videoId)) {
+                manifestExecutor.execute(() -> {
+                    try {
+                        manifestService.generateIfNeeded(videoId, meta.getTotalSegments());
+                    } catch (Exception e) {
+                        LOGGER.error("Manifest generation failed for videoId={}", videoId, e);
+                    } finally {
+                        MANIFESTS_IN_FLIGHT.remove(videoId);
+                    }
+                });
+            } else {
+                LOGGER.debug("Manifest generation already running/skipped for videoId={}", videoId);
+            }
             return;
         }
 
@@ -187,5 +223,6 @@ public class ProcessingServiceApplication {
     /** Clears accumulated per-video state. Package-private for use in tests only. */
     static void resetState() {
         CHUNKS_BY_VIDEO.clear();
+        MANIFESTS_IN_FLIGHT.clear();
     }
 }

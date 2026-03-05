@@ -62,16 +62,26 @@ Provide a clear, shared reference for client interactions. Once merged, any chan
 		```
 
 #### `GET /stream/{videoId}/manifest`
-- Returns the HLS manifest for a ready video
+- Returns the master HLS manifest for a ready video
 - Success response: `200 OK`
 	- Body: HLS playlist (M3U8) manifest
 	- `Content-Type: application/vnd.apple.mpegurl`
-	- Segment URIs are rewritten to `segment/{segmentId}` so they resolve under this endpoint
+	- URIs are rewritten so variant playlists resolve to `/stream/{videoId}/variant/{profile}/playlist.m3u8`
 - Error responses:
 	- `404 Not Found` — unknown video ID
 	- `409 Conflict` — video exists but is not yet ready for streaming
 
-#### `GET /stream/{videoId}/segment/{segmentId}`
+#### `GET /stream/{videoId}/variant/{profile}/playlist.m3u8`
+- Returns a variant profile playlist for a ready video
+- Success response: `200 OK`
+	- Body: HLS playlist (M3U8) variant manifest
+	- `Content-Type: application/vnd.apple.mpegurl`
+	- Segment URIs are rewritten to `segment/{segmentId}` so they resolve under this endpoint
+- Error responses:
+	- `400 Bad Request` — invalid profile
+	- `404 Not Found` — unknown video or missing variant manifest
+
+#### `GET /stream/{videoId}/variant/{profile}/segment/{segmentId}`
 - Returns a specific video segment
 - Success response:
 	- `200 OK` — full segment response
