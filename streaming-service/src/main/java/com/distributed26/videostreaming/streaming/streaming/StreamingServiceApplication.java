@@ -61,7 +61,6 @@ public class StreamingServiceApplication {
             );
         });
 
-        // Route stubs - logic will be implemented in next steps.
         app.get("/stream/{videoId}/manifest", ctx -> {
             if (!validateVideoId(ctx)) {
                 return;
@@ -70,10 +69,10 @@ public class StreamingServiceApplication {
                 return;
             }
             String videoId = ctx.pathParam("videoId");
-            String objectKey = videoId + "/chunks/output.m3u8";
+            String objectKey = videoId + "/manifest/master.m3u8";
             try (InputStream is = storageClient.downloadFile(objectKey)) {
                 String content = new String(is.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
-                String rewritten = rewriteManifest(content);
+                String rewritten = rewriteMasterManifest(content);
                 ctx.status(HttpStatus.OK)
                     .contentType("application/vnd.apple.mpegurl")
                     .result(rewritten);
@@ -112,6 +111,67 @@ public class StreamingServiceApplication {
             }
         });
 
+        app.get("/stream/{videoId}/variant/{profile}/playlist.m3u8", ctx -> {
+            if (!validateVideoId(ctx)) {
+                return;
+            }
+            String profile = ctx.pathParam("profile");
+            if (!validateProfile(profile)) {
+                ctx.status(HttpStatus.BAD_REQUEST).result("Invalid profile");
+                return;
+            }
+            if (!requireCompleted(ctx, videoStatusRepository)) {
+                return;
+            }
+            String videoId = ctx.pathParam("videoId");
+            String objectKey = videoId + "/manifest/" + profile + ".m3u8";
+            try (InputStream is = storageClient.downloadFile(objectKey)) {
+                String content = new String(is.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+                String rewritten = rewriteVariantManifest(content);
+                ctx.status(HttpStatus.OK)
+                    .contentType("application/vnd.apple.mpegurl")
+                    .result(rewritten);
+            } catch (NoSuchKeyException e) {
+                ctx.status(HttpStatus.NOT_FOUND).result("Variant manifest not found");
+            } catch (IOException e) {
+                logger.error("Failed to read variant manifest {}", objectKey, e);
+                ctx.status(HttpStatus.INTERNAL_SERVER_ERROR).result("Failed to read variant manifest");
+            }
+        });
+
+        app.get("/stream/{videoId}/variant/{profile}/segment/{segmentId}", ctx -> {
+            if (!validateVideoId(ctx)) {
+                return;
+            }
+            String profile = ctx.pathParam("profile");
+            if (!validateProfile(profile)) {
+                ctx.status(HttpStatus.BAD_REQUEST).result("Invalid profile");
+                return;
+            }
+            if (!requireCompleted(ctx, videoStatusRepository)) {
+                return;
+            }
+            String videoId = ctx.pathParam("videoId");
+            String segmentId = ctx.pathParam("segmentId");
+            if (!isValidSegmentId(segmentId)) {
+                ctx.status(HttpStatus.BAD_REQUEST).result("Invalid segment ID");
+                return;
+            }
+            String fileName = segmentId.endsWith(".ts") ? segmentId : segmentId + ".ts";
+            String objectKey = videoId + "/processed/" + profile + "/" + fileName;
+            try (InputStream is = storageClient.downloadFile(objectKey)) {
+                byte[] content = is.readAllBytes();
+                ctx.status(HttpStatus.OK)
+                    .contentType("video/MP2T")
+                    .result(content);
+            } catch (NoSuchKeyException e) {
+                ctx.status(HttpStatus.NOT_FOUND).result("Segment not found");
+            } catch (IOException e) {
+                logger.error("Failed to read segment {}", objectKey, e);
+                ctx.status(HttpStatus.INTERNAL_SERVER_ERROR).result("Failed to read segment");
+            }
+        });
+
         app.get("/stream/ready", ctx -> {
             if (videoStatusRepository == null) {
                 ctx.status(500).result("Streaming status checks are not configured");
@@ -128,7 +188,7 @@ public class StreamingServiceApplication {
             }
             var candidates = videoStatusRepository.findCompletedVideos(limit);
             var filtered = candidates.stream()
-                .filter(video -> storageClient.fileExists(video.videoId() + "/chunks/output.m3u8"))
+                .filter(video -> storageClient.fileExists(video.videoId() + "/manifest/master.m3u8"))
                 .map(video -> new ReadyVideoResponse(
                     video.videoId(),
                     video.videoName() == null || video.videoName().isBlank() ? video.videoId() : video.videoName()
@@ -222,6 +282,10 @@ public class StreamingServiceApplication {
         return segmentId.matches("^[A-Za-z0-9_-]+(\\.ts)?$");
     }
 
+    private static boolean validateProfile(String profile) {
+        return profile != null && profile.matches("^[A-Za-z0-9_-]+$");
+    }
+
     private static String resolveInstanceId() {
         String id = System.getenv("CONTAINER_ID");
         if (id == null || id.isBlank()) {
@@ -233,8 +297,26 @@ public class StreamingServiceApplication {
         return id;
     }
 
-    private static String rewriteManifest(String content) {
-        // Prefix segment lines so they resolve to /stream/{videoId}/segment/{segmentId}
+    private static String rewriteMasterManifest(String content) {
+        // Prefix variant playlist entries so they resolve under /stream/{videoId}/variant/...
+        String[] lines = content.split("\\r?\\n");
+        StringBuilder rewritten = new StringBuilder(content.length() + lines.length * 8);
+        for (String line : lines) {
+            if (!line.isEmpty()
+                    && !line.startsWith("#")
+                    && !line.startsWith("variant/")
+                    && !line.startsWith("http://")
+                    && !line.startsWith("https://")) {
+                rewritten.append("variant/").append(line);
+            } else {
+                rewritten.append(line);
+            }
+            rewritten.append('\n');
+        }
+        return rewritten.toString();
+    }
+
+    private static String rewriteVariantManifest(String content) {
         String[] lines = content.split("\\r?\\n");
         StringBuilder rewritten = new StringBuilder(content.length() + lines.length * 8);
         for (String line : lines) {

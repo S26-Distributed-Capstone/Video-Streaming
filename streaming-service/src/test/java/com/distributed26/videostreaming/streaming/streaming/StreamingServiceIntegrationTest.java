@@ -63,11 +63,14 @@ class StreamingServiceIntegrationTest {
         videoId = UUID.randomUUID().toString();
         insertVideoStatus(videoId, "COMPLETED");
 
-        byte[] manifest = "#EXTM3U\n#EXTINF:10,\n000.ts\n".getBytes(StandardCharsets.UTF_8);
-        storageClient.uploadFile(videoId + "/chunks/output.m3u8",
+        byte[] manifest = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nvariant/low/playlist.m3u8\n".getBytes(StandardCharsets.UTF_8);
+        storageClient.uploadFile(videoId + "/manifest/master.m3u8",
             new ByteArrayInputStream(manifest), manifest.length);
+        byte[] variantManifest = "#EXTM3U\n#EXTINF:10,\n000.ts\n#EXT-X-ENDLIST\n".getBytes(StandardCharsets.UTF_8);
+        storageClient.uploadFile(videoId + "/manifest/low.m3u8",
+            new ByteArrayInputStream(variantManifest), variantManifest.length);
         byte[] segment = "segment-000".getBytes(StandardCharsets.UTF_8);
-        storageClient.uploadFile(videoId + "/chunks/000.ts",
+        storageClient.uploadFile(videoId + "/processed/low/000.ts",
             new ByteArrayInputStream(segment), segment.length);
 
         VideoStatusRepository repo = new VideoStatusRepository(jdbcUrl, username, password);
@@ -84,13 +87,14 @@ class StreamingServiceIntegrationTest {
         }
         if (videoId != null) {
             deleteVideoStatus(videoId);
-            storageClient.deleteFile(videoId + "/chunks/output.m3u8");
-            storageClient.deleteFile(videoId + "/chunks/000.ts");
+            storageClient.deleteFile(videoId + "/manifest/master.m3u8");
+            storageClient.deleteFile(videoId + "/manifest/low.m3u8");
+            storageClient.deleteFile(videoId + "/processed/low/000.ts");
         }
     }
 
     @Test
-    void servesManifestFromMinioWhenCompleted() throws Exception {
+    void servesMasterManifestFromMinioWhenCompleted() throws Exception {
         HttpRequest request = HttpRequest.newBuilder()
             .uri(URI.create("http://localhost:" + port + "/stream/" + videoId + "/manifest"))
             .GET()
@@ -100,13 +104,27 @@ class StreamingServiceIntegrationTest {
 
         assertEquals(HttpURLConnection.HTTP_OK, response.statusCode());
         String body = new String(response.body(), StandardCharsets.UTF_8);
-        assertEquals("#EXTM3U\n#EXTINF:10,\nsegment/000.ts\n", body);
+        assertEquals("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nvariant/low/playlist.m3u8\n", body);
     }
 
     @Test
-    void servesSegmentFromMinioWhenCompleted() throws Exception {
+    void servesVariantManifestFromMinioWhenCompleted() throws Exception {
         HttpRequest request = HttpRequest.newBuilder()
-            .uri(URI.create("http://localhost:" + port + "/stream/" + videoId + "/segment/000.ts"))
+            .uri(URI.create("http://localhost:" + port + "/stream/" + videoId + "/variant/low/playlist.m3u8"))
+            .GET()
+            .build();
+
+        HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
+
+        assertEquals(HttpURLConnection.HTTP_OK, response.statusCode());
+        String body = new String(response.body(), StandardCharsets.UTF_8);
+        assertEquals("#EXTM3U\n#EXTINF:10,\nsegment/000.ts\n#EXT-X-ENDLIST\n", body);
+    }
+
+    @Test
+    void servesVariantSegmentFromMinioWhenCompleted() throws Exception {
+        HttpRequest request = HttpRequest.newBuilder()
+            .uri(URI.create("http://localhost:" + port + "/stream/" + videoId + "/variant/low/segment/000.ts"))
             .GET()
             .build();
 
