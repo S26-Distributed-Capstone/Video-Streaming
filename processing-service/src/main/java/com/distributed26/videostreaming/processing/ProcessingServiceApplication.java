@@ -208,7 +208,7 @@ public class ProcessingServiceApplication {
         }
         LOGGER.info("Chunk received: videoId={} key={} — queuing {} tasks",
                     videoId, chunkKey, PROFILES.length);
-        int segmentNumber = parseSegmentNumber(chunkKey);
+        int segmentNumber = SegmentNumberParser.parse(chunkKey);
         for (TranscodingProfile profile : PROFILES) {
             taskQueue.offer(new TranscodingTask(UUID.randomUUID().toString(), videoId, chunkKey, profile));
             publishTranscodeState(videoId, profile.getName(), segmentNumber, TranscodeSegmentState.QUEUED);
@@ -291,18 +291,6 @@ public class ProcessingServiceApplication {
             MANIFESTS_IN_FLIGHT.remove(videoId);
             LOGGER.error("Failed to submit manifest generation task for videoId={}", videoId, e);
         }
-    }
-
-    private static int parseSegmentNumber(String chunkKey) {
-        if (chunkKey == null || chunkKey.isBlank()) {
-            return -1;
-        }
-        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("(\\d+)").matcher(chunkKey);
-        int last = -1;
-        while (matcher.find()) {
-            last = Integer.parseInt(matcher.group(1));
-        }
-        return last;
     }
 
     private static TranscodedSegmentStatusRepository createTranscodeStatusRepository() {

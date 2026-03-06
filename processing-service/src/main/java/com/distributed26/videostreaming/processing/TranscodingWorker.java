@@ -97,7 +97,7 @@ public class TranscodingWorker {
         if (bus == null || transcodeStatusRepository == null) {
             return;
         }
-        int segmentNumber = extractSegmentNumber(task.getChunkKey());
+        int segmentNumber = SegmentNumberParser.parse(task.getChunkKey());
         if (segmentNumber < 0) {
             return;
         }
@@ -107,17 +107,5 @@ public class TranscodingWorker {
                 segmentNumber,
                 state
         );
-    }
-
-    private static int extractSegmentNumber(String chunkKey) {
-        if (chunkKey == null || chunkKey.isBlank()) {
-            return -1;
-        }
-        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("(\\d+)").matcher(chunkKey);
-        int last = -1;
-        while (matcher.find()) {
-            last = Integer.parseInt(matcher.group(1));
-        }
-        return last;
     }
 }
