@@ -239,8 +239,16 @@ public class ProcessingServiceApplication {
             transcodeStatusRepository.upsertState(videoId, profile, segmentNumber, state);
             int done = transcodeStatusRepository.countByState(videoId, profile, TranscodeSegmentState.DONE);
             int total = TOTAL_SEGMENTS_BY_VIDEO.getOrDefault(videoId, 0);
+            int total = TOTAL_SEGMENTS_BY_VIDEO.getOrDefault(videoId, 0);
+            int done = 0;
+            if (state == TranscodeSegmentState.DONE) {
+                done = transcodeStatusRepository.countByState(videoId, profile, TranscodeSegmentState.DONE);
+            }
             statusBus.publish(new TranscodeProgressEvent(videoId, profile, segmentNumber, state, done, total));
-            if (state == TranscodeSegmentState.DONE && total > 0 && areAllProfilesDone(videoId, total)) {
+            if (state == TranscodeSegmentState.DONE
+                    && total > 0
+                    && !MANIFESTS_IN_FLIGHT.contains(videoId)
+                    && areAllProfilesDone(videoId, total)) {
                 scheduleManifestGeneration(videoId, total, manifestServiceRef, manifestExecutorRef);
             }
         } catch (Exception e) {
