@@ -266,7 +266,19 @@ function startStreamingPlayback(videoId) {
     setPlayerStatus("", { hidden: true });
 
   if (window.Hls && window.Hls.isSupported()) {
-    hlsInstance = new window.Hls();
+    hlsInstance = new window.Hls({
+      // VOD ABR tuning: keep startup buffer small to avoid aggressive prefetch.
+      lowLatencyMode: false,
+      enableWorker: true,
+      autoStartLoad: true,
+      startFragPrefetch: false,
+      backBufferLength: 30,
+      maxBufferLength: 12,
+      maxMaxBufferLength: 18,
+      maxBufferSize: 24 * 1000 * 1000,
+      capLevelToPlayerSize: true,
+      startLevel: -1
+    });
     hlsInstance.loadSource(manifestUrl);
     hlsInstance.attachMedia(player);
     hlsInstance.on(window.Hls.Events.MANIFEST_PARSED, () => {
@@ -282,6 +294,12 @@ function startStreamingPlayback(videoId) {
   if (player.canPlayType("application/vnd.apple.mpegurl")) {
     player.src = manifestUrl;
     player.addEventListener("loadedmetadata", () => {
+      // Ensure playback starts from the beginning.
+      try {
+        player.currentTime = 0;
+      } catch (_) {
+        // Ignore seek failures and still try to play.
+      }
       player.play().catch(() => {});
       setPlayerStatus("", { hidden: true });
     }, { once: true });
