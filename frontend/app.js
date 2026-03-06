@@ -462,11 +462,13 @@ function connectWebSocket(wsUrl, videoId) {
       const payload = JSON.parse(event.data);
       if (payload && payload.type === "meta" && typeof payload.totalSegments === "number") {
         totalSegments = payload.totalSegments;
-        if (processingPercent) {
-          processingPercent.textContent = `0% (0/${totalSegments})`;
-        }
         if (processingTrack) {
           processingTrack.classList.remove("indeterminate");
+        }
+        if (processingPercent) {
+          const pct = totalSegments > 0 ? Math.min(100, Math.round((completedSegments / totalSegments) * 100)) : 0;
+          processingBar.style.width = `${pct}%`;
+          processingPercent.textContent = `${pct}% (${completedSegments}/${totalSegments})`;
         }
         ["low", "medium", "high"].forEach((profile) => updateTranscodeProfileUi(profile));
         return;
@@ -649,7 +651,6 @@ function uploadFile({ preserveLog, isRetry } = {}) {
     clearRetryTimers();
   } else {
     retryInFlight = true;
-    currentVideoId = null;
   }
   if (responseBox) {
     responseBox.textContent = "—";
@@ -664,7 +665,10 @@ function uploadFile({ preserveLog, isRetry } = {}) {
   const formData = new FormData();
   formData.append("file", file, file.name);
   formData.append("name", videoName);
-  // Stateless upload: always let the server assign a new videoId.
+  if (isRetry && currentVideoId) {
+    formData.append("videoId", currentVideoId);
+    appendLog(`Retrying with existing videoId ${currentVideoId}`);
+  }
 
   const xhr = new XMLHttpRequest();
   xhr.open("POST", uploadUrl, true);

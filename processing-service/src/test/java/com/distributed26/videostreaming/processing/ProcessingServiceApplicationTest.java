@@ -4,10 +4,13 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
+import com.distributed26.videostreaming.processing.db.TranscodedSegmentStatusRepository;
 import com.distributed26.videostreaming.shared.jobs.Status;
 import com.distributed26.videostreaming.shared.upload.RabbitMQJobTaskBus;
 import com.distributed26.videostreaming.shared.upload.events.JobTaskEvent;
+import com.distributed26.videostreaming.shared.upload.events.TranscodeSegmentState;
 import com.distributed26.videostreaming.shared.upload.events.UploadMetaEvent;
+import java.lang.reflect.Field;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import org.junit.jupiter.api.BeforeEach;
@@ -21,6 +24,8 @@ class ProcessingServiceApplicationTest {
 
     @Mock
     private RabbitMQJobTaskBus bus;
+    @Mock
+    private TranscodedSegmentStatusRepository transcodeStatusRepository;
 
     private BlockingQueue<TranscodingTask> taskQueue;
 
@@ -28,6 +33,8 @@ class ProcessingServiceApplicationTest {
     void setUp() {
         taskQueue = new LinkedBlockingQueue<>();
         ProcessingServiceApplication.resetState();
+        setStaticField("transcodeStatusRepository", null);
+        setStaticField("statusBus", null);
     }
 
     // ── Task count ─────────────────────────────────────────────────────────────
@@ -171,6 +178,30 @@ class ProcessingServiceApplicationTest {
         assertEquals(3, taskQueue.size());
     }
 
+    @Test
+    void alreadyDoneSegments_areSkipped() {
+        setStaticField("transcodeStatusRepository", transcodeStatusRepository);
+        setStaticField("statusBus", bus);
+        when(transcodeStatusRepository.hasState("vid1", "low", 0, TranscodeSegmentState.DONE)).thenReturn(true);
+        when(transcodeStatusRepository.hasState("vid1", "medium", 0, TranscodeSegmentState.DONE)).thenReturn(false);
+        when(transcodeStatusRepository.hasState("vid1", "high", 0, TranscodeSegmentState.DONE)).thenReturn(false);
+        when(transcodeStatusRepository.countByState(any(), any(), any())).thenReturn(0);
+
+        sendChunks("vid1", "vid1/chunks/seg0.ts");
+
+        assertEquals(2, taskQueue.size(), "One profile should be skipped because it's already DONE");
+        verify(transcodeStatusRepository).hasState("vid1", "low", 0, TranscodeSegmentState.DONE);
+        verify(transcodeStatusRepository).hasState("vid1", "medium", 0, TranscodeSegmentState.DONE);
+        verify(transcodeStatusRepository).hasState("vid1", "high", 0, TranscodeSegmentState.DONE);
+        verify(bus).publish(argThat(ev ->
+                ev instanceof com.distributed26.videostreaming.shared.upload.events.TranscodeProgressEvent t
+                        && "vid1".equals(t.getJobId())
+                        && "low".equals(t.getProfile())
+                        && t.getSegmentNumber() == 0
+                        && t.getState() == TranscodeSegmentState.DONE
+        ));
+    }
+
     // ── Bus subscription ───────────────────────────────────────────────────────
 
     /**
@@ -194,5 +225,15 @@ class ProcessingServiceApplicationTest {
 
     private void sendMeta(String videoId, int totalSegments) {
         ProcessingServiceApplication.onEvent(new UploadMetaEvent(videoId, totalSegments), taskQueue, bus);
+    }
+
+    private static void setStaticField(String fieldName, Object value) {
+        try {
+            Field field = ProcessingServiceApplication.class.getDeclaredField(fieldName);
+            field.setAccessible(true);
+            field.set(null, value);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to set ProcessingServiceApplication." + fieldName, e);
+        }
     }
 }
