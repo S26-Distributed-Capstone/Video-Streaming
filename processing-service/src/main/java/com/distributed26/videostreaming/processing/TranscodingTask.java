@@ -24,6 +24,9 @@ import org.apache.logging.log4j.Logger;
  */
 public class TranscodingTask extends Task {
     private static final Logger LOGGER = LogManager.getLogger(TranscodingTask.class);
+    private static final int DOWNLOAD_MAX_ATTEMPTS;
+    private static final long DOWNLOAD_RETRY_INITIAL_DELAY_MILLIS;
+    private static final long DOWNLOAD_RETRY_MAX_DELAY_MILLIS;
 
     /**
      * Number of threads each FFmpeg process may use.
@@ -39,6 +42,12 @@ public class TranscodingTask extends Task {
             try { parsed = Integer.parseInt(val.trim()); } catch (NumberFormatException ignored) {}
         }
         FFMPEG_THREADS = parsed;
+    }
+
+    static {
+        DOWNLOAD_MAX_ATTEMPTS = parseIntEnv("DOWNLOAD_MAX_ATTEMPTS", 5);
+        DOWNLOAD_RETRY_INITIAL_DELAY_MILLIS = parseLongEnv("DOWNLOAD_RETRY_INITIAL_DELAY_MILLIS", 250L);
+        DOWNLOAD_RETRY_MAX_DELAY_MILLIS = parseLongEnv("DOWNLOAD_RETRY_MAX_DELAY_MILLIS", 4000L);
     }
 
     private final TranscodingProfile profile;
@@ -97,9 +106,7 @@ public class TranscodingTask extends Task {
 
         try {
             LOGGER.info("Downloading source chunk: {}", chunkKey);
-            try (InputStream is = storageClient.downloadFile(chunkKey)) {
-                Files.copy(is, inputTemp, StandardCopyOption.REPLACE_EXISTING);
-            }
+            downloadChunkWithRetry(storageClient, inputTemp);
 
             LOGGER.info("Transcoding chunk={} profile={}", chunkKey, profile.getName());
             // Use CRF for quality-based encoding with a hard maxrate ceiling.
@@ -138,6 +145,80 @@ public class TranscodingTask extends Task {
         } finally {
             Files.deleteIfExists(inputTemp);
             Files.deleteIfExists(outputTemp);
+        }
+    }
+
+    private void downloadChunkWithRetry(ObjectStorageClient storageClient, Path inputTemp) throws IOException {
+        IOException lastIo = null;
+        RuntimeException lastRuntime = null;
+        long delayMillis = Math.max(1L, DOWNLOAD_RETRY_INITIAL_DELAY_MILLIS);
+        int attempts = Math.max(1, DOWNLOAD_MAX_ATTEMPTS);
+
+        for (int attempt = 1; attempt <= attempts; attempt++) {
+            try (InputStream is = storageClient.downloadFile(chunkKey)) {
+                Files.copy(is, inputTemp, StandardCopyOption.REPLACE_EXISTING);
+                if (attempt > 1) {
+                    LOGGER.info("Download recovered for chunk={} on attempt {}/{}", chunkKey, attempt, attempts);
+                }
+                return;
+            } catch (IOException e) {
+                lastIo = e;
+                if (attempt == attempts) {
+                    break;
+                }
+                LOGGER.warn("Download attempt {}/{} failed for chunk={} (io): {}", attempt, attempts, chunkKey, e.toString());
+                sleepBeforeRetry(delayMillis);
+                delayMillis = Math.min(Math.max(1L, DOWNLOAD_RETRY_MAX_DELAY_MILLIS), delayMillis * 2);
+            } catch (RuntimeException e) {
+                lastRuntime = e;
+                if (attempt == attempts) {
+                    break;
+                }
+                LOGGER.warn("Download attempt {}/{} failed for chunk={} (runtime): {}", attempt, attempts, chunkKey, e.toString());
+                sleepBeforeRetry(delayMillis);
+                delayMillis = Math.min(Math.max(1L, DOWNLOAD_RETRY_MAX_DELAY_MILLIS), delayMillis * 2);
+            }
+        }
+
+        if (lastIo != null) {
+            throw new IOException("Failed to download chunk after retries: " + chunkKey, lastIo);
+        }
+        if (lastRuntime != null) {
+            throw new IOException("Failed to download chunk after retries: " + chunkKey, lastRuntime);
+        }
+        throw new IOException("Failed to download chunk after retries: " + chunkKey);
+    }
+
+    private static void sleepBeforeRetry(long delayMillis) throws IOException {
+        try {
+            Thread.sleep(Math.max(1L, delayMillis));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted while waiting to retry download", e);
+        }
+    }
+
+    private static int parseIntEnv(String key, int defaultValue) {
+        String raw = System.getenv(key);
+        if (raw == null || raw.isBlank()) {
+            return defaultValue;
+        }
+        try {
+            return Integer.parseInt(raw.trim());
+        } catch (NumberFormatException ignored) {
+            return defaultValue;
+        }
+    }
+
+    private static long parseLongEnv(String key, long defaultValue) {
+        String raw = System.getenv(key);
+        if (raw == null || raw.isBlank()) {
+            return defaultValue;
+        }
+        try {
+            return Long.parseLong(raw.trim());
+        } catch (NumberFormatException ignored) {
+            return defaultValue;
         }
     }
 

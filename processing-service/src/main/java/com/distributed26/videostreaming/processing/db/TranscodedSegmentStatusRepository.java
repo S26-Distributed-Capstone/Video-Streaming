@@ -77,4 +77,24 @@ public class TranscodedSegmentStatusRepository {
             throw new RuntimeException("Failed to count transcoded_segment_status", e);
         }
     }
+
+    public boolean hasState(String videoId, String profile, int segmentNumber, TranscodeSegmentState state) {
+        String sql = """
+            SELECT 1 FROM transcoded_segment_status
+            WHERE video_id = ? AND profile = ? AND segment_number = ? AND state = ?
+            LIMIT 1
+            """;
+        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setObject(1, UUID.fromString(videoId));
+            ps.setString(2, profile);
+            ps.setInt(3, segmentNumber);
+            ps.setString(4, state.name());
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to query transcoded_segment_status", e);
+        }
+    }
 }

@@ -8,6 +8,7 @@ import com.distributed26.videostreaming.shared.upload.RabbitMQJobTaskBus;
 import com.distributed26.videostreaming.shared.upload.events.JobTaskEvent;
 import com.distributed26.videostreaming.shared.upload.events.TranscodeProgressEvent;
 import com.distributed26.videostreaming.shared.upload.events.TranscodeSegmentState;
+import com.distributed26.videostreaming.shared.upload.events.UploadFailedEvent;
 import com.distributed26.videostreaming.shared.upload.events.UploadMetaEvent;
 import io.github.cdimascio.dotenv.Dotenv;
 import io.javalin.Javalin;
@@ -50,6 +51,7 @@ public class ProcessingServiceApplication {
     private static volatile RabbitMQJobTaskBus statusBus;
     private static volatile AbrManifestService manifestServiceRef;
     private static volatile ExecutorService manifestExecutorRef;
+    private static volatile ObjectStorageClient sourceStorageClientRef;
 
     static final TranscodingProfile[] PROFILES = {
         TranscodingProfile.LOW,
@@ -73,6 +75,7 @@ public class ProcessingServiceApplication {
         );
         ObjectStorageClient storageClient = new S3StorageClient(storageConfig);
         storageClient.ensureBucketExists();
+        sourceStorageClientRef = storageClient;
         LOGGER.info("Storage ready — bucket={}", storageConfig.getDefaultBucketName());
 
         // RabbitMQ bus — fromEnv() reads SERVICE_MODE; any value other than
@@ -194,13 +197,27 @@ public class ProcessingServiceApplication {
             LOGGER.info("UploadMetaEvent: videoId={} totalSegments={} (tasks already in flight)",
                         videoId, meta.getTotalSegments());
             TOTAL_SEGMENTS_BY_VIDEO.put(videoId, meta.getTotalSegments());
-            scheduleManifestGeneration(videoId, meta.getTotalSegments(), manifestService, manifestExecutor);
+            reconcileMissingSegments(videoId, taskQueue, sourceStorageClientRef);
+            if (meta.getTotalSegments() > 0 && areAllProfilesDone(videoId, meta.getTotalSegments())) {
+                scheduleManifestGeneration(videoId, meta.getTotalSegments(), manifestService, manifestExecutor);
+            } else {
+                LOGGER.info("Deferring manifest generation until all profiles are DONE for videoId={}", videoId);
+            }
+            return;
+        }
+        if (event instanceof TranscodeProgressEvent || event instanceof UploadFailedEvent) {
+            LOGGER.debug("Ignoring non-source event in processing pipeline: type={}",
+                    event.getClass().getSimpleName());
             return;
         }
 
         // Queue transcoding tasks immediately — each .ts chunk is self-contained.
         // The CHUNKS_BY_VIDEO set guards against duplicate chunk keys (e.g. retried publishes).
         String chunkKey = event.getTaskId();
+        if (chunkKey == null || !chunkKey.contains("/chunks/") || !chunkKey.endsWith(".ts")) {
+            LOGGER.debug("Ignoring non-chunk taskId={} for videoId={}", chunkKey, videoId);
+            return;
+        }
         Set<String> seen = CHUNKS_BY_VIDEO.computeIfAbsent(videoId, k -> ConcurrentHashMap.newKeySet());
         if (!seen.add(chunkKey)) {
             LOGGER.debug("Duplicate chunk key={}, skipping", chunkKey);
@@ -210,6 +227,12 @@ public class ProcessingServiceApplication {
                     videoId, chunkKey, PROFILES.length);
         int segmentNumber = parseSegmentNumber(chunkKey);
         for (TranscodingProfile profile : PROFILES) {
+            if (isAlreadyTranscoded(videoId, profile.getName(), segmentNumber)) {
+                LOGGER.info("Skipping already transcoded segment videoId={} profile={} segment={}",
+                        videoId, profile.getName(), segmentNumber);
+                publishTranscodeState(videoId, profile.getName(), segmentNumber, TranscodeSegmentState.DONE);
+                continue;
+            }
             taskQueue.offer(new TranscodingTask(UUID.randomUUID().toString(), videoId, chunkKey, profile));
             publishTranscodeState(videoId, profile.getName(), segmentNumber, TranscodeSegmentState.QUEUED);
         }
@@ -309,6 +332,60 @@ public class ProcessingServiceApplication {
             last = Integer.parseInt(matcher.group(1));
         }
         return last;
+    }
+
+    private static boolean isAlreadyTranscoded(String videoId, String profile, int segmentNumber) {
+        if (transcodeStatusRepository == null || segmentNumber < 0) {
+            return false;
+        }
+        try {
+            return transcodeStatusRepository.hasState(videoId, profile, segmentNumber, TranscodeSegmentState.DONE);
+        } catch (Exception e) {
+            LOGGER.warn("Failed transcode-state lookup videoId={} profile={} segment={}",
+                    videoId, profile, segmentNumber, e);
+            return false;
+        }
+    }
+
+    private static void reconcileMissingSegments(
+            String videoId,
+            BlockingQueue<TranscodingTask> taskQueue,
+            ObjectStorageClient storageClient
+    ) {
+        if (storageClient == null || videoId == null || videoId.isBlank()) {
+            return;
+        }
+        String prefix = videoId + "/chunks/";
+        Set<String> seen = CHUNKS_BY_VIDEO.computeIfAbsent(videoId, k -> ConcurrentHashMap.newKeySet());
+        int queued = 0;
+        int skippedDone = 0;
+        try {
+            List<String> chunkKeys = storageClient.listFiles(prefix).stream()
+                    .filter(key -> key.endsWith(".ts"))
+                    .toList();
+            for (String chunkKey : chunkKeys) {
+                if (!seen.add(chunkKey)) {
+                    continue;
+                }
+                int segmentNumber = parseSegmentNumber(chunkKey);
+                for (TranscodingProfile profile : PROFILES) {
+                    if (isAlreadyTranscoded(videoId, profile.getName(), segmentNumber)) {
+                        publishTranscodeState(videoId, profile.getName(), segmentNumber, TranscodeSegmentState.DONE);
+                        skippedDone += 1;
+                        continue;
+                    }
+                    taskQueue.offer(new TranscodingTask(UUID.randomUUID().toString(), videoId, chunkKey, profile));
+                    publishTranscodeState(videoId, profile.getName(), segmentNumber, TranscodeSegmentState.QUEUED);
+                    queued += 1;
+                }
+            }
+            if (queued > 0 || skippedDone > 0) {
+                LOGGER.info("Reconciled missing transcode tasks for videoId={} queued={} skippedDone={}",
+                        videoId, queued, skippedDone);
+            }
+        } catch (Exception e) {
+            LOGGER.warn("Failed to reconcile missing segments for videoId={}", videoId, e);
+        }
     }
 
     private static TranscodedSegmentStatusRepository createTranscodeStatusRepository() {
