@@ -23,3 +23,16 @@ CREATE TABLE IF NOT EXISTS segment_upload (
 
 CREATE INDEX IF NOT EXISTS idx_segment_upload_video_id
     ON segment_upload(video_id);
+
+CREATE TABLE IF NOT EXISTS transcoded_segment_status (
+    id SERIAL PRIMARY KEY,
+    video_id UUID NOT NULL REFERENCES video_upload(video_id) ON DELETE CASCADE,
+    profile VARCHAR(32) NOT NULL,
+    segment_number INTEGER NOT NULL,
+    state VARCHAR(32) NOT NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (video_id, profile, segment_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_transcoded_segment_status_video_profile_state
+    ON transcoded_segment_status(video_id, profile, state);

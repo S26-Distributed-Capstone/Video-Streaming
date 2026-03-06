@@ -1,9 +1,12 @@
 package com.distributed26.videostreaming.processing;
 
+import com.distributed26.videostreaming.processing.db.TranscodedSegmentStatusRepository;
 import com.distributed26.videostreaming.shared.jobs.Status;
 import com.distributed26.videostreaming.shared.jobs.Worker;
 import com.distributed26.videostreaming.shared.jobs.WorkerStatus;
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
+import com.distributed26.videostreaming.shared.upload.RabbitMQJobTaskBus;
+import com.distributed26.videostreaming.shared.upload.events.TranscodeSegmentState;
 import java.time.Instant;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -19,14 +22,20 @@ public class TranscodingWorker {
     private final Worker worker;
     private final ObjectStorageClient storageClient;
     private final BlockingQueue<TranscodingTask> queue;
+    private final RabbitMQJobTaskBus bus;
+    private final TranscodedSegmentStatusRepository transcodeStatusRepository;
     private volatile boolean running = false;
     private Thread thread;
 
     public TranscodingWorker(String id, ObjectStorageClient storageClient,
-                             BlockingQueue<TranscodingTask> queue) {
+                             BlockingQueue<TranscodingTask> queue,
+                             RabbitMQJobTaskBus bus,
+                             TranscodedSegmentStatusRepository transcodeStatusRepository) {
         this.worker = new Worker(id, Instant.now());
         this.storageClient = storageClient;
         this.queue = queue;
+        this.bus = bus;
+        this.transcodeStatusRepository = transcodeStatusRepository;
     }
 
     public String getId() { return worker.getId(); }
@@ -62,13 +71,16 @@ public class TranscodingWorker {
                 task.setStatus(Status.RUNNING);
                 LOGGER.info("Worker {} picked up task {} (chunk={} profile={})",
                         worker.getId(), task.getId(), task.getChunkKey(), task.getProfile().getName());
+                emitState(task, TranscodeSegmentState.TRANSCODING);
 
                 try {
-                    task.execute(storageClient);
+                    task.execute(storageClient, () -> emitState(task, TranscodeSegmentState.UPLOADING));
                     task.setStatus(Status.SUCCEEDED);
+                    emitState(task, TranscodeSegmentState.DONE);
                     LOGGER.info("Task {} succeeded", task.getId());
                 } catch (Exception e) {
                     task.setStatus(Status.FAILED);
+                    emitState(task, TranscodeSegmentState.FAILED);
                     LOGGER.error("Task {} failed: {}", task.getId(), e.getMessage(), e);
                 }
 
@@ -79,5 +91,33 @@ public class TranscodingWorker {
                 break;
             }
         }
+    }
+
+    private void emitState(TranscodingTask task, TranscodeSegmentState state) {
+        if (bus == null || transcodeStatusRepository == null) {
+            return;
+        }
+        int segmentNumber = extractSegmentNumber(task.getChunkKey());
+        if (segmentNumber < 0) {
+            return;
+        }
+        ProcessingServiceApplication.publishTranscodeState(
+                task.getJobId(),
+                task.getProfile().getName(),
+                segmentNumber,
+                state
+        );
+    }
+
+    private static int extractSegmentNumber(String chunkKey) {
+        if (chunkKey == null || chunkKey.isBlank()) {
+            return -1;
+        }
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("(\\d+)").matcher(chunkKey);
+        int last = -1;
+        while (matcher.find()) {
+            last = Integer.parseInt(matcher.group(1));
+        }
+        return last;
     }
 }

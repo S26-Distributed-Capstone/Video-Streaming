@@ -11,6 +11,16 @@ const processingBar = document.getElementById("processingBar");
 const processingPercent = document.getElementById("processingPercent");
 const processingTrack = document.getElementById("processingTrack");
 const processingBlock = document.getElementById("processingBlock");
+const transcodeBlock = document.getElementById("transcodeBlock");
+const transcodeLowBar = document.getElementById("transcodeLowBar");
+const transcodeLowPercent = document.getElementById("transcodeLowPercent");
+const transcodeLowTrack = document.getElementById("transcodeLowTrack");
+const transcodeMediumBar = document.getElementById("transcodeMediumBar");
+const transcodeMediumPercent = document.getElementById("transcodeMediumPercent");
+const transcodeMediumTrack = document.getElementById("transcodeMediumTrack");
+const transcodeHighBar = document.getElementById("transcodeHighBar");
+const transcodeHighPercent = document.getElementById("transcodeHighPercent");
+const transcodeHighTrack = document.getElementById("transcodeHighTrack");
 const doneMessage = document.getElementById("doneMessage");
 const reconnectBtn = document.getElementById("reconnectBtn");
 const player = document.getElementById("player");
@@ -23,6 +33,7 @@ let ws = null;
 let currentVideoId = null;
 let totalSegments = null;
 let completedSegments = 0;
+let sourceSegmentsComplete = false;
 let currentWsUrl = null;
 let processingComplete = false;
 let uploadInFlight = false;
@@ -37,6 +48,11 @@ const RETRY_INTERVAL_MS = 1000;
 let retrySecondsLeft = 0;
 let hlsInstance = null;
 let selectedVideoId = null;
+const transcodeProfiles = {
+  low: { done: 0, transcoding: 0, uploading: 0, failed: 0, segments: new Map() },
+  medium: { done: 0, transcoding: 0, uploading: 0, failed: 0, segments: new Map() },
+  high: { done: 0, transcoding: 0, uploading: 0, failed: 0, segments: new Map() }
+};
 
 function clearRetryTimers() {
   if (retryTimerId) {
@@ -96,12 +112,81 @@ function scheduleRetry(reason) {
 function resetStateForNextUpload() {
   totalSegments = null;
   completedSegments = 0;
+  sourceSegmentsComplete = false;
   processingComplete = false;
   failureTerminal = false;
   retryInFlight = false;
   retrySecondsLeft = 0;
+  ["low", "medium", "high"].forEach((profile) => {
+    const state = transcodeProfiles[profile];
+    state.done = 0;
+    state.transcoding = 0;
+    state.uploading = 0;
+    state.failed = 0;
+    state.segments = new Map();
+  });
   clearRetryTimers();
   teardownPlayer();
+}
+
+function getTranscodeDom(profile) {
+  if (profile === "low") {
+    return { bar: transcodeLowBar, percent: transcodeLowPercent, track: transcodeLowTrack };
+  }
+  if (profile === "medium") {
+    return { bar: transcodeMediumBar, percent: transcodeMediumPercent, track: transcodeMediumTrack };
+  }
+  return { bar: transcodeHighBar, percent: transcodeHighPercent, track: transcodeHighTrack };
+}
+
+function recalcTranscodeCounters(profile) {
+  const state = transcodeProfiles[profile];
+  let transcoding = 0;
+  let uploading = 0;
+  let failed = 0;
+  state.segments.forEach((status) => {
+    if (status === "TRANSCODING") transcoding += 1;
+    if (status === "UPLOADING") uploading += 1;
+    if (status === "FAILED") failed += 1;
+  });
+  state.transcoding = transcoding;
+  state.uploading = uploading;
+  state.failed = failed;
+}
+
+function updateTranscodeProfileUi(profile) {
+  const state = transcodeProfiles[profile];
+  const dom = getTranscodeDom(profile);
+  if (!dom.bar || !dom.percent || !dom.track) {
+    return;
+  }
+  if (totalSegments) {
+    const percent = Math.min(100, Math.round((state.done / totalSegments) * 100));
+    dom.bar.style.width = `${percent}%`;
+    dom.percent.textContent = `${percent}% (${state.done}/${totalSegments})`;
+    dom.track.classList.remove("indeterminate");
+  } else {
+    dom.percent.textContent = `${state.done} done`;
+  }
+}
+
+function allProfilesDone() {
+  if (!totalSegments) {
+    return false;
+  }
+  return ["low", "medium", "high"].every((profile) => transcodeProfiles[profile].done >= totalSegments);
+}
+
+function tryFinalizeSuccess() {
+  if (processingComplete || !sourceSegmentsComplete || !allProfilesDone()) {
+    return;
+  }
+  processingComplete = true;
+  setDoneMessage("Upload and transcoding complete.", { success: true });
+  uploadBtn.disabled = false;
+  uploadInFlight = false;
+  refreshReadyList();
+  setPlayerStatus("Ready to play. Select a video and press Play.", { success: true });
 }
 
 function appendLog(message, tone = "") {
@@ -284,6 +369,21 @@ function resetProgress({ preserveRetry } = {}) {
   if (processingBlock) {
     processingBlock.classList.add("hidden");
   }
+  if (transcodeBlock) {
+    transcodeBlock.classList.add("hidden");
+  }
+  ["low", "medium", "high"].forEach((profile) => {
+    const dom = getTranscodeDom(profile);
+    if (dom.bar) {
+      dom.bar.style.width = "0%";
+    }
+    if (dom.percent) {
+      dom.percent.textContent = "";
+    }
+    if (dom.track) {
+      dom.track.classList.add("indeterminate");
+    }
+  });
   if (doneMessage && !preserveRetry) {
     setDoneMessage("Upload complete.", { success: true, hidden: true });
   }
@@ -368,6 +468,7 @@ function connectWebSocket(wsUrl, videoId) {
         if (processingTrack) {
           processingTrack.classList.remove("indeterminate");
         }
+        ["low", "medium", "high"].forEach((profile) => updateTranscodeProfileUi(profile));
         return;
       }
       if (payload && payload.type === "progress" && typeof payload.completedSegments === "number") {
@@ -377,17 +478,33 @@ function connectWebSocket(wsUrl, videoId) {
           processingBar.style.width = `${percent}%`;
           processingPercent.textContent = `${percent}% (${completedSegments}/${totalSegments})`;
           processingTrack.classList.remove("indeterminate");
-          if (completedSegments >= totalSegments && doneMessage) {
-            processingComplete = true;
-            setDoneMessage("Upload complete.", { success: true });
-            uploadBtn.disabled = false;
-            uploadInFlight = false;
-            refreshReadyList();
-            setPlayerStatus("Ready to play. Select a video and press Play.", { success: true });
+          if (completedSegments >= totalSegments) {
+            sourceSegmentsComplete = true;
+            tryFinalizeSuccess();
           }
         } else {
           processingPercent.textContent = `${completedSegments} events`;
         }
+        return;
+      }
+      if (payload && payload.type === "transcode_progress" && payload.profile) {
+        const profile = `${payload.profile}`.toLowerCase();
+        const state = transcodeProfiles[profile];
+        if (!state) {
+          return;
+        }
+        if (typeof payload.doneSegments === "number") {
+          state.done = Math.max(state.done, payload.doneSegments);
+        }
+        if (typeof payload.totalSegments === "number" && payload.totalSegments > 0) {
+          totalSegments = payload.totalSegments;
+        }
+        if (typeof payload.segmentNumber === "number" && payload.segmentNumber >= 0 && payload.state) {
+          state.segments.set(payload.segmentNumber, payload.state);
+          recalcTranscodeCounters(profile);
+        }
+        updateTranscodeProfileUi(profile);
+        tryFinalizeSuccess();
         return;
       }
       if (payload && payload.type === "failed") {
@@ -424,13 +541,9 @@ function connectWebSocket(wsUrl, videoId) {
           processingBar.style.width = `${percent}%`;
           processingPercent.textContent = `${percent}% (${completedSegments}/${totalSegments})`;
           processingTrack.classList.remove("indeterminate");
-          if (completedSegments >= totalSegments && doneMessage) {
-            processingComplete = true;
-            setDoneMessage("Upload complete.", { success: true });
-            uploadBtn.disabled = false;
-            uploadInFlight = false;
-            refreshReadyList();
-            setPlayerStatus("Ready to play. Select a video and press Play.", { success: true });
+          if (completedSegments >= totalSegments) {
+            sourceSegmentsComplete = true;
+            tryFinalizeSuccess();
           }
         } else {
           processingPercent.textContent = `${completedSegments} events`;
@@ -612,9 +725,13 @@ function uploadFile({ preserveLog, isRetry } = {}) {
     if (processingBlock) {
       processingBlock.classList.remove("hidden");
     }
+    if (transcodeBlock) {
+      transcodeBlock.classList.remove("hidden");
+    }
     if (processingPercent) {
       processingPercent.textContent = "0%";
     }
+    ["low", "medium", "high"].forEach((profile) => updateTranscodeProfileUi(profile));
 
     await fetchUploadInfo(baseUrl, currentVideoId, payload.uploadStatusUrl);
     setPlayerStatus("Ready list updates when processing completes.", { success: true });

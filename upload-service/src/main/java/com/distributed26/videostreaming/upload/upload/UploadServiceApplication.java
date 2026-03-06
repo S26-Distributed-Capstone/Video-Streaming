@@ -5,6 +5,7 @@ import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
 import com.distributed26.videostreaming.shared.storage.S3StorageClient;
 import com.distributed26.videostreaming.shared.upload.JobTaskBus;
 import com.distributed26.videostreaming.shared.upload.RabbitMQJobTaskBus;
+import com.distributed26.videostreaming.upload.db.TranscodedSegmentStatusRepository;
 import com.distributed26.videostreaming.upload.db.VideoUploadRepository;
 import io.javalin.Javalin;
 import io.javalin.config.SizeUnit;
@@ -82,7 +83,9 @@ public class UploadServiceApplication {
         ensureLogsDirectory();
         VideoUploadRepository videoUploadRepository = createVideoUploadRepository();
         com.distributed26.videostreaming.upload.db.SegmentUploadRepository segmentUploadRepository = createSegmentUploadRepository();
-        UploadStatusWebSocket uploadStatusWebSocket = new UploadStatusWebSocket(jobTaskBus, segmentUploadRepository);
+        TranscodedSegmentStatusRepository transcodedSegmentStatusRepository = createTranscodedSegmentStatusRepository();
+        UploadStatusWebSocket uploadStatusWebSocket =
+            new UploadStatusWebSocket(jobTaskBus, segmentUploadRepository, transcodedSegmentStatusRepository);
         UploadInfoHandler uploadInfoHandler = new UploadInfoHandler(videoUploadRepository);
 
         Javalin app = Javalin.create();
@@ -138,6 +141,15 @@ public class UploadServiceApplication {
             return com.distributed26.videostreaming.upload.db.SegmentUploadRepository.fromEnv();
         } catch (IllegalStateException e) {
             logger.warn("Postgres not configured; segment uploads disabled: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    private static TranscodedSegmentStatusRepository createTranscodedSegmentStatusRepository() {
+        try {
+            return TranscodedSegmentStatusRepository.fromEnv();
+        } catch (IllegalStateException e) {
+            logger.warn("Postgres not configured; transcoded segment status disabled: {}", e.getMessage());
             return null;
         }
     }

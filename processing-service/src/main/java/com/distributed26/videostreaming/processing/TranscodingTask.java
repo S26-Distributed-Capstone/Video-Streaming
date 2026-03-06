@@ -79,6 +79,14 @@ public class TranscodingTask extends Task {
      * Download source, transcode, upload result. Idempotent — skips if outputKey already exists.
      */
     public void execute(ObjectStorageClient storageClient) throws IOException {
+        execute(storageClient, null);
+    }
+
+    /**
+     * Download source, transcode, and upload output. Optional callback runs
+     * after transcoding completes and right before upload begins.
+     */
+    public void execute(ObjectStorageClient storageClient, Runnable beforeUpload) throws IOException {
         if (storageClient.fileExists(outputKey)) {
             LOGGER.info("Output already exists, skipping: {}", outputKey);
             return;
@@ -110,12 +118,17 @@ public class TranscodingTask extends Task {
                         .addExtraArgs("-maxrate", maxrate)
                         .addExtraArgs("-bufsize", bufsize)
                         .addExtraArgs("-threads", String.valueOf(FFMPEG_THREADS))
-                        .addExtraArgs("-an")
+                        .addExtraArgs("-c:a", "aac")
+                        .addExtraArgs("-b:a", "128k")
+                        .addExtraArgs("-ac", "2")
                         .done();
 
             new FFmpegExecutor(FfmpegHolder.FFMPEG, FfmpegHolder.FFPROBE).createJob(builder).run();
 
             long size = Files.size(outputTemp);
+            if (beforeUpload != null) {
+                beforeUpload.run();
+            }
             LOGGER.info("Uploading transcoded output: {} ({} bytes)", outputKey, size);
             try (InputStream is = new FileInputStream(outputTemp.toFile())) {
                 storageClient.uploadFile(outputKey, is, size);
