@@ -239,8 +239,6 @@ public class ProcessingServiceApplication {
             transcodeStatusRepository.upsertState(videoId, profile, segmentNumber, state);
             int done = transcodeStatusRepository.countByState(videoId, profile, TranscodeSegmentState.DONE);
             int total = TOTAL_SEGMENTS_BY_VIDEO.getOrDefault(videoId, 0);
-            int total = TOTAL_SEGMENTS_BY_VIDEO.getOrDefault(videoId, 0);
-            int done = 0;
             if (state == TranscodeSegmentState.DONE) {
                 done = transcodeStatusRepository.countByState(videoId, profile, TranscodeSegmentState.DONE);
             }
