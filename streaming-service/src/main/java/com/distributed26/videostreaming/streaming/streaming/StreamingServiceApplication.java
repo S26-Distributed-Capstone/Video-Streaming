@@ -17,7 +17,6 @@ import org.apache.logging.log4j.Logger;
 public class StreamingServiceApplication {
     private static final Logger logger = LogManager.getLogger(StreamingServiceApplication.class);
     private static final int DEFAULT_STREAMING_PORT = 8083;
-    private static final String INSTANCE_ID = resolveInstanceId();
 
     public static void main(String[] args) {
         int port = DEFAULT_STREAMING_PORT;
@@ -51,16 +50,6 @@ public class StreamingServiceApplication {
             ctx.header("Access-Control-Allow-Headers", "Content-Type,Range");
         });
         app.options("/*", ctx -> ctx.status(204));
-        app.before(ctx -> {
-            logger.info("streaming_request instance={} method={} path={} query={} remote={}",
-                INSTANCE_ID,
-                ctx.method(),
-                ctx.path(),
-                ctx.queryString(),
-                ctx.ip()
-            );
-        });
-
         app.get("/stream/{videoId}/manifest", ctx -> {
             if (!validateVideoId(ctx)) {
                 return;
@@ -74,6 +63,7 @@ public class StreamingServiceApplication {
                 String content = new String(is.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
                 String rewritten = rewriteMasterManifest(content);
                 ctx.status(HttpStatus.OK)
+                    .header("Cache-Control", "no-store, max-age=0")
                     .contentType("application/vnd.apple.mpegurl")
                     .result(rewritten);
             } catch (NoSuchKeyException e) {
@@ -127,8 +117,10 @@ public class StreamingServiceApplication {
             String objectKey = videoId + "/manifest/" + profile + ".m3u8";
             try (InputStream is = storageClient.downloadFile(objectKey)) {
                 String content = new String(is.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
-                String rewritten = rewriteVariantManifest(content);
+                String userAgent = ctx.header("User-Agent");
+                String rewritten = rewriteVariantManifest(content, userAgent);
                 ctx.status(HttpStatus.OK)
+                    .header("Cache-Control", "public, max-age=30")
                     .contentType("application/vnd.apple.mpegurl")
                     .result(rewritten);
             } catch (NoSuchKeyException e) {
@@ -286,17 +278,6 @@ public class StreamingServiceApplication {
         return profile != null && profile.matches("^[A-Za-z0-9_-]+$");
     }
 
-    private static String resolveInstanceId() {
-        String id = System.getenv("CONTAINER_ID");
-        if (id == null || id.isBlank()) {
-            id = System.getenv("HOSTNAME");
-        }
-        if (id == null || id.isBlank()) {
-            id = "local";
-        }
-        return id;
-    }
-
     private static String rewriteMasterManifest(String content) {
         // Prefix variant playlist entries so they resolve under /stream/{videoId}/variant/...
         String[] lines = content.split("\\r?\\n");
@@ -316,7 +297,9 @@ public class StreamingServiceApplication {
         return rewritten.toString();
     }
 
-    private static String rewriteVariantManifest(String content) {
+    private static String rewriteVariantManifest(String content, String userAgent) {
+        // Keep variant manifests as VOD for all clients. Rewriting to EVENT/no-ENDLIST
+        // makes players treat playback as live and aggressively prefetch/poll.
         String[] lines = content.split("\\r?\\n");
         StringBuilder rewritten = new StringBuilder(content.length() + lines.length * 8);
         for (String line : lines) {
@@ -328,5 +311,17 @@ public class StreamingServiceApplication {
             rewritten.append('\n');
         }
         return rewritten.toString();
+    }
+
+    private static boolean isNativeSafari(String userAgent) {
+        if (userAgent == null || userAgent.isBlank()) {
+            return false;
+        }
+        String ua = userAgent.toLowerCase(java.util.Locale.ROOT);
+        return ua.contains("safari")
+            && !ua.contains("chrome")
+            && !ua.contains("chromium")
+            && !ua.contains("crios")
+            && !ua.contains("edg");
     }
 }
