@@ -35,6 +35,8 @@ public class TranscodingTask extends Task {
      * Rule of thumb: WORKER_POOL_SIZE = floor(CPU_cores / THREADS_PER_WORKER).
      */
     static final int FFMPEG_THREADS;
+    static final String FFMPEG_PRESET;
+    static final int CHUNK_DURATION_SECONDS;
     static {
         String val = System.getenv("THREADS_PER_WORKER");
         int parsed = 2;
@@ -42,6 +44,15 @@ public class TranscodingTask extends Task {
             try { parsed = Integer.parseInt(val.trim()); } catch (NumberFormatException ignored) {}
         }
         FFMPEG_THREADS = parsed;
+
+        String preset = System.getenv("FFMPEG_PRESET");
+        if (preset == null || preset.isBlank()) {
+            FFMPEG_PRESET = "veryfast";
+        } else {
+            FFMPEG_PRESET = preset.trim();
+        }
+
+        CHUNK_DURATION_SECONDS = parseIntEnv("CHUNK_DURATION_SECONDS", 10);
     }
 
     static {
@@ -116,18 +127,33 @@ public class TranscodingTask extends Task {
             // simple scenes that would otherwise be padded up to the ABR target.
             String maxrate = profile.getBitrate() + ""; // bps string for ffmpeg
             String bufsize = (profile.getBitrate() * 2) + "";
+            int segmentNumber = extractSegmentNumber(chunkKey);
+            double outputTsOffsetSeconds = segmentNumber >= 0
+                    ? (double) segmentNumber * Math.max(1, CHUNK_DURATION_SECONDS)
+                    : 0d;
             FFmpegBuilder builder = new FFmpegBuilder()
                     .setInput(inputTemp.toString())
                     .addOutput(outputTemp.toString())
+                        .setFormat("mpegts")
+                        // Keep a continuous media timeline across independently transcoded segments.
+                        .addExtraArgs("-output_ts_offset", String.format(java.util.Locale.US, "%.3f", outputTsOffsetSeconds))
                         .addExtraArgs("-vf", "scale=-2:" + profile.getVerticalResolution())
                         .addExtraArgs("-c:v", "libx264")
+                        .addExtraArgs("-preset", FFMPEG_PRESET)
                         .addExtraArgs("-crf", "23")
+                        .addExtraArgs("-pix_fmt", "yuv420p")
                         .addExtraArgs("-maxrate", maxrate)
                         .addExtraArgs("-bufsize", bufsize)
+                        .addExtraArgs("-x264-params", "scenecut=0:open_gop=0")
                         .addExtraArgs("-threads", String.valueOf(FFMPEG_THREADS))
+                        // Re-encode audio with async resampling so each chunk has stable audio timing.
                         .addExtraArgs("-c:a", "aac")
                         .addExtraArgs("-b:a", "128k")
                         .addExtraArgs("-ac", "2")
+                        .addExtraArgs("-ar", "48000")
+                        .addExtraArgs("-af", "aresample=async=1:first_pts=0")
+                        .addExtraArgs("-muxpreload", "0")
+                        .addExtraArgs("-muxdelay", "0")
                         .done();
 
             new FFmpegExecutor(FfmpegHolder.FFMPEG, FfmpegHolder.FFPROBE).createJob(builder).run();
@@ -228,5 +254,27 @@ public class TranscodingTask extends Task {
         String videoId = parts[0];
         String fileName = parts[parts.length - 1];
         return videoId + "/processed/" + profile.getName() + "/" + fileName;
+    }
+
+    private static int extractSegmentNumber(String chunkKey) {
+        if (chunkKey == null) {
+            return -1;
+        }
+        int slash = chunkKey.lastIndexOf('/');
+        String fileName = slash >= 0 ? chunkKey.substring(slash + 1) : chunkKey;
+        int dot = fileName.lastIndexOf('.');
+        String base = dot > 0 ? fileName.substring(0, dot) : fileName;
+        int end = base.length();
+        while (end > 0 && Character.isDigit(base.charAt(end - 1))) {
+            end -= 1;
+        }
+        if (end == base.length()) {
+            return -1;
+        }
+        try {
+            return Integer.parseInt(base.substring(end));
+        } catch (NumberFormatException ignored) {
+            return -1;
+        }
     }
 }
