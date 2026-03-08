@@ -21,6 +21,7 @@ import com.distributed26.videostreaming.shared.upload.events.UploadMetaEvent;
 import io.github.cdimascio.dotenv.Dotenv;
 import io.javalin.Javalin;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -94,9 +95,10 @@ public class ProcessingServiceApplication {
         int poolSize = Integer.parseInt(getEnvOrDotenv(dotenv, "WORKER_POOL_SIZE", "4"));
         transcodeStatusRepository = createTranscodeStatusRepository();
         videoProcessingRepository = createVideoProcessingRepository();
-        List<Worker> workers = new ArrayList<>(poolSize);
+        List<Worker> workers = createWorkers(poolSize);
         Map<Thread, Worker> workersByThread = new ConcurrentHashMap<>();
         ThreadPoolExecutor taskExecutor = createTaskExecutor(poolSize, workers, workersByThread);
+        taskExecutor.prestartAllCoreThreads();
         LOGGER.info("Started {} transcoding worker(s)", poolSize);
 
         transcodeTaskBus.subscribe(ev -> submitTranscodeTask(ev, taskExecutor, storageClient, workersByThread));
@@ -263,14 +265,22 @@ public class ProcessingServiceApplication {
         }
     }
 
+    private static List<Worker> createWorkers(int poolSize) {
+        List<Worker> workers = new ArrayList<>(poolSize);
+        java.time.Instant now = java.time.Instant.now();
+        for (int i = 0; i < poolSize; i++) {
+            workers.add(new Worker("worker-" + i, now));
+        }
+        return Collections.unmodifiableList(workers);
+    }
+
     private static ThreadPoolExecutor createTaskExecutor(int poolSize, List<Worker> workers, Map<Thread, Worker> workersByThread) {
         ThreadFactory factory = new ThreadFactory() {
             private int index = 0;
 
             @Override
             public synchronized Thread newThread(Runnable runnable) {
-                Worker worker = new Worker("worker-" + index, java.time.Instant.now());
-                workers.add(worker);
+                Worker worker = workers.get(index);
                 Thread thread = new Thread(runnable, "processing-worker-" + index);
                 workersByThread.put(thread, worker);
                 index++;

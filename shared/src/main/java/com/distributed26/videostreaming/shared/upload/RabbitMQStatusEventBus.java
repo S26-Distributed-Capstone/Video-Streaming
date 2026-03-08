@@ -126,8 +126,8 @@ public class RabbitMQStatusEventBus implements StatusEventBus {
                 for (JobEventListener listener : listeners) {
                     listener.onEvent(event);
                 }
-            } catch (Exception ignored) {
-                // Swallow malformed messages for now.
+            } catch (Exception e) {
+                LOGGER.warn("Failed to consume status event payload={}", json, e);
             }
         };
         channel.basicConsume(queueName, true, callback, consumerTag -> {});

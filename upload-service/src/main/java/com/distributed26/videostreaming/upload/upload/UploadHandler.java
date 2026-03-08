@@ -525,26 +525,30 @@ public class UploadHandler {
                 storageClient.uploadFile(objectKey, is, size);
                 if (fileName.endsWith(".ts")) {
                     OptionalInt segmentNumber = extractSegmentNumber(fileName);
-                    if (segmentUploadRepository != null) {
-                        if (segmentNumber.isPresent()) {
-                            segmentUploadRepository.insert(videoId, segmentNumber.getAsInt());
-                            logger.info("Recorded segment_upload videoId={} segmentNumber={}", videoId, segmentNumber.getAsInt());
-                        } else {
-                            logger.warn("Could not parse segment number from {}", fileName);
-                        }
-                    } else {
-                        logger.warn("SegmentUploadRepository is null; skipping segment_upload insert");
-                    }
                     // Publish the real distributed transcode work items and keep the
                     // legacy status event so the UI can still show source chunk progress.
                     publishTranscodeTasks(videoId, objectKey, segmentNumber);
                     statusEventBus.publish(new JobEvent(videoId, objectKey));
+                    recordUploadedSegment(videoId, fileName, segmentNumber);
                 }
                 logger.info("Finished uploading segment: {}", objectKey);
             }
         } catch (IOException e) {
             throw new RuntimeException("Failed to upload segment: " + path, e);
         }
+    }
+
+    private void recordUploadedSegment(String videoId, String fileName, OptionalInt segmentNumber) {
+        if (segmentUploadRepository == null) {
+            logger.warn("SegmentUploadRepository is null; skipping segment_upload insert");
+            return;
+        }
+        if (segmentNumber.isEmpty()) {
+            logger.warn("Could not parse segment number from {}", fileName);
+            return;
+        }
+        segmentUploadRepository.insert(videoId, segmentNumber.getAsInt());
+        logger.info("Recorded segment_upload videoId={} segmentNumber={}", videoId, segmentNumber.getAsInt());
     }
 
     private void publishTranscodeTasks(String videoId, String objectKey, OptionalInt segmentNumber) {

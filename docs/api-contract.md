@@ -37,10 +37,12 @@ Provide a clear, shared reference for client interactions. Once merged, any chan
 			```json
 			{
 				"jobId": "<uuid>",
-				"taskId": "<videoId>/chunks/output7.ts",
-				"type": "task"
+				"taskId": "<videoId>/chunks/output7.ts"
 			}
 			```
+		- note:
+			- these messages currently do not include a `type` field
+			- clients should treat a message with `jobId` + `taskId` and no explicit `type` as a source chunk upload progress event
 	- `meta`
 		- emitted when the upload service knows the total number of source segments
 		- example:

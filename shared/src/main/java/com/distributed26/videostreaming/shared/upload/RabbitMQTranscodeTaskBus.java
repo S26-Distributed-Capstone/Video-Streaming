@@ -91,8 +91,8 @@ public class RabbitMQTranscodeTaskBus implements TranscodeTaskBus {
                 for (TranscodeTaskListener listener : listeners) {
                     listener.onEvent(taskEvent);
                 }
-            } catch (Exception ignored) {
-                // Swallow malformed messages for now.
+            } catch (Exception e) {
+                LOGGER.warn("Failed to consume transcode task payload={}", json, e);
             }
         };
         channel.basicConsume(queueName, true, callback, consumerTag -> {});

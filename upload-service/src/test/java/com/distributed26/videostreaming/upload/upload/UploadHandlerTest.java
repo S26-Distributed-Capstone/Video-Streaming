@@ -290,6 +290,49 @@ public class UploadHandlerTest {
                 }
             }
         }
+
+        @Test
+        @DisplayName("Should not record a segment when transcode task publish fails")
+        void shouldNotRecordSegmentWhenTranscodePublishFails() throws Exception {
+            FakeSegmentUploadRepository fakeRepo = new FakeSegmentUploadRepository(Set.of());
+            UploadHandler handler = new UploadHandler(
+                mockStorageClient,
+                new TestStatusEventBus(),
+                new FailingTranscodeTaskBus(),
+                null,
+                fakeRepo,
+                "test-machine",
+                null
+            );
+
+            Path tempDir = Files.createTempDirectory("upload-test-failure-");
+            try {
+                Path seg0 = tempDir.resolve("output0.ts");
+                Files.writeString(seg0, "seg0");
+
+                var method = UploadHandler.class.getDeclaredMethod("uploadSegment", Path.class, String.class);
+                method.setAccessible(true);
+
+                RuntimeException thrown = assertThrows(RuntimeException.class, () -> {
+                    try {
+                        method.invoke(handler, seg0, "123e4567-e89b-12d3-a456-426614174000");
+                    } catch (java.lang.reflect.InvocationTargetException e) {
+                        Throwable cause = e.getCause();
+                        if (cause instanceof RuntimeException runtimeException) {
+                            throw runtimeException;
+                        }
+                        throw new RuntimeException(cause);
+                    }
+                });
+
+                assertTrue(thrown.getMessage().contains("Failed to upload segment"));
+                assertTrue(fakeRepo.inserted.isEmpty(), "segment should not be recorded when publish fails");
+            } finally {
+                try (var walk = Files.walk(tempDir)) {
+                    walk.sorted((a, b) -> b.compareTo(a)).forEach(path -> path.toFile().delete());
+                }
+            }
+        }
     }
 
     static boolean isFfmpegAvailable() {
@@ -550,6 +593,13 @@ public class UploadHandlerTest {
         @Override
         public int countByVideoId(String videoId) {
             return existing.size() + inserted.size();
+        }
+    }
+
+    private static class FailingTranscodeTaskBus extends TestTranscodeTaskBus {
+        @Override
+        public void publish(com.distributed26.videostreaming.shared.upload.events.TranscodeTaskEvent event) {
+            throw new RuntimeException("transcode publish failed");
         }
     }
 }
