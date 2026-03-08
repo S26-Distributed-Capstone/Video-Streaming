@@ -6,9 +6,9 @@ import static org.mockito.Mockito.*;
 
 import com.distributed26.videostreaming.processing.db.TranscodedSegmentStatusRepository;
 import com.distributed26.videostreaming.shared.jobs.Status;
-import com.distributed26.videostreaming.shared.upload.RabbitMQJobTaskBus;
-import com.distributed26.videostreaming.shared.upload.events.JobTaskEvent;
+import com.distributed26.videostreaming.shared.upload.StatusEventBus;
 import com.distributed26.videostreaming.shared.upload.events.TranscodeSegmentState;
+import com.distributed26.videostreaming.shared.upload.events.TranscodeTaskEvent;
 import com.distributed26.videostreaming.shared.upload.events.UploadMetaEvent;
 import java.lang.reflect.Field;
 import java.util.concurrent.BlockingQueue;
@@ -23,7 +23,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 class ProcessingServiceApplicationTest {
 
     @Mock
-    private RabbitMQJobTaskBus bus;
+    private StatusEventBus bus;
     @Mock
     private TranscodedSegmentStatusRepository transcodeStatusRepository;
 
@@ -40,21 +40,21 @@ class ProcessingServiceApplicationTest {
     // ── Task count ─────────────────────────────────────────────────────────────
 
     @Test
-    void oneChunk_queues3Tasks() {
+    void oneSourceChunk_enqueuesThreeProfileTasks() {
         sendChunks("vid1", "vid1/chunks/seg0.ts");
 
         assertEquals(3, taskQueue.size());
     }
 
     @Test
-    void twoChunks_queues6Tasks() {
+    void twoSourceChunks_enqueueSixProfileTasks() {
         sendChunks("vid1", "vid1/chunks/seg0.ts", "vid1/chunks/seg1.ts");
 
         assertEquals(6, taskQueue.size());
     }
 
     @Test
-    void taskCount_isChunksTimesProfiles() {
+    void taskCount_isSourceChunksTimesProfiles() {
         int chunkCount = 5;
         String[] keys = new String[chunkCount];
         for (int i = 0; i < chunkCount; i++) {
@@ -68,16 +68,16 @@ class ProcessingServiceApplicationTest {
     // ── Ordering: tasks are queued immediately, not on meta ───────────────────
 
     @Test
-    void chunkEvent_immediatelyQueues3Tasks() {
+    void transcodeTaskMessages_immediatelyQueueThreeProfileTasks() {
         sendChunks("vid1", "vid1/chunks/seg0.ts");
-        assertEquals(3, taskQueue.size(), "Tasks should be queued on first chunk, not deferred");
+        assertEquals(3, taskQueue.size(), "Profile tasks should be queued as soon as task messages arrive");
 
         sendChunks("vid1", "vid1/chunks/seg1.ts");
-        assertEquals(6, taskQueue.size(), "Each chunk independently queues 3 more tasks");
+        assertEquals(6, taskQueue.size(), "Each source chunk independently adds three profile tasks");
     }
 
     @Test
-    void metaEvent_doesNotQueueAnyTasks() {
+    void metaEvent_doesNotQueueTranscodeTasks() {
         sendMeta("vid1", 2);
         assertEquals(0, taskQueue.size(), "UploadMetaEvent alone queues nothing");
 
@@ -86,7 +86,7 @@ class ProcessingServiceApplicationTest {
     }
 
     @Test
-    void chunksAlreadyQueuedBeforeMeta_metaDoesNotAddMore() {
+    void queuedTasksRemainUnchangedWhenMetaArrives() {
         sendChunks("vid1", "vid1/chunks/seg0.ts", "vid1/chunks/seg1.ts");
         assertEquals(6, taskQueue.size());
 
@@ -148,7 +148,7 @@ class ProcessingServiceApplicationTest {
     // ── Multiple videos ────────────────────────────────────────────────────────
 
     @Test
-    void twoVideos_processedIndependently() {
+    void twoVideos_enqueueTasksIndependently() {
         sendChunks("vidA", "vidA/chunks/seg0.ts");
         assertEquals(3, taskQueue.size());
 
@@ -167,15 +167,15 @@ class ProcessingServiceApplicationTest {
         assertEquals(3, forB);
     }
 
-    // ── Deduplication ─────────────────────────────────────────────────────────
+    // ── Task message semantics ────────────────────────────────────────────────
 
     @Test
-    void duplicateChunkKey_countedOnce() {
+    void duplicateTranscodeTask_isQueuedAgain() {
         sendChunks("vid1", "vid1/chunks/seg0.ts");
         sendChunks("vid1", "vid1/chunks/seg0.ts"); // duplicate publish / retry
 
-        // Only 1 unique chunk → 3 tasks, not 6
-        assertEquals(3, taskQueue.size());
+        // Processing now consumes one task message at a time and does not dedupe retries.
+        assertEquals(6, taskQueue.size());
     }
 
     @Test
@@ -202,29 +202,35 @@ class ProcessingServiceApplicationTest {
         ));
     }
 
-    // ── Bus subscription ───────────────────────────────────────────────────────
-
-    /**
-     * onEvent() must NOT call bus.subscribe() — subscribeAll() is wired once in
-     * main(), so per-event subscriptions would register duplicate listeners.
-     */
-    @Test
-    void chunkEvent_doesNotCallPerJobIdSubscribe() {
-        sendChunks("vid1", "vid1/chunks/seg0.ts", "vid1/chunks/seg1.ts");
-
-        verify(bus, never()).subscribe(any(), any());
-    }
-
     // ── Helpers ────────────────────────────────────────────────────────────────
 
     private void sendChunks(String videoId, String... chunkKeys) {
         for (String key : chunkKeys) {
-            ProcessingServiceApplication.onEvent(new JobTaskEvent(videoId, key), taskQueue, bus);
+            int segmentNumber = extractSegmentNumber(key);
+            enqueueIfPresent(new TranscodeTaskEvent(videoId, key, "low", segmentNumber));
+            enqueueIfPresent(new TranscodeTaskEvent(videoId, key, "medium", segmentNumber));
+            enqueueIfPresent(new TranscodeTaskEvent(videoId, key, "high", segmentNumber));
+        }
+    }
+
+    private void enqueueIfPresent(TranscodeTaskEvent event) {
+        TranscodingTask task = ProcessingServiceApplication.onTranscodeTaskEvent(event);
+        if (task != null) {
+            taskQueue.offer(task);
         }
     }
 
     private void sendMeta(String videoId, int totalSegments) {
-        ProcessingServiceApplication.onEvent(new UploadMetaEvent(videoId, totalSegments), taskQueue, bus);
+        ProcessingServiceApplication.onStatusEvent(new UploadMetaEvent(videoId, totalSegments), null, null);
+    }
+
+    private static int extractSegmentNumber(String chunkKey) {
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("(\\d+)").matcher(chunkKey);
+        int last = -1;
+        while (matcher.find()) {
+            last = Integer.parseInt(matcher.group(1));
+        }
+        return last;
     }
 
     private static void setStaticField(String fieldName, Object value) {

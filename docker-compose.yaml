@@ -55,6 +55,8 @@ services:
       SERVICE_MODE: processing
       RABBITMQ_STATUS_QUEUE: processing.events.queue
       RABBITMQ_STATUS_BINDING: upload.status.*
+      RABBITMQ_TASK_QUEUE: ${RABBITMQ_TASK_QUEUE}
+      RABBITMQ_TASK_BINDING: ${RABBITMQ_TASK_BINDING}
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8082/health || exit 1"]
       interval: 15s

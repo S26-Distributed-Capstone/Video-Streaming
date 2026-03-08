@@ -1,9 +1,12 @@
 package com.distributed26.videostreaming.upload.upload;
 
-import com.distributed26.videostreaming.shared.upload.JobTaskBus;
-import com.distributed26.videostreaming.shared.upload.JobTaskListener;
+import com.distributed26.videostreaming.shared.upload.StatusEventBus;
+import com.distributed26.videostreaming.shared.upload.JobEventListener;
+import com.distributed26.videostreaming.shared.upload.events.JobEvent;
 import com.distributed26.videostreaming.shared.upload.events.TranscodeProgressEvent;
 import com.distributed26.videostreaming.shared.upload.events.TranscodeSegmentState;
+import com.distributed26.videostreaming.shared.upload.events.UploadFailedEvent;
+import com.distributed26.videostreaming.shared.upload.events.UploadMetaEvent;
 import com.distributed26.videostreaming.shared.upload.events.UploadProgressEvent;
 import com.distributed26.videostreaming.upload.db.SegmentUploadRepository;
 import com.distributed26.videostreaming.upload.db.TranscodedSegmentStatusRepository;
@@ -28,18 +31,18 @@ public class UploadStatusWebSocket {
     private static final ObjectMapper objectMapper = new ObjectMapper()
             .registerModule(new JavaTimeModule())
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-    private final JobTaskBus jobTaskBus;
+    private final StatusEventBus statusEventBus;
     private final SegmentUploadRepository segmentUploadRepository;
     private final TranscodedSegmentStatusRepository transcodedSegmentStatusRepository;
-    private final Map<WsContext, JobTaskListener> jobListenersByContext = new ConcurrentHashMap<>();
+    private final Map<WsContext, JobEventListener> jobListenersByContext = new ConcurrentHashMap<>();
     private final Map<WsContext, String> jobIdByContext = new ConcurrentHashMap<>();
 
     public UploadStatusWebSocket(
-            JobTaskBus jobTaskBus,
+            StatusEventBus statusEventBus,
             SegmentUploadRepository segmentUploadRepository,
             TranscodedSegmentStatusRepository transcodedSegmentStatusRepository
     ) {
-        this.jobTaskBus = Objects.requireNonNull(jobTaskBus, "jobTaskBus is null");
+        this.statusEventBus = Objects.requireNonNull(statusEventBus, "statusEventBus is null");
         this.segmentUploadRepository = segmentUploadRepository;
         this.transcodedSegmentStatusRepository = transcodedSegmentStatusRepository;
     }
@@ -82,7 +85,7 @@ public class UploadStatusWebSocket {
             return;
         }
         logger.debug("WS bind jobId={}", jobId);
-        JobTaskListener listener = event -> {
+        JobEventListener listener = event -> {
             try {
                 logger.debug("WS send event jobId={} type={}", event.getJobId(), describeEventType(event));
                 ctx.send(objectMapper.writeValueAsString(event));
@@ -92,7 +95,7 @@ public class UploadStatusWebSocket {
         };
         jobIdByContext.put(ctx, jobId);
         jobListenersByContext.put(ctx, listener);
-        jobTaskBus.subscribe(jobId, listener);
+        statusEventBus.subscribe(jobId, listener);
 
         if (segmentUploadRepository != null) {
             try {
@@ -126,9 +129,9 @@ public class UploadStatusWebSocket {
 
     private void cleanupContext(WsContext ctx) {
         String jobId = jobIdByContext.remove(ctx);
-        JobTaskListener jobListener = jobListenersByContext.remove(ctx);
+        JobEventListener jobListener = jobListenersByContext.remove(ctx);
         if (jobId != null && jobListener != null) {
-            jobTaskBus.unsubscribe(jobId, jobListener);
+            statusEventBus.unsubscribe(jobId, jobListener);
         }
     }
 
@@ -149,11 +152,11 @@ public class UploadStatusWebSocket {
         }
     }
 
-    private String describeEventType(com.distributed26.videostreaming.shared.upload.events.JobTaskEvent event) {
-        if (event instanceof com.distributed26.videostreaming.shared.upload.events.UploadFailedEvent failed) {
+    private String describeEventType(JobEvent event) {
+        if (event instanceof UploadFailedEvent failed) {
             return failed.getType();
         }
-        if (event instanceof com.distributed26.videostreaming.shared.upload.events.UploadMetaEvent) {
+        if (event instanceof UploadMetaEvent) {
             return "meta";
         }
         if (event instanceof TranscodeProgressEvent) {

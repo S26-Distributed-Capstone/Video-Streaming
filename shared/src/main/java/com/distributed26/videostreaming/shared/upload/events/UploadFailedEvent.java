@@ -1,6 +1,6 @@
 package com.distributed26.videostreaming.shared.upload.events;
 
-public class UploadFailedEvent extends JobTaskEvent {
+public class UploadFailedEvent extends JobEvent {
     private final String reason;
     private final String machineId;
     private final String containerId;

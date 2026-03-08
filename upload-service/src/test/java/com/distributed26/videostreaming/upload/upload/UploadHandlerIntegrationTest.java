@@ -96,7 +96,7 @@ public class UploadHandlerIntegrationTest {
             return null;
         }).when(mockStorageClient).uploadFile(anyString(), any(InputStream.class), anyLong());
 
-        UploadHandler handler = new UploadHandler(mockStorageClient, new TestJobTaskBus());
+        UploadHandler handler = new UploadHandler(mockStorageClient, new TestStatusEventBus(), new TestTranscodeTaskBus());
         Javalin app = Javalin.create();
         app.post("/upload", handler::upload);
 
@@ -179,7 +179,7 @@ public class UploadHandlerIntegrationTest {
             return null;
         }).when(mockStorageClient).uploadFile(anyString(), any(InputStream.class), anyLong());
 
-        UploadHandler handler = new UploadHandler(mockStorageClient, new TestJobTaskBus());
+        UploadHandler handler = new UploadHandler(mockStorageClient, new TestStatusEventBus(), new TestTranscodeTaskBus());
         Javalin app = Javalin.create();
         app.post("/upload", handler::upload);
 
@@ -218,7 +218,7 @@ public class UploadHandlerIntegrationTest {
         doThrow(new RuntimeException("Storage unavailable"))
             .when(mockStorageClient).uploadFile(anyString(), any(InputStream.class), anyLong());
 
-        UploadHandler handler = new UploadHandler(mockStorageClient, new TestJobTaskBus());
+        UploadHandler handler = new UploadHandler(mockStorageClient, new TestStatusEventBus(), new TestTranscodeTaskBus());
         Javalin app = Javalin.create();
         app.post("/upload", handler::upload);
 
@@ -281,7 +281,7 @@ public class UploadHandlerIntegrationTest {
             return null;
         }).when(mockStorageClient).uploadFile(anyString(), any(InputStream.class), anyLong());
 
-        UploadHandler handler = new UploadHandler(mockStorageClient, new TestJobTaskBus());
+        UploadHandler handler = new UploadHandler(mockStorageClient, new TestStatusEventBus(), new TestTranscodeTaskBus());
         Javalin app = Javalin.create();
         app.post("/upload", handler::upload);
 
@@ -337,6 +337,7 @@ public class UploadHandlerIntegrationTest {
         if (username == null || username.isBlank()) {
             throw new IllegalStateException("PG_USER is not set");
         }
+        assumeDatabaseReachable(jdbcUrl, username, password);
 
         VideoUploadRepository videoRepo = new VideoUploadRepository(jdbcUrl, username, password);
         SegmentUploadRepository segmentRepo = new SegmentUploadRepository(jdbcUrl, username, password);
@@ -351,9 +352,12 @@ public class UploadHandlerIntegrationTest {
             return null;
         }).when(mockStorageClient).uploadFile(anyString(), any(InputStream.class), anyLong());
 
+        TestStatusEventBus statusBus = new TestStatusEventBus();
+        TestTranscodeTaskBus taskBus = new TestTranscodeTaskBus();
         UploadHandler handler = new UploadHandler(
             mockStorageClient,
-            new TestJobTaskBus(),
+            statusBus,
+            taskBus,
             videoRepo,
             segmentRepo,
             "test-machine",
@@ -454,6 +458,12 @@ public class UploadHandlerIntegrationTest {
             throw new RuntimeException("Failed to clean up test data", e);
         }
     }
+
+    private void assumeDatabaseReachable(String jdbcUrl, String username, String password) {
+        try (Connection ignored = DriverManager.getConnection(jdbcUrl, username, password)) {
+            // Reachable.
+        } catch (SQLException e) {
+            Assumptions.assumeTrue(false, "Skipping integration test because Postgres is not reachable: " + e.getMessage());
+        }
+    }
 }
-
-
