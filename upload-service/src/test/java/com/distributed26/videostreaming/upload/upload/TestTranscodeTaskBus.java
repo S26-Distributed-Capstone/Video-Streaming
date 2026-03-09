@@ -5,6 +5,7 @@ import com.distributed26.videostreaming.shared.upload.TranscodeTaskListener;
 import com.distributed26.videostreaming.shared.upload.events.TranscodeTaskEvent;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 class TestTranscodeTaskBus implements TranscodeTaskBus {
@@ -14,7 +15,7 @@ class TestTranscodeTaskBus implements TranscodeTaskBus {
     public void publish(TranscodeTaskEvent event) {
         Objects.requireNonNull(event, "event is null");
         for (TranscodeTaskListener listener : listeners) {
-            listener.onEvent(event);
+            listener.onEvent(event).toCompletableFuture().join();
         }
     }
 

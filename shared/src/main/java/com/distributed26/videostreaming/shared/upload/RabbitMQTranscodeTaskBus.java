@@ -12,6 +12,8 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeoutException;
 import org.apache.logging.log4j.LogManager;
@@ -29,6 +31,7 @@ public class RabbitMQTranscodeTaskBus implements TranscodeTaskBus {
     private final Channel channel;
     private final String exchange;
     private final String taskBinding;
+    private final int taskPrefetch;
     private final List<TranscodeTaskListener> listeners = new CopyOnWriteArrayList<>();
 
     public static RabbitMQTranscodeTaskBus fromEnv() {
@@ -38,6 +41,7 @@ public class RabbitMQTranscodeTaskBus implements TranscodeTaskBus {
     public RabbitMQTranscodeTaskBus(RabbitMQBusConfig config, boolean consumeTasks) {
         this.exchange = Objects.requireNonNull(config.exchange(), "exchange is null");
         this.taskBinding = Objects.requireNonNull(config.taskBinding(), "taskBinding is null");
+        this.taskPrefetch = resolveTaskPrefetch();
         try {
             ConnectionFactory factory = new ConnectionFactory();
             factory.setHost(config.host());
@@ -53,6 +57,7 @@ public class RabbitMQTranscodeTaskBus implements TranscodeTaskBus {
             channel.queueBind(config.taskQueue(), this.exchange, config.taskBinding());
 
             if (consumeTasks) {
+                channel.basicQos(taskPrefetch);
                 startConsumer(config.taskQueue());
             } else {
                 LOGGER.info("Transcode task consumer disabled for {}", this.exchange);
@@ -67,7 +72,9 @@ public class RabbitMQTranscodeTaskBus implements TranscodeTaskBus {
         Objects.requireNonNull(event, "event is null");
         try {
             byte[] body = OBJECT_MAPPER.writeValueAsBytes(event);
-            channel.basicPublish(exchange, taskBinding, null, body);
+            synchronized (channel) {
+                channel.basicPublish(exchange, taskBinding, null, body);
+            }
         } catch (IOException e) {
             throw new RuntimeException("Failed to publish transcode task", e);
         }
@@ -81,26 +88,87 @@ public class RabbitMQTranscodeTaskBus implements TranscodeTaskBus {
 
     private void startConsumer(String queueName) throws IOException {
         DeliverCallback callback = (consumerTag, delivery) -> {
+            long deliveryTag = delivery.getEnvelope().getDeliveryTag();
             String json = new String(delivery.getBody(), StandardCharsets.UTF_8);
             try {
                 JsonNode node = OBJECT_MAPPER.readTree(json);
                 if (!"transcode_task".equals(node.path("type").asText())) {
+                    acknowledge(deliveryTag);
                     return;
                 }
                 TranscodeTaskEvent taskEvent = RabbitMQTranscodeTaskCodec.toEvent(node);
-                for (TranscodeTaskListener listener : listeners) {
-                    listener.onEvent(taskEvent);
-                }
+                invokeListeners(taskEvent).whenComplete((handled, error) -> {
+                    if (error != null) {
+                        LOGGER.warn("Failed to process transcode task payload={}", json, error);
+                        rejectAndRequeue(deliveryTag);
+                        return;
+                    }
+                    if (Boolean.TRUE.equals(handled)) {
+                        acknowledge(deliveryTag);
+                    } else {
+                        rejectAndRequeue(deliveryTag);
+                    }
+                });
             } catch (Exception e) {
                 LOGGER.warn("Failed to consume transcode task payload={}", json, e);
+                rejectAndRequeue(deliveryTag);
             }
         };
-        channel.basicConsume(queueName, true, callback, consumerTag -> {});
+        channel.basicConsume(queueName, false, callback, consumerTag -> {});
+    }
+
+    private CompletionStage<Boolean> invokeListeners(TranscodeTaskEvent taskEvent) {
+        CompletionStage<Boolean> stage = CompletableFuture.completedFuture(true);
+        for (TranscodeTaskListener listener : listeners) {
+            stage = stage.thenCompose(handled -> {
+                if (!handled) {
+                    return CompletableFuture.completedFuture(false);
+                }
+                try {
+                    return listener.onEvent(taskEvent);
+                } catch (Exception e) {
+                    return CompletableFuture.failedStage(e);
+                }
+            });
+        }
+        return stage;
+    }
+
+    private void acknowledge(long deliveryTag) {
+        synchronized (channel) {
+            try {
+                channel.basicAck(deliveryTag, false);
+            } catch (IOException e) {
+                throw new RuntimeException("Failed to ack transcode task deliveryTag=" + deliveryTag, e);
+            }
+        }
+    }
+
+    private void rejectAndRequeue(long deliveryTag) {
+        synchronized (channel) {
+            try {
+                channel.basicNack(deliveryTag, false, true);
+            } catch (IOException e) {
+                throw new RuntimeException("Failed to nack transcode task deliveryTag=" + deliveryTag, e);
+            }
+        }
     }
 
     private static boolean shouldConsumeTasks() {
         String mode = System.getenv("SERVICE_MODE");
         return "processing".equalsIgnoreCase(mode);
+    }
+
+    private static int resolveTaskPrefetch() {
+        String prefetch = System.getenv("RABBITMQ_TASK_PREFETCH");
+        if (prefetch != null && !prefetch.isBlank()) {
+            return Math.max(1, Integer.parseInt(prefetch));
+        }
+        String poolSize = System.getenv("WORKER_POOL_SIZE");
+        if (poolSize != null && !poolSize.isBlank()) {
+            return Math.max(1, Integer.parseInt(poolSize));
+        }
+        return 4;
     }
 
     @Override
