@@ -22,6 +22,9 @@ import io.github.cdimascio.dotenv.Dotenv;
 import io.javalin.Javalin;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -105,6 +108,7 @@ public class ProcessingServiceApplication {
 
         transcodeTaskBus.subscribe(ev -> submitTranscodeTask(ev, taskExecutor, storageClient, workersByThread));
         statusEventBus.subscribeAll(ev -> onStatusEvent(ev, manifestService, manifestExecutor));
+        recoverIncompleteVideos(storageClient, transcodeTaskBus, manifestService, manifestExecutor);
 
         LOGGER.info("Processing service ready — waiting for transcode tasks...");
 
@@ -230,6 +234,122 @@ public class ProcessingServiceApplication {
     }
 
     // ── Startup helpers ────────────────────────────────────────────────────────
+
+    private static void recoverIncompleteVideos(
+            ObjectStorageClient storageClient,
+            TranscodeTaskBus transcodeTaskBus,
+            AbrManifestService manifestService,
+            ExecutorService manifestExecutor
+    ) {
+        if (videoProcessingRepository == null) {
+            LOGGER.info("Startup recovery skipped because video metadata repository is not configured");
+            return;
+        }
+        List<String> videoIds;
+        try {
+            videoIds = videoProcessingRepository.findVideoIdsByStatus("PROCESSING");
+        } catch (Exception e) {
+            LOGGER.warn("Startup recovery failed to load PROCESSING videos", e);
+            return;
+        }
+        if (videoIds.isEmpty()) {
+            LOGGER.info("Startup recovery found no PROCESSING videos");
+            return;
+        }
+        LOGGER.info("Startup recovery inspecting {} PROCESSING video(s)", videoIds.size());
+        for (String videoId : videoIds) {
+            recoverVideo(videoId, storageClient, transcodeTaskBus, manifestService, manifestExecutor);
+        }
+    }
+
+    private static void recoverVideo(
+            String videoId,
+            ObjectStorageClient storageClient,
+            TranscodeTaskBus transcodeTaskBus,
+            AbrManifestService manifestService,
+            ExecutorService manifestExecutor
+    ) {
+        try {
+            List<String> chunkKeys = listSourceChunkKeys(videoId, storageClient);
+            if (chunkKeys.isEmpty()) {
+                LOGGER.info("Startup recovery: no source chunks found for videoId={}", videoId);
+                return;
+            }
+
+            int totalSegments = Math.max(findTotalSegments(videoId), chunkKeys.size());
+            Map<String, Set<Integer>> doneSegmentsByProfile = loadDoneSegmentsByProfile(videoId);
+            int republished = 0;
+            Set<String> touchedProfiles = new HashSet<>();
+
+            for (String chunkKey : chunkKeys) {
+                int segmentNumber = parseSegmentNumber(chunkKey);
+                if (segmentNumber < 0) {
+                    LOGGER.warn("Startup recovery: skipping chunk with unparseable segment number videoId={} key={}",
+                            videoId, chunkKey);
+                    continue;
+                }
+                for (TranscodingProfile profile : PROFILES) {
+                    Set<Integer> doneSegments = doneSegmentsByProfile.getOrDefault(profile.getName(), Set.of());
+                    if (doneSegments.contains(segmentNumber)) {
+                        continue;
+                    }
+                    transcodeTaskBus.publish(new TranscodeTaskEvent(
+                            videoId,
+                            chunkKey,
+                            profile.getName(),
+                            segmentNumber
+                    ));
+                    touchedProfiles.add(profile.getName());
+                    republished += 1;
+                }
+            }
+
+            if (republished > 0) {
+                LOGGER.info("Startup recovery requeued {} missing transcode task(s) for videoId={} profiles={}",
+                        republished, videoId, touchedProfiles);
+            } else {
+                LOGGER.info("Startup recovery found no missing transcode tasks for videoId={}", videoId);
+            }
+
+            if (totalSegments > 0 && areAllProfilesDone(videoId, totalSegments)) {
+                scheduleManifestGeneration(videoId, totalSegments, manifestService, manifestExecutor);
+            }
+        } catch (Exception e) {
+            LOGGER.warn("Startup recovery failed for videoId={}", videoId, e);
+        }
+    }
+
+    private static List<String> listSourceChunkKeys(String videoId, ObjectStorageClient storageClient) {
+        String prefix = videoId + "/chunks/";
+        List<String> chunkKeys = new ArrayList<>(storageClient.listFiles(prefix).stream()
+                .filter(key -> key.endsWith(".ts"))
+                .toList());
+        chunkKeys.sort(Comparator.comparingInt(ProcessingServiceApplication::parseSegmentNumber));
+        return chunkKeys;
+    }
+
+    private static Map<String, Set<Integer>> loadDoneSegmentsByProfile(String videoId) {
+        Map<String, Set<Integer>> doneSegmentsByProfile = new HashMap<>();
+        if (transcodeStatusRepository == null) {
+            return doneSegmentsByProfile;
+        }
+        for (TranscodingProfile profile : PROFILES) {
+            try {
+                doneSegmentsByProfile.put(
+                        profile.getName(),
+                        transcodeStatusRepository.findSegmentNumbersByState(
+                                videoId,
+                                profile.getName(),
+                                TranscodeSegmentState.DONE
+                        )
+                );
+            } catch (Exception e) {
+                LOGGER.warn("Startup recovery failed to load DONE segments videoId={} profile={}",
+                        videoId, profile.getName(), e);
+            }
+        }
+        return doneSegmentsByProfile;
+    }
 
     private static String getEnvOrDotenv(Dotenv dotenv, String key, String defaultValue) {
         String envVal = System.getenv(key);

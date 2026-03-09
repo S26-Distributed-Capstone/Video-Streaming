@@ -5,6 +5,8 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.OptionalInt;
 import java.util.UUID;
 
@@ -46,6 +48,23 @@ public class VideoProcessingRepository {
             }
         } catch (SQLException e) {
             throw new RuntimeException("Failed to query video_upload total_segments", e);
+        }
+    }
+
+    public List<String> findVideoIdsByStatus(String status) {
+        String sql = "SELECT video_id FROM video_upload WHERE status = ?";
+        List<String> videoIds = new ArrayList<>();
+        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, status);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    videoIds.add(rs.getString("video_id"));
+                }
+            }
+            return videoIds;
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to query video_upload by status", e);
         }
     }
 }

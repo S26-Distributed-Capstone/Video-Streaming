@@ -6,6 +6,8 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.UUID;
 
 public class TranscodedSegmentStatusRepository {
@@ -95,6 +97,28 @@ public class TranscodedSegmentStatusRepository {
             }
         } catch (SQLException e) {
             throw new RuntimeException("Failed to query transcoded_segment_status", e);
+        }
+    }
+
+    public Set<Integer> findSegmentNumbersByState(String videoId, String profile, TranscodeSegmentState state) {
+        String sql = """
+            SELECT segment_number FROM transcoded_segment_status
+            WHERE video_id = ? AND profile = ? AND state = ?
+            """;
+        Set<Integer> segmentNumbers = new HashSet<>();
+        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setObject(1, UUID.fromString(videoId));
+            ps.setString(2, profile);
+            ps.setString(3, state.name());
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    segmentNumbers.add(rs.getInt("segment_number"));
+                }
+            }
+            return segmentNumbers;
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to list transcoded_segment_status", e);
         }
     }
 }
