@@ -12,6 +12,7 @@ final class RabbitMQTranscodeTaskCodec {
         String chunkKey = node.path("chunkKey").asText("");
         String profile = node.path("profile").asText("");
         int segmentNumber = node.path("segmentNumber").asInt(-1);
-        return new TranscodeTaskEvent(jobId, chunkKey, profile, segmentNumber);
+        double outputTsOffsetSeconds = node.path("outputTsOffsetSeconds").asDouble(-1d);
+        return new TranscodeTaskEvent(jobId, chunkKey, profile, segmentNumber, outputTsOffsetSeconds);
     }
 }

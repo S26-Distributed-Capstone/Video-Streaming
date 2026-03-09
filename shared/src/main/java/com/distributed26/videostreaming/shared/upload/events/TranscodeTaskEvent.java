@@ -7,12 +7,18 @@ public class TranscodeTaskEvent extends JobEvent {
     private final String chunkKey;
     private final String profile;
     private final int segmentNumber;
+    private final double outputTsOffsetSeconds;
 
     public TranscodeTaskEvent(String jobId, String chunkKey, String profile, int segmentNumber) {
+        this(jobId, chunkKey, profile, segmentNumber, -1d);
+    }
+
+    public TranscodeTaskEvent(String jobId, String chunkKey, String profile, int segmentNumber, double outputTsOffsetSeconds) {
         super(jobId, buildTaskId(profile, segmentNumber));
         this.chunkKey = Objects.requireNonNull(chunkKey, "chunkKey is null");
         this.profile = Objects.requireNonNull(profile, "profile is null");
         this.segmentNumber = segmentNumber;
+        this.outputTsOffsetSeconds = outputTsOffsetSeconds;
     }
 
     public String getType() {
@@ -29,6 +35,10 @@ public class TranscodeTaskEvent extends JobEvent {
 
     public int getSegmentNumber() {
         return segmentNumber;
+    }
+
+    public double getOutputTsOffsetSeconds() {
+        return outputTsOffsetSeconds;
     }
 
     private static String buildTaskId(String profile, int segmentNumber) {
