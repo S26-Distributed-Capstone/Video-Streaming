@@ -182,7 +182,7 @@ function tryFinalizeSuccess() {
     return;
   }
   processingComplete = true;
-  setDoneMessage("Upload and transcoding complete.", { success: true });
+  setDoneMessage("Upload, chunking, and transcoding complete.", { success: true });
   uploadBtn.disabled = false;
   uploadInFlight = false;
   refreshReadyList();
@@ -503,7 +503,7 @@ function connectWebSocket(wsUrl, videoId) {
             tryFinalizeSuccess();
           }
         } else {
-          processingPercent.textContent = `${completedSegments} events`;
+          processingPercent.textContent = `${completedSegments} source chunks`;
         }
         return;
       }
@@ -566,7 +566,7 @@ function connectWebSocket(wsUrl, videoId) {
             tryFinalizeSuccess();
           }
         } else {
-          processingPercent.textContent = `${completedSegments} events`;
+          processingPercent.textContent = `${completedSegments} source chunks`;
         }
       }
     } catch (err) {
@@ -756,7 +756,7 @@ function uploadFile({ preserveLog, isRetry } = {}) {
     ["low", "medium", "high"].forEach((profile) => updateTranscodeProfileUi(profile));
 
     await fetchUploadInfo(baseUrl, currentVideoId, payload.uploadStatusUrl);
-    setPlayerStatus("Ready list updates when processing completes.", { success: true });
+    setPlayerStatus("Ready list updates when chunking and transcoding complete.", { success: true });
 
     const wsUrl = payload.uploadStatusUrl || deriveWsUrl(baseUrl, currentVideoId);
     connectWebSocket(wsUrl, currentVideoId);

@@ -2,7 +2,7 @@ package com.distributed26.videostreaming.shared.upload.events;
 
 import java.util.Objects;
 
-public class TranscodeProgressEvent extends JobTaskEvent {
+public class TranscodeProgressEvent extends JobEvent {
     private final String type = "transcode_progress";
     private final String profile;
     private final int segmentNumber;

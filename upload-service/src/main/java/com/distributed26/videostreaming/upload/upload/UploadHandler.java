@@ -1,8 +1,10 @@
 package com.distributed26.videostreaming.upload.upload;
 
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
-import com.distributed26.videostreaming.shared.upload.JobTaskBus;
-import com.distributed26.videostreaming.shared.upload.events.JobTaskEvent;
+import com.distributed26.videostreaming.shared.upload.StatusEventBus;
+import com.distributed26.videostreaming.shared.upload.TranscodeTaskBus;
+import com.distributed26.videostreaming.shared.upload.events.JobEvent;
+import com.distributed26.videostreaming.shared.upload.events.TranscodeTaskEvent;
 import com.distributed26.videostreaming.shared.upload.events.UploadMetaEvent;
 import com.distributed26.videostreaming.upload.db.SegmentUploadRepository;
 import com.distributed26.videostreaming.upload.db.VideoUploadRepository;
@@ -43,8 +45,10 @@ public class UploadHandler {
     private static final Logger logger = LogManager.getLogger(UploadHandler.class);
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final int MAX_VIDEO_NAME_LENGTH = 200;
+    private static final String[] TRANSCODE_PROFILES = {"low", "medium", "high"};
     private final ObjectStorageClient storageClient;
-    private final JobTaskBus jobTaskBus;
+    private final StatusEventBus statusEventBus;
+    private final TranscodeTaskBus transcodeTaskBus;
     private final VideoUploadRepository videoUploadRepository;
     private final SegmentUploadRepository segmentUploadRepository;
     private final String machineId;
@@ -55,32 +59,14 @@ public class UploadHandler {
     private final long processingTimeoutMillis;
     private final long pollingIntervalMillis;
 
-    public UploadHandler(ObjectStorageClient storageClient, JobTaskBus jobTaskBus) {
-        this(storageClient, jobTaskBus, null, null, null, null);
+    public UploadHandler(ObjectStorageClient storageClient, StatusEventBus statusEventBus, TranscodeTaskBus transcodeTaskBus) {
+        this(storageClient, statusEventBus, transcodeTaskBus, null, null, null, null);
     }
 
     public UploadHandler(
             ObjectStorageClient storageClient,
-            JobTaskBus jobTaskBus,
-            VideoUploadRepository videoUploadRepository,
-            String machineId
-    ) {
-        this(storageClient, jobTaskBus, videoUploadRepository, null, machineId, null);
-    }
-
-    public UploadHandler(
-            ObjectStorageClient storageClient,
-            JobTaskBus jobTaskBus,
-            VideoUploadRepository videoUploadRepository,
-            SegmentUploadRepository segmentUploadRepository,
-            String machineId
-    ) {
-        this(storageClient, jobTaskBus, videoUploadRepository, segmentUploadRepository, machineId, null);
-    }
-
-    public UploadHandler(
-            ObjectStorageClient storageClient,
-            JobTaskBus jobTaskBus,
+            StatusEventBus statusEventBus,
+            TranscodeTaskBus transcodeTaskBus,
             VideoUploadRepository videoUploadRepository,
             SegmentUploadRepository segmentUploadRepository,
             String machineId,
@@ -88,7 +74,8 @@ public class UploadHandler {
     ) {
         Dotenv dotenv = Dotenv.configure().directory("./").ignoreIfMissing().load();
         this.storageClient = storageClient;
-        this.jobTaskBus = Objects.requireNonNull(jobTaskBus, "jobTaskBus is null");
+        this.statusEventBus = Objects.requireNonNull(statusEventBus, "statusEventBus is null");
+        this.transcodeTaskBus = Objects.requireNonNull(transcodeTaskBus, "transcodeTaskBus is null");
         this.videoUploadRepository = videoUploadRepository;
         this.segmentUploadRepository = segmentUploadRepository;
         this.machineId = machineId;
@@ -399,7 +386,7 @@ public class UploadHandler {
             if (videoUploadRepository != null) {
                 if (totalSegments > 0) {
                     videoUploadRepository.updateTotalSegments(videoId, (int) totalSegments);
-                    jobTaskBus.publish(new UploadMetaEvent(videoId, (int) totalSegments));
+                    statusEventBus.publish(new UploadMetaEvent(videoId, (int) totalSegments));
                     logger.info("Successfully updated total segments to {} segments", totalSegments);
                 }
             }
@@ -537,23 +524,42 @@ public class UploadHandler {
             try (InputStream is = new FileInputStream(path.toFile())) {
                 storageClient.uploadFile(objectKey, is, size);
                 if (fileName.endsWith(".ts")) {
-                    if (segmentUploadRepository != null) {
-                        OptionalInt segmentNumber = extractSegmentNumber(fileName);
-                        if (segmentNumber.isPresent()) {
-                            segmentUploadRepository.insert(videoId, segmentNumber.getAsInt());
-                            logger.info("Recorded segment_upload videoId={} segmentNumber={}", videoId, segmentNumber.getAsInt());
-                        } else {
-                            logger.warn("Could not parse segment number from {}", fileName);
-                        }
-                    } else {
-                        logger.warn("SegmentUploadRepository is null; skipping segment_upload insert");
-                    }
-                    jobTaskBus.publish(new JobTaskEvent(videoId, objectKey));
+                    OptionalInt segmentNumber = extractSegmentNumber(fileName);
+                    // Publish the real distributed transcode work items and keep the
+                    // legacy status event so the UI can still show source chunk progress.
+                    publishTranscodeTasks(videoId, objectKey, segmentNumber);
+                    statusEventBus.publish(new JobEvent(videoId, objectKey));
+                    recordUploadedSegment(videoId, fileName, segmentNumber);
                 }
                 logger.info("Finished uploading segment: {}", objectKey);
             }
         } catch (IOException e) {
             throw new RuntimeException("Failed to upload segment: " + path, e);
+        }
+    }
+
+    private void recordUploadedSegment(String videoId, String fileName, OptionalInt segmentNumber) {
+        if (segmentUploadRepository == null) {
+            logger.warn("SegmentUploadRepository is null; skipping segment_upload insert");
+            return;
+        }
+        if (segmentNumber.isEmpty()) {
+            logger.warn("Could not parse segment number from {}", fileName);
+            return;
+        }
+        segmentUploadRepository.insert(videoId, segmentNumber.getAsInt());
+        logger.info("Recorded segment_upload videoId={} segmentNumber={}", videoId, segmentNumber.getAsInt());
+    }
+
+    private void publishTranscodeTasks(String videoId, String objectKey, OptionalInt segmentNumber) {
+        if (segmentNumber.isEmpty()) {
+            logger.warn("Skipping transcode task publish because segment number could not be parsed for {}", objectKey);
+            return;
+        }
+        for (String profile : TRANSCODE_PROFILES) {
+            transcodeTaskBus.publish(
+                new TranscodeTaskEvent(videoId, objectKey, profile, segmentNumber.getAsInt())
+            );
         }
     }
 

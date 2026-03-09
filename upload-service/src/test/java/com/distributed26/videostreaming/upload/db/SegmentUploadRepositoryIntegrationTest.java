@@ -6,6 +6,7 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.UUID;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
@@ -38,6 +39,7 @@ public class SegmentUploadRepositoryIntegrationTest {
 
         segmentRepo = new SegmentUploadRepository(jdbcUrl, username, password);
         videoRepo = new VideoUploadRepository(jdbcUrl, username, password);
+        assumeDatabaseReachable();
 
         videoId = UUID.randomUUID().toString();
         videoRepo.create(videoId, "Test Video", 3, "UPLOADING", "test-machine", "test-container");
@@ -82,5 +84,13 @@ public class SegmentUploadRepositoryIntegrationTest {
         segmentRepo.insert(videoId, 1);
 
         assertEquals(1, segmentRepo.countByVideoId(videoId));
+    }
+
+    private void assumeDatabaseReachable() {
+        try (Connection ignored = DriverManager.getConnection(jdbcUrl, username, password)) {
+            // Reachable.
+        } catch (SQLException e) {
+            Assumptions.assumeTrue(false, "Skipping integration test because Postgres is not reachable: " + e.getMessage());
+        }
     }
 }

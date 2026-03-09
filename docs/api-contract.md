@@ -19,6 +19,9 @@ Provide a clear, shared reference for client interactions. Once merged, any chan
 	```json
 	{ "videoId": "<uuid>", "uploadStatusUrl": "ws(s)://<host>/upload-status?jobId=<uuid>" }
 	```
+- Notes:
+	- `uploadStatusUrl` points to the status service WebSocket
+	- the browser uses that socket for both source-chunk upload progress and transcoding progress
 - Error responses:
 	- `400 Bad Request` — no file or name provided
 	- `500 Internal Server Error` — storage failure
@@ -26,22 +29,66 @@ Provide a clear, shared reference for client interactions. Once merged, any chan
 #### `GET /upload-status?jobId={videoId}`
 - Purpose: Real-time status updates via WebSocket, eliminating the need for polling
 - Protocol: HTTP upgrade to WebSocket (endpoint corresponds to `uploadStatusUrl`)
-- Message format: JSON status messages pushed to client as the video progresses through lifecycle states
-	```json
-	{
-		"videoId": "<uuid>",
-		"state": "UPLOADED | PROCESSING | READY | FAILED",
-		"timestamp": "<iso8601>"
-	}
-	```
+- Message format: JSON status events pushed to the client as upload and transcoding progress
+- Event types currently sent over the socket:
+	- `task`
+		- emitted when a source chunk is uploaded by `upload-service`
+		- example:
+			```json
+			{
+				"jobId": "<uuid>",
+				"taskId": "<videoId>/chunks/output7.ts"
+			}
+			```
+		- note:
+			- these messages currently do not include a `type` field
+			- clients should treat a message with `jobId` + `taskId` and no explicit `type` as a source chunk upload progress event
+	- `meta`
+		- emitted when the upload service knows the total number of source segments
+		- example:
+			```json
+			{
+				"jobId": "<uuid>",
+				"totalSegments": 12,
+				"type": "meta"
+			}
+			```
+	- `transcode_progress`
+		- emitted by `processing-service` as each `(segment, profile)` task is queued / completes / fails
+		- example:
+			```json
+			{
+				"jobId": "<uuid>",
+				"profile": "high",
+				"segmentNumber": 7,
+				"state": "QUEUED | TRANSCODING | UPLOADING | DONE | FAILED",
+				"doneSegments": 5,
+				"totalSegments": 12,
+				"type": "transcode_progress"
+			}
+			```
+	- `failed`
+		- emitted for terminal upload/processing failures
+		- example:
+			```json
+			{
+				"jobId": "<uuid>",
+				"reason": "container_died",
+				"machineId": "node-a",
+				"containerId": "abc123",
+				"type": "failed"
+			}
+			```
+- Snapshot behavior on connect:
+	- the status service first sends a DB-backed snapshot of completed source chunks
+	- it then sends per-profile transcode `DONE` counts from Postgres
+	- after that, the client receives live RabbitMQ-backed status events over the same socket
 - Connection lifecycle:
 	- Client initiates HTTP upgrade request to WebSocket
-	- Server sends immediate status update upon connection
+	- Server sends an immediate progress snapshot upon connection
 	- Server pushes subsequent status updates as they occur
 	- Client may close the connection at any time
-	- Server closes the connection after sending a terminal state (`READY` or `FAILED`)
 - Error responses:
-	- `404 Not Found` — unknown video ID (before upgrade)
 	- `400 Bad Request` — invalid WebSocket upgrade request
 
 ## 2. Streaming Service Endpoints
@@ -123,6 +170,7 @@ Provide a clear, shared reference for client interactions. Once merged, any chan
 
 ### Contract Intentionally Hides
 - Internal storage paths and bucket layout
+- RabbitMQ status-queue vs task-queue routing
 - Processing node coordination
 - Segmentation and transcoding implementation details
 - Inter-service communication

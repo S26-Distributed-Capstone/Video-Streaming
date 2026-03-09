@@ -1,121 +1,26 @@
 # Video Upload/Processing/Playback System
 > Distributed Systems Spring 2026 Capstone Project
 
-## Code Structure (Example File Names)
-```
-video-streaming/
-├── README.md
-├── pom.xml
-│
-├── shared/
-│   ├── pom.xml
-│   └── src/main/java/com/distributed26/videostreaming/shared/
-│       ├── model/
-│       │   ├── Video.java
-│       │   ├── VideoId.java
-│       │   ├── VideoState.java (enum)
-│       │   ├── ProcessingStatus.java
-│       │   └── StreamingMetadata.java
-│       ├── storage/
-│       │   ├── ObjectStorageClient.java (interface)
-│       │   └── S3StorageClient.java (implementation)
-│       ├── config/
-│       │   └── StorageConfig.java
-│       └── util/
-│           ├── VideoIdGenerator.java
-│           └── RetryUtil.java
-│
-├── upload-service/
-│   ├── pom.xml
-│   ├── Dockerfile
-│   └── src/
-│       ├── main/
-│       │   ├── java/com/distributed26/videostreaming/upload/
-│       │   │   ├── UploadServiceApplication.java
-│       │   │   ├── controller/
-│       │   │   │   ├── UploadController.java
-│       │   │   │   ├── HealthController.java
-│       │   │   │   └── StatusController.java
-│       │   │   ├── service/
-│       │   │   │   ├── UploadService.java
-│       │   │   │   ├── VideoStateService.java
-│       │   │   │   └── DuplicateDetectionService.java
-│       │   │   ├── repository/
-│       │   │   │   └── VideoMetadataRepository.java
-│       │   │   ├── model/
-│       │   │   │   ├── UploadRequest.java
-│       │   │   │   └── UploadResponse.java
-│       │   │   └── config/
-│       │   │       └── UploadServiceConfig.java
-│       │   └── resources/
-│       │       ├── application.yml
-│       │       └── logback-spring.xml
-│       └── test/
-│
-├── processing-service/
-│   ├── pom.xml
-│   ├── Dockerfile
-│   └── src/
-│       ├── main/
-│       │   ├── java/com/distributed26/videostreaming/processing/
-│       │   │   ├── ProcessingServiceApplication.java
-│       │   │   ├── worker/
-│       │   │   │   ├── VideoProcessingWorker.java
-│       │   │   │   └── ProcessingCoordinator.java
-│       │   │   ├── segmentation/
-│       │   │   │   ├── VideoSegmenter.java
-│       │   │   │   └── SegmentationStrategy.java
-│       │   │   ├── transcoding/
-│       │   │   │   ├── VideoTranscoder.java
-│       │   │   │   └── BitrateProfile.java
-│       │   │   ├── service/
-│       │   │   │   ├── ProcessingService.java
-│       │   │   │   ├── IdempotencyService.java
-│       │   │   │   └── RecoveryService.java
-│       │   │   ├── repository/
-│       │   │   │   └── ProcessingStateRepository.java
-│       │   │   └── config/
-│       │   │       └── ProcessingServiceConfig.java
-│       │   └── resources/
-│       │       ├── application.yml
-│       │       └── logback-spring.xml
-│       └── test/
-│
-├── streaming-service/
-│   ├── pom.xml
-│   ├── Dockerfile
-│   └── src/
-│       ├── main/
-│       │   ├── java/com/distributed26/videostreaming/streaming/
-│       │   │   ├── StreamingServiceApplication.java
-│       │   │   ├── controller/
-│       │   │   │   ├── StreamingController.java
-│       │   │   │   ├── ManifestController.java
-│       │   │   │   └── HealthController.java
-│       │   │   ├── service/
-│       │   │   │   ├── StreamingService.java
-│       │   │   │   ├── ManifestService.java
-│       │   │   │   └── AdaptiveBitrateService.java
-│       │   │   ├── cache/
-│       │   │   │   └── SegmentCache.java
-│       │   │   └── config/
-│       │   │       └── StreamingServiceConfig.java
-│       │   └── resources/
-│       │       ├── application.yml
-│       │       └── logback-spring.xml
-│       └── test/
-│
-├── docs/
-│   ├── week-01-scope.md
-│   ├── week-02-api-contract.md
-│   ├── week-04-lifecycle-model.md
-│   ├── architecture-diagrams/
-│   └── final-design.md
-│
-├── scripts/
-│   ├── start-all.sh
-│   ├── stop-all.sh
-│   └── setup-minio.sh
-│
-└── docker-compose.yml
-```
+## Runtime Flow
+
+- `upload-service` accepts the source video, segments it locally with FFmpeg, uploads source `.ts` chunks to object storage, and publishes:
+  - one status event per source chunk for the UI
+  - three transcode task messages per source chunk (`low`, `medium`, `high`) for processing workers
+- `processing-service` consumes one transcode task per RabbitMQ message, downloads that source chunk from object storage, renders one bitrate profile, uploads the output, and publishes progress updates
+- `status-service` is the browser-facing progress fanout layer:
+  - sends an initial DB-backed progress snapshot when the socket connects
+  - forwards live RabbitMQ status events over WebSocket
+- `streaming-service` serves completed manifests and segments from object storage once Postgres reports the video as ready
+
+## Client Contract
+
+- `POST /upload` returns:
+  - `videoId`
+  - `uploadStatusUrl`
+- the browser opens `uploadStatusUrl` on `status-service`
+- the socket currently emits:
+  - `task` for source chunk upload progress
+  - `meta` for total segment count
+  - `transcode_progress` for per-profile transcoding progress
+  - `failed` for terminal failures
+- the browser does not connect to `processing-service` directly for progress

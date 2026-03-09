@@ -1,6 +1,6 @@
 package com.distributed26.videostreaming.shared.upload.events;
 
-public class UploadMetaEvent extends JobTaskEvent {
+public class UploadMetaEvent extends JobEvent {
     private final int totalSegments;
     private final String type = "meta";
 

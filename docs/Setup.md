@@ -40,6 +40,10 @@ This starts:
 - **Processing Service** at `http://localhost:8082` (container `processing-service`)
 - **Streaming Service** at `http://localhost:8083` (container `streaming-service`)
 
+RabbitMQ is used in two separate ways:
+- status event bus: upload/status/progress fan-out for the browser and status service
+- transcode task bus: distributed `(segment, profile)` work queue consumed by processing-service
+
 #### Option B: Docker Swarm
 See **Run With Docker Swarm (Single Machine)** below.
 
@@ -110,3 +114,8 @@ docker stack rm video
 - For Swarm, `.env` should use service hostnames (`postgres`, `rabbitmq`, `minio`) rather than `localhost`.
 - Status endpoints are served separately at `http://localhost:8081`.
 - `SERVICE_MODE` is set in `docker-compose.yaml` to start either the upload or status service.
+- The browser connects only to the status service for progress updates.
+- `upload-service` publishes both:
+  - status events for UI/WebSocket updates
+  - transcode task events for processing workers
+- `processing-service` consumes only the transcode task queue and publishes progress back onto the status event bus.

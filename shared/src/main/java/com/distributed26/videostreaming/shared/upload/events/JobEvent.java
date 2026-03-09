@@ -2,11 +2,11 @@ package com.distributed26.videostreaming.shared.upload.events;
 
 import java.util.Objects;
 
-public class JobTaskEvent {
+public class JobEvent {
     private final String jobId;
     private final String taskId;
 
-    public JobTaskEvent(String jobId, String taskId) {
+    public JobEvent(String jobId, String taskId) {
         this.jobId = Objects.requireNonNull(jobId, "jobId is null");
         this.taskId = Objects.requireNonNull(taskId, "taskId is null");
     }

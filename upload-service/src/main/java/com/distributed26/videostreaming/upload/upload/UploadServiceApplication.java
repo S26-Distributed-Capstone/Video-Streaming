@@ -1,10 +1,13 @@
 package com.distributed26.videostreaming.upload.upload;
 
 import com.distributed26.videostreaming.shared.config.StorageConfig;
+import com.distributed26.videostreaming.shared.upload.RabbitMQStatusEventBus;
+import com.distributed26.videostreaming.shared.upload.RabbitMQTranscodeTaskBus;
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
 import com.distributed26.videostreaming.shared.storage.S3StorageClient;
-import com.distributed26.videostreaming.shared.upload.JobTaskBus;
-import com.distributed26.videostreaming.shared.upload.RabbitMQJobTaskBus;
+import com.distributed26.videostreaming.shared.upload.StatusEventBus;
+import com.distributed26.videostreaming.shared.upload.TranscodeTaskBus;
+import com.distributed26.videostreaming.upload.db.SegmentUploadRepository;
 import com.distributed26.videostreaming.upload.db.TranscodedSegmentStatusRepository;
 import com.distributed26.videostreaming.upload.db.VideoUploadRepository;
 import io.javalin.Javalin;
@@ -16,10 +19,6 @@ import java.util.Properties;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-/**
- * Hello world!
- *
- */
 public class UploadServiceApplication {
 
 	private static final int DEFAULT_UPLOAD_PORT = 8080;
@@ -44,7 +43,7 @@ public class UploadServiceApplication {
 
 	}
 
-    static Javalin createUploadApp(JobTaskBus jobTaskBus) {
+    static Javalin createUploadApp(StatusEventBus statusEventBus, TranscodeTaskBus transcodeTaskBus) {
         ensureLogsDirectory();
         StorageConfig storageConfig = loadStorageConfig();
         ObjectStorageClient storageClient = new S3StorageClient(storageConfig);
@@ -53,13 +52,14 @@ public class UploadServiceApplication {
         storageClient.ensureBucketExists();
 
         VideoUploadRepository videoUploadRepository = createVideoUploadRepository();
-        com.distributed26.videostreaming.upload.db.SegmentUploadRepository segmentUploadRepository = createSegmentUploadRepository();
+        SegmentUploadRepository segmentUploadRepository = createSegmentUploadRepository();
         String machineId = resolveMachineId();
         String containerId = resolveContainerId();
 
         UploadHandler uploadHandler = new UploadHandler(
                 storageClient,
-                jobTaskBus,
+                statusEventBus,
+                transcodeTaskBus,
                 videoUploadRepository,
                 segmentUploadRepository,
                 machineId,
@@ -79,13 +79,13 @@ public class UploadServiceApplication {
 		return app;
     }
 
-    static Javalin createStatusApp(JobTaskBus jobTaskBus) {
+    static Javalin createStatusApp(StatusEventBus statusEventBus) {
         ensureLogsDirectory();
         VideoUploadRepository videoUploadRepository = createVideoUploadRepository();
-        com.distributed26.videostreaming.upload.db.SegmentUploadRepository segmentUploadRepository = createSegmentUploadRepository();
+        SegmentUploadRepository segmentUploadRepository = createSegmentUploadRepository();
         TranscodedSegmentStatusRepository transcodedSegmentStatusRepository = createTranscodedSegmentStatusRepository();
         UploadStatusWebSocket uploadStatusWebSocket =
-            new UploadStatusWebSocket(jobTaskBus, segmentUploadRepository, transcodedSegmentStatusRepository);
+            new UploadStatusWebSocket(statusEventBus, segmentUploadRepository, transcodedSegmentStatusRepository);
         UploadInfoHandler uploadInfoHandler = new UploadInfoHandler(videoUploadRepository);
 
         Javalin app = Javalin.create();
@@ -136,9 +136,9 @@ public class UploadServiceApplication {
         }
     }
 
-    private static com.distributed26.videostreaming.upload.db.SegmentUploadRepository createSegmentUploadRepository() {
+    private static SegmentUploadRepository createSegmentUploadRepository() {
         try {
-            return com.distributed26.videostreaming.upload.db.SegmentUploadRepository.fromEnv();
+            return SegmentUploadRepository.fromEnv();
         } catch (IllegalStateException e) {
             logger.warn("Postgres not configured; segment uploads disabled: {}", e.getMessage());
             return null;
@@ -184,15 +184,16 @@ public class UploadServiceApplication {
     }
 
 	static void startUploadApp(int uploadPort) {
-        JobTaskBus jobTaskBus = RabbitMQJobTaskBus.fromEnv();
-		Javalin uploadApp = createUploadApp(jobTaskBus);
+        StatusEventBus statusEventBus = RabbitMQStatusEventBus.fromEnv();
+        TranscodeTaskBus transcodeTaskBus = RabbitMQTranscodeTaskBus.fromEnv();
+		Javalin uploadApp = createUploadApp(statusEventBus, transcodeTaskBus);
         logger.info("Starting upload app on port {}", uploadPort);
 		uploadApp.start(uploadPort);
 	}
 
     static void startStatusApp(int statusPort) {
-        JobTaskBus jobTaskBus = RabbitMQJobTaskBus.fromEnv();
-        Javalin statusApp = createStatusApp(jobTaskBus);
+        StatusEventBus statusEventBus = RabbitMQStatusEventBus.fromEnv();
+        Javalin statusApp = createStatusApp(statusEventBus);
         logger.info("Starting status app on port {}", statusPort);
         statusApp.start(statusPort);
     }

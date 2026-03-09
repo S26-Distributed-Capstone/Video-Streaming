@@ -1,6 +1,6 @@
 package com.distributed26.videostreaming.shared.upload.events;
 
-public class UploadProgressEvent extends JobTaskEvent {
+public class UploadProgressEvent extends JobEvent {
     private final int completedSegments;
     private final String type = "progress";
 

@@ -71,7 +71,7 @@ public class UploadHandlerTest {
         @Test
         @DisplayName("Should return 400 when no file is provided")
         void shouldReturn400WhenNoFileProvided() {
-            UploadHandler handler = new UploadHandler(mockStorageClient, new TestJobTaskBus());
+            UploadHandler handler = new UploadHandler(mockStorageClient, new TestStatusEventBus(), new TestTranscodeTaskBus());
             Javalin app = Javalin.create();
             app.post("/upload", handler::upload);
 
@@ -88,7 +88,7 @@ public class UploadHandlerTest {
         @Test
         @DisplayName("Should return 202 Accepted with video ID for valid upload")
         void shouldReturn202WithVideoIdForValidUpload() {
-            UploadHandler handler = new UploadHandler(mockStorageClient, new TestJobTaskBus());
+            UploadHandler handler = new UploadHandler(mockStorageClient, new TestStatusEventBus(), new TestTranscodeTaskBus());
             Javalin app = Javalin.create();
             app.post("/upload", handler::upload);
 
@@ -120,7 +120,7 @@ public class UploadHandlerTest {
         @Test
         @DisplayName("Should return 400 when no name is provided")
         void shouldReturn400WhenNoNameProvided() {
-            UploadHandler handler = new UploadHandler(mockStorageClient, new TestJobTaskBus());
+            UploadHandler handler = new UploadHandler(mockStorageClient, new TestStatusEventBus(), new TestTranscodeTaskBus());
             Javalin app = Javalin.create();
             app.post("/upload", handler::upload);
 
@@ -158,7 +158,7 @@ public class UploadHandlerTest {
                 ArgumentCaptor<String> keyCaptor = ArgumentCaptor.forClass(String.class);
                 doNothing().when(mockStorageClient).uploadFile(keyCaptor.capture(), any(InputStream.class), anyLong());
 
-                UploadHandler handler = new UploadHandler(mockStorageClient, new TestJobTaskBus());
+                UploadHandler handler = new UploadHandler(mockStorageClient, new TestStatusEventBus(), new TestTranscodeTaskBus());
                 Javalin app = Javalin.create();
                 app.post("/upload", handler::upload);
 
@@ -204,7 +204,7 @@ public class UploadHandlerTest {
             doThrow(new RuntimeException("Storage unavailable"))
                 .when(mockStorageClient).uploadFile(anyString(), any(InputStream.class), anyLong());
 
-            UploadHandler handler = new UploadHandler(mockStorageClient, new TestJobTaskBus());
+            UploadHandler handler = new UploadHandler(mockStorageClient, new TestStatusEventBus(), new TestTranscodeTaskBus());
             Javalin app = Javalin.create();
             app.post("/upload", handler::upload);
 
@@ -246,10 +246,12 @@ public class UploadHandlerTest {
 
             UploadHandler handler = new UploadHandler(
                 mockStorageClient,
-                new TestJobTaskBus(),
+                new TestStatusEventBus(),
+                new TestTranscodeTaskBus(),
                 null,
                 fakeRepo,
-                "test-machine"
+                "test-machine",
+                null
             );
 
             Path tempDir = Files.createTempDirectory("upload-test-segments-");
@@ -288,6 +290,49 @@ public class UploadHandlerTest {
                 }
             }
         }
+
+        @Test
+        @DisplayName("Should not record a segment when transcode task publish fails")
+        void shouldNotRecordSegmentWhenTranscodePublishFails() throws Exception {
+            FakeSegmentUploadRepository fakeRepo = new FakeSegmentUploadRepository(Set.of());
+            UploadHandler handler = new UploadHandler(
+                mockStorageClient,
+                new TestStatusEventBus(),
+                new FailingTranscodeTaskBus(),
+                null,
+                fakeRepo,
+                "test-machine",
+                null
+            );
+
+            Path tempDir = Files.createTempDirectory("upload-test-failure-");
+            try {
+                Path seg0 = tempDir.resolve("output0.ts");
+                Files.writeString(seg0, "seg0");
+
+                var method = UploadHandler.class.getDeclaredMethod("uploadSegment", Path.class, String.class);
+                method.setAccessible(true);
+
+                RuntimeException thrown = assertThrows(RuntimeException.class, () -> {
+                    try {
+                        method.invoke(handler, seg0, "123e4567-e89b-12d3-a456-426614174000");
+                    } catch (java.lang.reflect.InvocationTargetException e) {
+                        Throwable cause = e.getCause();
+                        if (cause instanceof RuntimeException runtimeException) {
+                            throw runtimeException;
+                        }
+                        throw new RuntimeException(cause);
+                    }
+                });
+
+                assertTrue(thrown.getMessage().contains("Failed to upload segment"));
+                assertTrue(fakeRepo.inserted.isEmpty(), "segment should not be recorded when publish fails");
+            } finally {
+                try (var walk = Files.walk(tempDir)) {
+                    walk.sorted((a, b) -> b.compareTo(a)).forEach(path -> path.toFile().delete());
+                }
+            }
+        }
     }
 
     static boolean isFfmpegAvailable() {
@@ -315,7 +360,7 @@ public class UploadHandlerTest {
                 return null;
             }).when(mockStorageClient).uploadFile(anyString(), any(InputStream.class), anyLong());
 
-            UploadHandler handler = new UploadHandler(mockStorageClient, new TestJobTaskBus());
+            UploadHandler handler = new UploadHandler(mockStorageClient, new TestStatusEventBus(), new TestTranscodeTaskBus());
             Javalin app = Javalin.create();
             app.post("/upload", handler::upload);
 
@@ -354,7 +399,7 @@ public class UploadHandlerTest {
         @Test
         @DisplayName("Should cleanup temporary files after processing")
         void shouldCleanupTemporaryFilesAfterProcessing() throws Exception {
-            UploadHandler handler = new UploadHandler(mockStorageClient, new TestJobTaskBus());
+            UploadHandler handler = new UploadHandler(mockStorageClient, new TestStatusEventBus(), new TestTranscodeTaskBus());
             Javalin app = Javalin.create();
             app.post("/upload", handler::upload);
 
@@ -411,7 +456,7 @@ public class UploadHandlerTest {
         @Test
         @DisplayName("Should generate unique video IDs for each upload")
         void shouldGenerateUniqueVideoIds() throws Exception {
-            UploadHandler handler = new UploadHandler(mockStorageClient, new TestJobTaskBus());
+            UploadHandler handler = new UploadHandler(mockStorageClient, new TestStatusEventBus(), new TestTranscodeTaskBus());
             Javalin app = Javalin.create();
             app.post("/upload", handler::upload);
 
@@ -548,6 +593,13 @@ public class UploadHandlerTest {
         @Override
         public int countByVideoId(String videoId) {
             return existing.size() + inserted.size();
+        }
+    }
+
+    private static class FailingTranscodeTaskBus extends TestTranscodeTaskBus {
+        @Override
+        public void publish(com.distributed26.videostreaming.shared.upload.events.TranscodeTaskEvent event) {
+            throw new RuntimeException("transcode publish failed");
         }
     }
 }
