@@ -19,8 +19,11 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.OptionalInt;
 import java.util.Set;
@@ -44,6 +47,7 @@ import io.github.cdimascio.dotenv.Dotenv;
 public class UploadHandler {
     private static final Logger logger = LogManager.getLogger(UploadHandler.class);
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final Pattern EXTINF_PATTERN = Pattern.compile("^#EXTINF:([^,]+),?");
     private static final int MAX_VIDEO_NAME_LENGTH = 200;
     private static final String[] TRANSCODE_PROFILES = {"low", "medium", "high"};
     private final ObjectStorageClient storageClient;
@@ -55,9 +59,11 @@ public class UploadHandler {
     private final String containerId;
     private final int segmentDuration;
     private final ExecutorService ffmpegExecutor;
+    private final ExecutorService segmentUploadExecutor;
     private final ExecutorService supervisionExecutor;
     private final long processingTimeoutMillis;
     private final long pollingIntervalMillis;
+    private final int maxInFlightSegmentUploads;
 
     public UploadHandler(ObjectStorageClient storageClient, StatusEventBus statusEventBus, TranscodeTaskBus transcodeTaskBus) {
         this(storageClient, statusEventBus, transcodeTaskBus, null, null, null, null);
@@ -105,6 +111,19 @@ public class UploadHandler {
 
         this.ffmpegExecutor = Executors.newFixedThreadPool(poolSize);
         logger.info("Initialized FFmpeg executor with pool size: {}", poolSize);
+        logger.info("Upload-side segmentation mode: stream-copy only");
+
+        int uploadPoolSize = dotenv.get("UPLOAD_THREAD_POOL_SIZE") != null && !dotenv.get("UPLOAD_THREAD_POOL_SIZE").isEmpty()
+                ? Integer.parseInt(dotenv.get("UPLOAD_THREAD_POOL_SIZE"))
+                : Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors() / 2));
+        this.segmentUploadExecutor = Executors.newFixedThreadPool(uploadPoolSize);
+        logger.info("Initialized segment upload executor with pool size: {}", uploadPoolSize);
+
+        String maxInFlightEnv = dotenv.get("MAX_IN_FLIGHT_SEGMENT_UPLOADS");
+        this.maxInFlightSegmentUploads = maxInFlightEnv != null && !maxInFlightEnv.isEmpty()
+                ? Integer.parseInt(maxInFlightEnv)
+                : uploadPoolSize * 2;
+        logger.info("Initialized max in-flight segment uploads: {}", maxInFlightSegmentUploads);
     }
 
     public void upload(Context ctx) {
@@ -273,46 +292,23 @@ public class UploadHandler {
 
     private void processVideo(String videoId, Path inputPath, long startTime) {
         Path tempOutput = null;
+        java.util.Map<Path, PendingUpload> inFlightUploads = new ConcurrentHashMap<>();
 
         try {
             // 2. Create temp directory for segments
             tempOutput = Files.createTempDirectory("hls-" + videoId);
+            final Path tempOutputFinal = tempOutput;
 
             // 3. Segment the video using FFmpeg
             // Assuming ffmpeg/ffprobe are in PATH. In a real app, these paths should be configurable.
             FFmpeg ffmpeg = new FFmpeg("ffmpeg");
             FFprobe ffprobe = new FFprobe("ffprobe");
 
-            FFmpegBuilder builder = new FFmpegBuilder()
-                    .setInput(inputPath.toString())
-                    .addOutput(tempOutput.resolve("output.m3u8").toString())
-                    .setFormat("hls")
-                    .addExtraArgs("-start_number", "0")
-                    .addExtraArgs("-hls_time", String.valueOf(segmentDuration))
-                    .addExtraArgs("-hls_list_size", "0")
-                    .addExtraArgs("-hls_flags", "independent_segments")
-                    .addExtraArgs("-vsync", "cfr")
-                    .addExtraArgs("-c:v", "libx264")
-                    .addExtraArgs("-preset", "veryfast")
-                    .addExtraArgs("-crf", "21")
-                    .addExtraArgs("-pix_fmt", "yuv420p")
-                    .addExtraArgs("-c:a", "aac")
-                    .addExtraArgs("-ar", "48000")
-                    .addExtraArgs("-ac", "2")
-                    .addExtraArgs("-b:a", "128k")
-                    // Force keyframes at segment boundaries for closer-to-target durations.
-                    .addExtraArgs("-force_key_frames", "expr:gte(t,n_forced*" + segmentDuration + ")")
-                    .addExtraArgs("-sc_threshold", "0")
-                    .done();
-
             logger.info("Starting FFmpeg segmentation for video: {}", videoId);
 
-            // Start FFmpeg process
-            FFmpegExecutor executor = new FFmpegExecutor(ffmpeg, ffprobe);
-            net.bramp.ffmpeg.job.FFmpegJob job = executor.createJob(builder);
-
             CompletableFuture<Void> ffmpegFuture = CompletableFuture.runAsync(() -> {
-                job.run();
+                FFmpegExecutor executor = new FFmpegExecutor(ffmpeg, ffprobe);
+                executor.createJob(buildSegmentationJob(inputPath, tempOutputFinal)).run();
             }, ffmpegExecutor);
 
             // 4. Upload generated files to S3 as they become available
@@ -346,7 +342,14 @@ public class UploadHandler {
                     throw new RuntimeException("Processing timed out after " + processingTimeoutMillis + "ms");
                 }
 
-                int uploadedCount = uploadReadySegments(tempOutput, videoId, uploadedFiles, uploadedSegmentNumbers, false);
+                int uploadedCount = uploadReadySegments(
+                    tempOutput,
+                    videoId,
+                    uploadedFiles,
+                    uploadedSegmentNumbers,
+                    inFlightUploads,
+                    false
+                );
 
                 // Adaptive polling:
                 // If we found segments, we might find more soon (fast processing), so keep interval short/default.
@@ -392,7 +395,14 @@ public class UploadHandler {
             }
 
             // 5. Final sweep - upload remaining files (last segment + playlist)
-            uploadReadySegments(tempOutput, videoId, uploadedFiles, uploadedSegmentNumbers, true);
+            uploadReadySegments(
+                tempOutput,
+                videoId,
+                uploadedFiles,
+                uploadedSegmentNumbers,
+                inFlightUploads,
+                true
+            );
             int totalChunks = uploadedFiles.size();
             long duration = System.currentTimeMillis() - startTime;
             logger.info("Successfully segmented and uploaded video: {}. Uploaded {} chunks (including playlist). Total time: {} ms", videoId, totalChunks, duration);
@@ -412,6 +422,8 @@ public class UploadHandler {
             deleteVideoMetadata(videoId);
             // Here you would typically update a database status to "FAILED"
         } finally {
+            waitForOrCancelInFlightUploads(inFlightUploads);
+
             // Give the OS a moment to release file locks if the process was just killed
             try { Thread.sleep(500); } catch (InterruptedException ignored) {}
 
@@ -446,6 +458,7 @@ public class UploadHandler {
             String videoId,
             Set<Path> uploadedFiles,
             Set<Integer> uploadedSegmentNumbers,
+            java.util.Map<Path, PendingUpload> inFlightUploads,
             boolean isFinalSweep
     ) {
         List<Path> files;
@@ -456,7 +469,8 @@ public class UploadHandler {
             return 0;
         }
 
-        int uploadedCount = 0;
+        int uploadedCount = collectCompletedUploads(inFlightUploads, uploadedFiles, uploadedSegmentNumbers, false);
+        Map<String, SegmentTiming> timingsByFileName = readSegmentTimings(tempOutput.resolve("output.m3u8"));
 
         // 1. Handle .ts segments
         // Sort by Last Modified to ensure we process in order
@@ -470,27 +484,37 @@ public class UploadHandler {
 
         for (int i = 0; i < tsLimit; i++) {
             Path path = tsFiles.get(i);
-            if (!uploadedFiles.contains(path)) {
-                try {
-                    OptionalInt segmentNumber = extractSegmentNumber(path.getFileName().toString());
-                    if (segmentNumber.isPresent() && uploadedSegmentNumbers.contains(segmentNumber.getAsInt())) {
-                        logger.info("Skipping already uploaded segment {} for videoId={}", segmentNumber.getAsInt(), videoId);
-                        uploadedFiles.add(path);
-                        continue;
-                    }
-                    uploadFile(path, videoId);
+            if (!uploadedFiles.contains(path) && !inFlightUploads.containsKey(path)) {
+                OptionalInt segmentNumber = extractSegmentNumber(path.getFileName().toString());
+                if (segmentNumber.isPresent() && uploadedSegmentNumbers.contains(segmentNumber.getAsInt())) {
+                    logger.info("Skipping already uploaded segment {} for videoId={}", segmentNumber.getAsInt(), videoId);
                     uploadedFiles.add(path);
-                    if (segmentNumber.isPresent()) {
-                        uploadedSegmentNumbers.add(segmentNumber.getAsInt());
-                    }
-                    uploadedCount++;
-                } catch (Exception e) {
-                    logger.error("Failed to upload segment: {}", path, e);
-                    // Rethrow to stop processing if any segment upload fails.
-                    throw e;
+                    continue;
                 }
+                SegmentTiming timing = timingsByFileName.get(path.getFileName().toString());
+                if (timing == null && !isFinalSweep) {
+                    continue;
+                }
+                double outputTsOffsetSeconds = timing != null
+                        ? timing.startOffsetSeconds()
+                        : fallbackOffsetForSegment(segmentNumber);
+                waitForUploadCapacity(inFlightUploads, uploadedFiles, uploadedSegmentNumbers);
+                inFlightUploads.put(
+                    path,
+                    new PendingUpload(
+                        segmentNumber,
+                        CompletableFuture.runAsync(
+                                () -> uploadFile(path, videoId, outputTsOffsetSeconds),
+                                segmentUploadExecutor
+                        )
+                    )
+                );
+                logger.info("Queued segment upload: {}", path.getFileName());
+                uploadedCount++;
             }
         }
+
+        uploadedCount += collectCompletedUploads(inFlightUploads, uploadedFiles, uploadedSegmentNumbers, isFinalSweep);
 
         // 2. Handle .m3u8 playlist (only upload at the end to ensure it lists all segments)
         if (isFinalSweep) {
@@ -499,7 +523,7 @@ public class UploadHandler {
                 .forEach(path -> {
                     if (!uploadedFiles.contains(path)) {
                         try {
-                            uploadFile(path, videoId);
+                            uploadFile(path, videoId, 0d);
                             uploadedFiles.add(path);
                         } catch (Exception e) {
                             logger.error("Failed to upload playlist: {}", path, e);
@@ -514,7 +538,84 @@ public class UploadHandler {
         return uploadedCount;
     }
 
-    private void uploadFile(Path path, String videoId) {
+    private void waitForUploadCapacity(
+            java.util.Map<Path, PendingUpload> inFlightUploads,
+            Set<Path> uploadedFiles,
+            Set<Integer> uploadedSegmentNumbers
+    ) {
+        while (inFlightUploads.size() >= Math.max(1, maxInFlightSegmentUploads)) {
+            int drained = collectCompletedUploads(inFlightUploads, uploadedFiles, uploadedSegmentNumbers, false);
+            if (drained > 0) {
+                return;
+            }
+            try {
+                Thread.sleep(25);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException("Interrupted while waiting for upload capacity", e);
+            }
+        }
+    }
+
+    private int collectCompletedUploads(
+            java.util.Map<Path, PendingUpload> inFlightUploads,
+            Set<Path> uploadedFiles,
+            Set<Integer> uploadedSegmentNumbers,
+            boolean waitForAll
+    ) {
+        int completedCount = 0;
+        boolean keepDraining = true;
+
+        while (keepDraining) {
+            keepDraining = false;
+            for (var entry : List.copyOf(inFlightUploads.entrySet())) {
+                Path path = entry.getKey();
+                PendingUpload pending = entry.getValue();
+                CompletableFuture<Void> future = pending.future();
+                if (!waitForAll && !future.isDone()) {
+                    continue;
+                }
+
+                try {
+                    future.join();
+                    uploadedFiles.add(path);
+                    if (pending.segmentNumber().isPresent()) {
+                        uploadedSegmentNumbers.add(pending.segmentNumber().getAsInt());
+                    }
+                    completedCount++;
+                } catch (CompletionException e) {
+                    Throwable cause = e.getCause() == null ? e : e.getCause();
+                    logger.error("Failed to upload segment asynchronously: {}", path, cause);
+                    throw new RuntimeException("Failed to upload segment: " + path, cause);
+                } finally {
+                    inFlightUploads.remove(path);
+                }
+                keepDraining = waitForAll;
+            }
+        }
+
+        return completedCount;
+    }
+
+    private void waitForOrCancelInFlightUploads(java.util.Map<Path, PendingUpload> inFlightUploads) {
+        for (var entry : List.copyOf(inFlightUploads.entrySet())) {
+            Path path = entry.getKey();
+            CompletableFuture<Void> future = entry.getValue().future();
+            try {
+                future.join();
+            } catch (CompletionException e) {
+                Throwable cause = e.getCause() == null ? e : e.getCause();
+                logger.warn("In-flight segment upload finished with error during cleanup: {}", path, cause);
+            } catch (RuntimeException e) {
+                future.cancel(true);
+                logger.warn("Failed while waiting for in-flight upload during cleanup: {}", path, e);
+            } finally {
+                inFlightUploads.remove(path);
+            }
+        }
+    }
+
+    private void uploadFile(Path path, String videoId, double outputTsOffsetSeconds) {
         try {
             String fileName = path.getFileName().toString();
             String objectKey = videoId + "/chunks/" + fileName;
@@ -527,7 +628,7 @@ public class UploadHandler {
                     OptionalInt segmentNumber = extractSegmentNumber(fileName);
                     // Publish the real distributed transcode work items and keep the
                     // legacy status event so the UI can still show source chunk progress.
-                    publishTranscodeTasks(videoId, objectKey, segmentNumber);
+                    publishTranscodeTasks(videoId, objectKey, segmentNumber, outputTsOffsetSeconds);
                     statusEventBus.publish(new JobEvent(videoId, objectKey));
                     recordUploadedSegment(videoId, fileName, segmentNumber);
                 }
@@ -551,14 +652,14 @@ public class UploadHandler {
         logger.info("Recorded segment_upload videoId={} segmentNumber={}", videoId, segmentNumber.getAsInt());
     }
 
-    private void publishTranscodeTasks(String videoId, String objectKey, OptionalInt segmentNumber) {
+    private void publishTranscodeTasks(String videoId, String objectKey, OptionalInt segmentNumber, double outputTsOffsetSeconds) {
         if (segmentNumber.isEmpty()) {
             logger.warn("Skipping transcode task publish because segment number could not be parsed for {}", objectKey);
             return;
         }
         for (String profile : TRANSCODE_PROFILES) {
             transcodeTaskBus.publish(
-                new TranscodeTaskEvent(videoId, objectKey, profile, segmentNumber.getAsInt())
+                new TranscodeTaskEvent(videoId, objectKey, profile, segmentNumber.getAsInt(), outputTsOffsetSeconds)
             );
         }
     }
@@ -570,6 +671,77 @@ public class UploadHandler {
             last = Integer.parseInt(matcher.group(1));
         }
         return last >= 0 ? OptionalInt.of(last) : OptionalInt.empty();
+    }
+
+    private FFmpegBuilder buildSegmentationJob(Path inputPath, Path tempOutput) {
+        return new FFmpegBuilder()
+            .setInput(inputPath.toString())
+            .addOutput(tempOutput.resolve("output.m3u8").toString())
+            .setFormat("hls")
+            .addExtraArgs("-start_number", "0")
+            .addExtraArgs("-hls_time", String.valueOf(segmentDuration))
+            .addExtraArgs("-hls_list_size", "0")
+            .addExtraArgs("-c:v", "copy")
+            .addExtraArgs("-c:a", "copy")
+            .done();
+    }
+
+    private Map<String, SegmentTiming> readSegmentTimings(Path playlistPath) {
+        Map<String, SegmentTiming> timingsByFileName = new HashMap<>();
+        if (!Files.exists(playlistPath)) {
+            return timingsByFileName;
+        }
+
+        try {
+            String content = Files.readString(playlistPath, StandardCharsets.UTF_8);
+            double pendingDuration = 0d;
+            double runningOffset = 0d;
+            for (String line : content.split("\\R")) {
+                String trimmed = line.trim();
+                if (trimmed.isEmpty()) {
+                    continue;
+                }
+                if (trimmed.startsWith("#")) {
+                    if (trimmed.startsWith("#EXTINF:")) {
+                        pendingDuration = parseExtinfDuration(trimmed);
+                    }
+                    continue;
+                }
+                if (!trimmed.endsWith(".ts")) {
+                    continue;
+                }
+                timingsByFileName.put(trimmed, new SegmentTiming(runningOffset, pendingDuration));
+                runningOffset += pendingDuration;
+            }
+        } catch (IOException e) {
+            logger.warn("Failed to read local HLS playlist for segment timings: {}", playlistPath, e);
+        }
+        return timingsByFileName;
+    }
+
+    private double parseExtinfDuration(String line) {
+        Matcher matcher = EXTINF_PATTERN.matcher(line);
+        if (!matcher.find()) {
+            return 0d;
+        }
+        try {
+            return Double.parseDouble(matcher.group(1).trim());
+        } catch (NumberFormatException e) {
+            logger.warn("Failed to parse EXTINF duration '{}'", line);
+            return 0d;
+        }
+    }
+
+    private double fallbackOffsetForSegment(OptionalInt segmentNumber) {
+        return segmentNumber.isPresent()
+                ? (double) segmentNumber.getAsInt() * Math.max(1, segmentDuration)
+                : 0d;
+    }
+
+    private record PendingUpload(OptionalInt segmentNumber, CompletableFuture<Void> future) {
+    }
+
+    private record SegmentTiming(double startOffsetSeconds, double durationSeconds) {
     }
 
 }

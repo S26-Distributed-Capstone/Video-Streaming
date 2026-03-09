@@ -64,12 +64,18 @@ public class TranscodingTask extends Task {
     private final TranscodingProfile profile;
     private final String chunkKey;
     private final String outputKey;
+    private final double outputTsOffsetSeconds;
 
     public TranscodingTask(String id, String jobId, String chunkKey, TranscodingProfile profile) {
+        this(id, jobId, chunkKey, profile, -1d);
+    }
+
+    public TranscodingTask(String id, String jobId, String chunkKey, TranscodingProfile profile, double outputTsOffsetSeconds) {
         super(id, jobId, TaskType.TRANSCODE, chunkKey, 0, 3);
         this.chunkKey = chunkKey;
         this.profile = profile;
         this.outputKey = deriveOutputKey(chunkKey, profile);
+        this.outputTsOffsetSeconds = outputTsOffsetSeconds;
     }
 
     public TranscodingProfile getProfile() { return profile; }
@@ -128,15 +134,17 @@ public class TranscodingTask extends Task {
             String maxrate = profile.getBitrate() + ""; // bps string for ffmpeg
             String bufsize = (profile.getBitrate() * 2) + "";
             int segmentNumber = extractSegmentNumber(chunkKey);
-            double outputTsOffsetSeconds = segmentNumber >= 0
+            double effectiveOutputTsOffsetSeconds = outputTsOffsetSeconds >= 0d
+                    ? outputTsOffsetSeconds
+                    : segmentNumber >= 0
                     ? (double) segmentNumber * Math.max(1, CHUNK_DURATION_SECONDS)
                     : 0d;
             FFmpegBuilder builder = new FFmpegBuilder()
                     .setInput(inputTemp.toString())
                     .addOutput(outputTemp.toString())
-                        .setFormat("mpegts")
+                    .setFormat("mpegts")
                         // Keep a continuous media timeline across independently transcoded segments.
-                        .addExtraArgs("-output_ts_offset", String.format(java.util.Locale.US, "%.3f", outputTsOffsetSeconds))
+                        .addExtraArgs("-output_ts_offset", String.format(java.util.Locale.US, "%.3f", effectiveOutputTsOffsetSeconds))
                         .addExtraArgs("-vf", "scale=-2:" + profile.getVerticalResolution())
                         .addExtraArgs("-c:v", "libx264")
                         .addExtraArgs("-preset", FFMPEG_PRESET)

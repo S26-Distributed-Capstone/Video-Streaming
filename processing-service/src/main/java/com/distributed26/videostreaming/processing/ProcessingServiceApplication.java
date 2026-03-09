@@ -20,6 +20,8 @@ import com.distributed26.videostreaming.shared.upload.events.UploadFailedEvent;
 import com.distributed26.videostreaming.shared.upload.events.UploadMetaEvent;
 import io.github.cdimascio.dotenv.Dotenv;
 import io.javalin.Javalin;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -65,6 +67,7 @@ public class ProcessingServiceApplication {
         TranscodingProfile.MEDIUM,
         TranscodingProfile.HIGH
     };
+    private static final java.util.regex.Pattern EXTINF_PATTERN = java.util.regex.Pattern.compile("^#EXTINF:([^,]+),?");
 
     public static void main(String[] args) throws Exception {
         Dotenv dotenv = Dotenv.configure().directory("./").ignoreIfMissing().load();
@@ -230,7 +233,13 @@ public class ProcessingServiceApplication {
             return null;
         }
         publishTranscodeState(videoId, profile.getName(), segmentNumber, TranscodeSegmentState.QUEUED);
-        return new TranscodingTask(UUID.randomUUID().toString(), videoId, chunkKey, profile);
+        return new TranscodingTask(
+                UUID.randomUUID().toString(),
+                videoId,
+                chunkKey,
+                profile,
+                taskEvent.getOutputTsOffsetSeconds()
+        );
     }
 
     // ── Startup helpers ────────────────────────────────────────────────────────
@@ -281,6 +290,7 @@ public class ProcessingServiceApplication {
             int republished = 0;
             Set<String> touchedProfiles = new HashSet<>();
 
+            Map<Integer, Double> offsetsBySegment = loadSourceSegmentOffsets(videoId, storageClient);
             for (String chunkKey : chunkKeys) {
                 int segmentNumber = parseSegmentNumber(chunkKey);
                 if (segmentNumber < 0) {
@@ -297,7 +307,8 @@ public class ProcessingServiceApplication {
                             videoId,
                             chunkKey,
                             profile.getName(),
-                            segmentNumber
+                            segmentNumber,
+                            offsetsBySegment.getOrDefault(segmentNumber, fallbackOffsetForSegment(segmentNumber))
                     ));
                     touchedProfiles.add(profile.getName());
                     republished += 1;
@@ -553,6 +564,60 @@ public class ProcessingServiceApplication {
             last = Integer.parseInt(matcher.group(1));
         }
         return last;
+    }
+
+    private static Map<Integer, Double> loadSourceSegmentOffsets(String videoId, ObjectStorageClient storageClient) {
+        Map<Integer, Double> offsetsBySegment = new HashMap<>();
+        String manifestKey = videoId + "/chunks/output.m3u8";
+        try {
+            if (!storageClient.fileExists(manifestKey)) {
+                return offsetsBySegment;
+            }
+            try (InputStream is = storageClient.downloadFile(manifestKey)) {
+                String content = new String(is.readAllBytes(), StandardCharsets.UTF_8);
+                double pendingDuration = 0d;
+                double runningOffset = 0d;
+                for (String line : content.split("\\R")) {
+                    String trimmed = line.trim();
+                    if (trimmed.isEmpty()) {
+                        continue;
+                    }
+                    if (trimmed.startsWith("#")) {
+                        if (trimmed.startsWith("#EXTINF:")) {
+                            pendingDuration = parseExtinfDuration(trimmed);
+                        }
+                        continue;
+                    }
+                    if (!trimmed.endsWith(".ts")) {
+                        continue;
+                    }
+                    int segmentNumber = parseSegmentNumber(trimmed);
+                    if (segmentNumber >= 0) {
+                        offsetsBySegment.put(segmentNumber, runningOffset);
+                    }
+                    runningOffset += pendingDuration;
+                }
+            }
+        } catch (Exception e) {
+            LOGGER.warn("Failed to load source segment offsets for videoId={}", videoId, e);
+        }
+        return offsetsBySegment;
+    }
+
+    private static double parseExtinfDuration(String line) {
+        java.util.regex.Matcher matcher = EXTINF_PATTERN.matcher(line);
+        if (!matcher.find()) {
+            return 0d;
+        }
+        try {
+            return Double.parseDouble(matcher.group(1).trim());
+        } catch (NumberFormatException e) {
+            return 0d;
+        }
+    }
+
+    private static double fallbackOffsetForSegment(int segmentNumber) {
+        return segmentNumber < 0 ? 0d : (double) segmentNumber * Math.max(1, TranscodingTask.CHUNK_DURATION_SECONDS);
     }
 
     private static TranscodingProfile profileFromName(String profileName) {
