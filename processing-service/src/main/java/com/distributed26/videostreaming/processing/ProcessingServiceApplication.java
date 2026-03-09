@@ -29,6 +29,8 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -297,7 +299,7 @@ public class ProcessingServiceApplication {
         );
     }
 
-    private static void submitTranscodeTask(
+    private static CompletionStage<Boolean> submitTranscodeTask(
             TranscodeTaskEvent taskEvent,
             ThreadPoolExecutor taskExecutor,
             ObjectStorageClient storageClient,
@@ -305,12 +307,19 @@ public class ProcessingServiceApplication {
     ) {
         TranscodingTask task = onTranscodeTaskEvent(taskEvent);
         if (task == null) {
-            return;
+            return CompletableFuture.completedFuture(true);
         }
-        taskExecutor.submit(() -> executeTranscodingTask(task, storageClient, workersByThread));
+        return CompletableFuture.supplyAsync(
+                () -> executeTranscodingTask(task, storageClient, workersByThread),
+                taskExecutor
+        ).exceptionally(e -> {
+            LOGGER.error("Transcode task execution crashed jobId={} chunk={} profile={}",
+                    task.getJobId(), task.getChunkKey(), task.getProfile().getName(), e);
+            return false;
+        });
     }
 
-    private static void executeTranscodingTask(
+    private static boolean executeTranscodingTask(
             TranscodingTask task,
             ObjectStorageClient storageClient,
             Map<Thread, Worker> workersByThread
@@ -331,10 +340,12 @@ public class ProcessingServiceApplication {
             task.setStatus(Status.SUCCEEDED);
             emitState(task, TranscodeSegmentState.DONE);
             LOGGER.info("Task {} succeeded", task.getId());
+            return true;
         } catch (Exception e) {
             task.setStatus(Status.FAILED);
             emitState(task, TranscodeSegmentState.FAILED);
             LOGGER.error("Task {} failed: {}", task.getId(), e.getMessage(), e);
+            return false;
         } finally {
             if (worker != null) {
                 worker.setStatus(WorkerStatus.IDLE);
