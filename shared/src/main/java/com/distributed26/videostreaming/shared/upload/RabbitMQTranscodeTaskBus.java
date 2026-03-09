@@ -72,7 +72,9 @@ public class RabbitMQTranscodeTaskBus implements TranscodeTaskBus {
         Objects.requireNonNull(event, "event is null");
         try {
             byte[] body = OBJECT_MAPPER.writeValueAsBytes(event);
-            channel.basicPublish(exchange, taskBinding, null, body);
+            synchronized (channel) {
+                channel.basicPublish(exchange, taskBinding, null, body);
+            }
         } catch (IOException e) {
             throw new RuntimeException("Failed to publish transcode task", e);
         }
