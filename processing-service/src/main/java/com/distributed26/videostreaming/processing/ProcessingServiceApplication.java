@@ -767,7 +767,7 @@ public class ProcessingServiceApplication {
         try {
             return ProcessingUploadTaskRepository.fromEnv();
         } catch (IllegalStateException e) {
-            LOGGER.warn("Postgres not configured; local upload queue disabled: {}", e.getMessage());
+            LOGGER.warn("Postgres not configured; cannot start local upload queue: {}", e.getMessage());
             return null;
         }
     }

@@ -70,6 +70,7 @@ public class ProcessingUploadTaskRepository {
                 size_bytes = EXCLUDED.size_bytes,
                 output_ts_offset_seconds = EXCLUDED.output_ts_offset_seconds,
                 state = 'PENDING',
+                claimed_by = NULL,
                 updated_at = NOW()
             """;
         try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
@@ -221,7 +222,7 @@ public class ProcessingUploadTaskRepository {
     private void updateState(long id, String state) {
         String sql = """
             UPDATE processing_upload_task
-            SET state = ?, updated_at = NOW()
+            SET state = ?, claimed_by = NULL, updated_at = NOW()
             WHERE id = ?
             """;
         try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
