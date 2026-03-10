@@ -3,6 +3,7 @@ package com.distributed26.videostreaming.shared.storage;
 import com.distributed26.videostreaming.shared.config.StorageConfig;
 import java.io.InputStream;
 import java.net.URI;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import org.apache.logging.log4j.LogManager;
@@ -25,26 +26,46 @@ import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.model.S3Object;
+import software.amazon.awssdk.services.s3.presigner.S3Presigner;
+import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
+import software.amazon.awssdk.services.s3.presigner.model.PresignedGetObjectRequest;
 
 public class S3StorageClient implements ObjectStorageClient {
     private static final Logger LOGGER = LogManager.getLogger(S3StorageClient.class);
 
     private final S3Client s3Client;
+    private final S3Presigner s3Presigner;
     private final String bucketName;
 
     public S3StorageClient(StorageConfig config) {
         this.bucketName = config.getDefaultBucketName();
+        StaticCredentialsProvider credentialsProvider = StaticCredentialsProvider.create(
+                AwsBasicCredentials.create(config.getAccessKey(), config.getSecretKey())
+        );
+        URI endpoint = URI.create(config.getEndpointUrl());
+        URI publicEndpoint = URI.create(config.getPublicEndpointUrl());
+        Region region = Region.of(config.getRegion());
+
         this.s3Client = S3Client.builder()
-                .endpointOverride(URI.create(config.getEndpointUrl()))
-                .credentialsProvider(StaticCredentialsProvider.create(
-                        AwsBasicCredentials.create(config.getAccessKey(), config.getSecretKey())
-                ))
-                .region(Region.of(config.getRegion()))
+                .endpointOverride(endpoint)
+                .credentialsProvider(credentialsProvider)
+                .region(region)
                 .serviceConfiguration(S3Configuration.builder()
                         .pathStyleAccessEnabled(true)
                         .build())
                 .build();
-        LOGGER.info("Initialized S3StorageClient for bucket '{}' at '{}'", bucketName, config.getEndpointUrl());
+
+        this.s3Presigner = S3Presigner.builder()
+                .endpointOverride(publicEndpoint)
+                .credentialsProvider(credentialsProvider)
+                .region(region)
+                .serviceConfiguration(S3Configuration.builder()
+                        .pathStyleAccessEnabled(true)
+                        .build())
+                .build();
+
+        LOGGER.info("Initialized S3StorageClient for bucket '{}' at '{}' (public: '{}')",
+                bucketName, config.getEndpointUrl(), config.getPublicEndpointUrl());
     }
 
     @Override
@@ -176,6 +197,26 @@ public class S3StorageClient implements ObjectStorageClient {
              }
              LOGGER.error("Failed to check bucket existence for '{}'", bucketName, e);
              throw new IllegalStateException("Failed to check bucket existence: " + bucketName, e);
+        }
+    }
+
+    @Override
+    public String generatePresignedUrl(String key, long durationSeconds) {
+        LOGGER.info("Generating presigned URL for '{}' in bucket '{}' ({}s)", key, bucketName, durationSeconds);
+        try {
+            GetObjectRequest getRequest = GetObjectRequest.builder()
+                    .bucket(bucketName)
+                    .key(key)
+                    .build();
+            GetObjectPresignRequest presignRequest = GetObjectPresignRequest.builder()
+                    .signatureDuration(Duration.ofSeconds(durationSeconds))
+                    .getObjectRequest(getRequest)
+                    .build();
+            PresignedGetObjectRequest presigned = s3Presigner.presignGetObject(presignRequest);
+            return presigned.url().toString();
+        } catch (RuntimeException ex) {
+            LOGGER.error("Failed to generate presigned URL for '{}' in bucket '{}'", key, bucketName, ex);
+            throw new IllegalStateException("Failed to generate presigned URL: " + key, ex);
         }
     }
 }

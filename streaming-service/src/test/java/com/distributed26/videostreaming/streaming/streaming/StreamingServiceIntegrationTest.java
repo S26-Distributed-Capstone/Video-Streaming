@@ -108,7 +108,7 @@ class StreamingServiceIntegrationTest {
     }
 
     @Test
-    void servesVariantManifestFromMinioWhenCompleted() throws Exception {
+    void servesVariantManifestWithPresignedUrlsWhenCompleted() throws Exception {
         HttpRequest request = HttpRequest.newBuilder()
             .uri(URI.create("http://localhost:" + port + "/stream/" + videoId + "/variant/low/playlist.m3u8"))
             .GET()
@@ -118,11 +118,14 @@ class StreamingServiceIntegrationTest {
 
         assertEquals(HttpURLConnection.HTTP_OK, response.statusCode());
         String body = new String(response.body(), StandardCharsets.UTF_8);
-        assertEquals("#EXTM3U\n#EXTINF:10,\nsegment/000.ts\n#EXT-X-ENDLIST\n", body);
+        org.junit.jupiter.api.Assertions.assertTrue(body.contains("#EXTM3U"), "Should contain HLS header");
+        org.junit.jupiter.api.Assertions.assertTrue(body.contains("http"), "Segment URIs should be presigned HTTP URLs");
+        org.junit.jupiter.api.Assertions.assertTrue(body.contains("000.ts"), "Should reference the segment file");
+        org.junit.jupiter.api.Assertions.assertFalse(body.contains("segment/000.ts"), "Should not use old relative segment/ prefix");
     }
 
     @Test
-    void servesVariantSegmentFromMinioWhenCompleted() throws Exception {
+    void segmentProxyEndpointNoLongerExists() throws Exception {
         HttpRequest request = HttpRequest.newBuilder()
             .uri(URI.create("http://localhost:" + port + "/stream/" + videoId + "/variant/low/segment/000.ts"))
             .GET()
@@ -130,9 +133,8 @@ class StreamingServiceIntegrationTest {
 
         HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
 
-        assertEquals(HttpURLConnection.HTTP_OK, response.statusCode());
-        String body = new String(response.body(), StandardCharsets.UTF_8);
-        assertEquals("segment-000", body);
+        // Segment proxy endpoints were removed; clients fetch directly from S3
+        assertEquals(HttpURLConnection.HTTP_NOT_FOUND, response.statusCode());
     }
 
     private String getenvOrDefault(String key, String defaultValue) {
