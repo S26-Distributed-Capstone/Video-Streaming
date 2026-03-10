@@ -77,6 +77,7 @@ public final class VideoSegmentationWorkflow {
 
             Set<Path> uploadedFiles = ConcurrentHashMap.newKeySet();
             Set<Integer> uploadedSegmentNumbers = ConcurrentHashMap.newKeySet();
+            uploadCoordinator.preloadUploadedSegmentNumbers(videoId, uploadedSegmentNumbers);
 
             logger.info("Starting segment monitoring loop for video: {}", videoId);
 
@@ -157,7 +158,8 @@ public final class VideoSegmentationWorkflow {
             uploadCoordinator.waitForOrCancelInFlightUploads(inFlightUploads);
             try {
                 Thread.sleep(500);
-            } catch (InterruptedException ignored) {
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
             }
             cleanup(inputPath, tempOutput);
         }

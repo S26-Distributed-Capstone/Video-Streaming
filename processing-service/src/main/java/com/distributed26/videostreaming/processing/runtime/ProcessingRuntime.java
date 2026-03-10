@@ -32,6 +32,7 @@ import org.apache.logging.log4j.Logger;
 
 public final class ProcessingRuntime {
     private static final Logger LOGGER = LogManager.getLogger(ProcessingRuntime.class);
+    private static final java.util.regex.Pattern SEGMENT_NUMBER_PATTERN = java.util.regex.Pattern.compile("(\\d+)");
     private final Set<String> manifestsInFlight = ConcurrentHashMap.newKeySet();
 
     private TranscodedSegmentStatusRepository transcodeStatusRepository;
@@ -291,7 +292,7 @@ public final class ProcessingRuntime {
         if (chunkKey == null || chunkKey.isBlank()) {
             return -1;
         }
-        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("(\\d+)").matcher(chunkKey);
+        java.util.regex.Matcher matcher = SEGMENT_NUMBER_PATTERN.matcher(chunkKey);
         int last = -1;
         while (matcher.find()) {
             last = Integer.parseInt(matcher.group(1));

@@ -76,6 +76,17 @@ public final class SegmentUploadCoordinator {
         );
     }
 
+    public void preloadUploadedSegmentNumbers(String videoId, Set<Integer> uploadedSegmentNumbers) {
+        if (segmentUploadRepository == null) {
+            return;
+        }
+        try {
+            uploadedSegmentNumbers.addAll(segmentUploadRepository.findSegmentNumbers(videoId));
+        } catch (RuntimeException e) {
+            logger.warn("Failed to preload uploaded segment numbers for videoId={}", videoId, e);
+        }
+    }
+
     public void uploadSegment(Path path, String videoId, double outputTsOffsetSeconds) {
         try {
             String fileName = path.getFileName().toString();

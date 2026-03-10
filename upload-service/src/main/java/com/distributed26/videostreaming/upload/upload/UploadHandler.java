@@ -23,16 +23,19 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-public class UploadHandler {
+public class UploadHandler implements AutoCloseable {
     private static final Logger logger = LogManager.getLogger(UploadHandler.class);
 
     private final UploadRequestParser requestParser;
     private final UploadInitializationService initializationService;
     private final VideoSegmentationWorkflow workflow;
     private final ExecutorService supervisionExecutor;
+    private final ExecutorService ffmpegExecutor;
+    private final ExecutorService segmentUploadExecutor;
 
     public UploadHandler(ObjectStorageClient storageClient, StatusEventBus statusEventBus, TranscodeTaskBus transcodeTaskBus) {
         this(storageClient, statusEventBus, transcodeTaskBus, null, null, null, null);
@@ -75,8 +78,8 @@ public class UploadHandler {
         Objects.requireNonNull(config, "config is null");
 
         this.supervisionExecutor = Executors.newCachedThreadPool();
-        ExecutorService ffmpegExecutor = Executors.newFixedThreadPool(config.ffmpegPoolSize());
-        ExecutorService segmentUploadExecutor = Executors.newFixedThreadPool(config.uploadPoolSize());
+        this.ffmpegExecutor = Executors.newFixedThreadPool(config.ffmpegPoolSize());
+        this.segmentUploadExecutor = Executors.newFixedThreadPool(config.uploadPoolSize());
 
         logger.info("CHUNK_DURATION_SECONDS resolved to {}", config.segmentDuration());
         logger.info("Initialized FFmpeg executor with pool size: {}", config.ffmpegPoolSize());
@@ -97,7 +100,7 @@ public class UploadHandler {
                 statusEventBus,
                 transcodeTaskBus,
                 segmentUploadRepository,
-                segmentUploadExecutor,
+                this.segmentUploadExecutor,
                 config.maxInFlightSegmentUploads(),
                 config.segmentDuration()
         );
@@ -106,7 +109,7 @@ public class UploadHandler {
                 uploadCoordinator,
                 videoUploadRepository,
                 statusEventBus,
-                ffmpegExecutor,
+                this.ffmpegExecutor,
                 config.processingTimeoutMillis(),
                 config.pollingIntervalMillis(),
                 machineId,
@@ -168,5 +171,24 @@ public class UploadHandler {
     }
 
     private record UploadResponse(String videoId, String uploadStatusUrl) {
+    }
+
+    @Override
+    public void close() {
+        shutdownExecutor("upload supervision", supervisionExecutor);
+        shutdownExecutor("upload ffmpeg", ffmpegExecutor);
+        shutdownExecutor("segment upload", segmentUploadExecutor);
+    }
+
+    private void shutdownExecutor(String name, ExecutorService executor) {
+        executor.shutdownNow();
+        try {
+            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                logger.warn("{} executor did not terminate cleanly within timeout", name);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            logger.warn("Interrupted while shutting down {} executor", name, e);
+        }
     }
 }
