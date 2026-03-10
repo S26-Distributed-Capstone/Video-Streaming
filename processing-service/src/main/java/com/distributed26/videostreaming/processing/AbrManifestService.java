@@ -22,7 +22,7 @@ import org.apache.logging.log4j.Logger;
  * Builds HLS variant + master manifests for processed profiles in Option A:
  * source-chunking remains in chunks/, while per-profile manifests and a master are generated in manifest/.
  */
-class AbrManifestService {
+public class AbrManifestService {
     private static final Logger LOGGER = LogManager.getLogger(AbrManifestService.class);
     private static final Pattern EXTINF_PATTERN = Pattern.compile("^#EXTINF:([^,]+),?");
     private static final Pattern LAST_DIGIT_SEQUENCE_PATTERN = Pattern.compile("(\\d+)(?!.*\\d)");
@@ -39,12 +39,12 @@ class AbrManifestService {
     private final ObjectStorageClient storageClient;
     private final int maxWaitSeconds;
 
-    AbrManifestService(ObjectStorageClient storageClient, int maxWaitSeconds) {
+    public AbrManifestService(ObjectStorageClient storageClient, int maxWaitSeconds) {
         this.storageClient = Objects.requireNonNull(storageClient, "storageClient");
         this.maxWaitSeconds = maxWaitSeconds;
     }
 
-    void generateIfNeeded(String videoId, int totalSegments) throws IOException {
+    public void generateIfNeeded(String videoId, int totalSegments) throws IOException {
         Objects.requireNonNull(videoId, "videoId");
         String masterManifestKey = videoId + MANIFEST_ROOT + MASTER_MANIFEST_KEY;
         if (storageClient.fileExists(masterManifestKey)) {

@@ -79,6 +79,11 @@ public class UploadServiceApplication {
 
         app.events(event -> event.serverStopped(() -> {
             try {
+                uploadHandler.close();
+            } catch (Exception e) {
+                logger.warn("Error closing upload handler on shutdown", e);
+            }
+            try {
                 storageClient.close();
             } catch (Exception e) {
                 logger.warn("Error closing storage client on shutdown", e);

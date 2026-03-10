@@ -225,7 +225,11 @@ public class TranscodingTask extends Task {
                 : 0d;
     }
 
-    record CompletedTranscode(Path localPath, String outputKey, long sizeBytes, double outputTsOffsetSeconds) {
+    public record CompletedTranscode(Path localPath, String outputKey, long sizeBytes, double outputTsOffsetSeconds) {
+    }
+
+    public static int chunkDurationSeconds() {
+        return CHUNK_DURATION_SECONDS;
     }
 
     private void downloadChunkWithRetry(ObjectStorageClient storageClient, Path inputTemp) throws IOException {
