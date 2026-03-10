@@ -30,6 +30,7 @@ public class RabbitMQStatusEventBus implements StatusEventBus {
     private final Connection connection;
     private final Channel channel;
     private final String exchange;
+    private final String consumerQueueName;
     private final Map<String, List<JobEventListener>> listenersByJobId = new ConcurrentHashMap<>();
     private final List<JobEventListener> globalListeners = new CopyOnWriteArrayList<>();
 
@@ -50,12 +51,12 @@ public class RabbitMQStatusEventBus implements StatusEventBus {
             this.channel = connection.createChannel();
 
             channel.exchangeDeclare(this.exchange, BuiltinExchangeType.TOPIC, true);
-            channel.queueDeclare(config.statusQueue(), true, false, false, null);
-            channel.queueBind(config.statusQueue(), this.exchange, config.statusBinding());
-
             if (consumeStatus) {
-                startConsumer(config.statusQueue());
+                this.consumerQueueName = declareConsumerQueue(config);
+                channel.queueBind(this.consumerQueueName, this.exchange, config.statusBinding());
+                startConsumer(this.consumerQueueName);
             } else {
+                this.consumerQueueName = null;
                 LOGGER.info("Status event consumer disabled for {}", this.exchange);
             }
         } catch (IOException | TimeoutException e) {
@@ -133,9 +134,24 @@ public class RabbitMQStatusEventBus implements StatusEventBus {
         channel.basicConsume(queueName, true, callback, consumerTag -> {});
     }
 
+    private String declareConsumerQueue(RabbitMQBusConfig config) throws IOException {
+        if (shouldUseReplicaStatusQueue()) {
+            String queueName = channel.queueDeclare("", false, true, true, null).getQueue();
+            LOGGER.info("Declared replica-local status queue={} exchange={}", queueName, exchange);
+            return queueName;
+        }
+        channel.queueDeclare(config.statusQueue(), true, false, false, null);
+        return config.statusQueue();
+    }
+
     private static boolean shouldConsumeStatusEvents() {
         String mode = System.getenv("SERVICE_MODE");
         return "status".equalsIgnoreCase(mode) || "processing".equalsIgnoreCase(mode);
+    }
+
+    private static boolean shouldUseReplicaStatusQueue() {
+        String mode = System.getenv("SERVICE_MODE");
+        return "status".equalsIgnoreCase(mode);
     }
 
     @Override
