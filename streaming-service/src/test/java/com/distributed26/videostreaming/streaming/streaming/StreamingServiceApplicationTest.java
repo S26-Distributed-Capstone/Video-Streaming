@@ -47,7 +47,7 @@ class StreamingServiceApplicationTest {
         // Seed data for tests
         statuses.put(VIDEO_ID, "COMPLETED");
         storage.put(VIDEO_ID + "/manifest/master.m3u8",
-            "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nlow.m3u8\n".getBytes(StandardCharsets.UTF_8));
+            "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nlow/playlist.m3u8\n".getBytes(StandardCharsets.UTF_8));
         storage.put(VIDEO_ID + "/manifest/low.m3u8",
             "#EXTM3U\n#EXTINF:10,\n000.ts\n".getBytes(StandardCharsets.UTF_8));
         storage.put(VIDEO_ID + "/processed/low/000.ts", "segment-000".getBytes(StandardCharsets.UTF_8));
@@ -72,7 +72,7 @@ class StreamingServiceApplicationTest {
         assertEquals(HttpURLConnection.HTTP_OK, response.statusCode());
         String body = new String(response.body(), StandardCharsets.UTF_8);
         assertTrue(body.contains("#EXTM3U"));
-        assertTrue(body.contains("variant/low.m3u8"));
+        assertTrue(body.contains("variant/low/playlist.m3u8"));
     }
 
     @Test

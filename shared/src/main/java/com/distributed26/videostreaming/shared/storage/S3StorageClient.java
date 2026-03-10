@@ -202,7 +202,7 @@ public class S3StorageClient implements ObjectStorageClient {
 
     @Override
     public String generatePresignedUrl(String key, long durationSeconds) {
-        LOGGER.info("Generating presigned URL for '{}' in bucket '{}' ({}s)", key, bucketName, durationSeconds);
+        LOGGER.debug("Generating presigned URL for '{}' in bucket '{}' ({}s)", key, bucketName, durationSeconds);
         try {
             GetObjectRequest getRequest = GetObjectRequest.builder()
                     .bucket(bucketName)
@@ -217,6 +217,21 @@ public class S3StorageClient implements ObjectStorageClient {
         } catch (RuntimeException ex) {
             LOGGER.error("Failed to generate presigned URL for '{}' in bucket '{}'", key, bucketName, ex);
             throw new IllegalStateException("Failed to generate presigned URL: " + key, ex);
+        }
+    }
+
+    @Override
+    public void close() {
+        LOGGER.info("Closing S3StorageClient for bucket '{}'", bucketName);
+        try {
+            s3Presigner.close();
+        } catch (RuntimeException ex) {
+            LOGGER.warn("Error closing S3Presigner", ex);
+        }
+        try {
+            s3Client.close();
+        } catch (RuntimeException ex) {
+            LOGGER.warn("Error closing S3Client", ex);
         }
     }
 }

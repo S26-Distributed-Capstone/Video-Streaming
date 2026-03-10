@@ -3,7 +3,7 @@ package com.distributed26.videostreaming.shared.storage;
 import java.io.InputStream;
 import java.util.List;
 
-public interface ObjectStorageClient {
+public interface ObjectStorageClient extends AutoCloseable {
     void uploadFile(String key, InputStream data, long size);
 
     InputStream downloadFile(String key);
@@ -24,4 +24,9 @@ public interface ObjectStorageClient {
      * @return a fully-qualified URL that grants temporary read access
      */
     String generatePresignedUrl(String key, long durationSeconds);
+
+    /** Default no-op so callers that don't need cleanup aren't forced to implement it. */
+    @Override
+    default void close() {
+    }
 }

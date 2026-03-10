@@ -91,6 +91,9 @@ class StreamingServiceIntegrationTest {
             storageClient.deleteFile(videoId + "/manifest/low.m3u8");
             storageClient.deleteFile(videoId + "/processed/low/000.ts");
         }
+        if (storageClient != null) {
+            storageClient.close();
+        }
     }
 
     @Test

@@ -54,6 +54,15 @@ public class StreamingServiceApplication {
         Javalin app = Javalin.create(config -> {
             config.http.prefer405over404 = true;
         });
+
+        app.events(event -> event.serverStopped(() -> {
+            try {
+                storageClient.close();
+            } catch (Exception e) {
+                logger.warn("Error closing storage client on shutdown", e);
+            }
+        }));
+
         app.before(ctx -> {
             ctx.header("Access-Control-Allow-Origin", "*");
             ctx.header("Access-Control-Allow-Methods", "GET,OPTIONS");
