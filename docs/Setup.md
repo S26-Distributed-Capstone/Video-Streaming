@@ -120,3 +120,4 @@ docker stack rm video
   - transcode task events for processing workers
 - `processing-service` consumes only the transcode task queue, writes completed profile outputs into a local spool, and a same-node uploader pushes those files to object storage.
 - `processing-service` keeps its durable local-upload handoff in Postgres (`processing_upload_task`) and stores spool files under `PROCESSING_SPOOL_ROOT` (default `processing-spool/`).
+- `status-service` now declares a replica-local RabbitMQ queue per instance, so multiple status replicas each receive the full event stream and can safely fan out updates to the WebSockets connected to that replica.
