@@ -11,7 +11,6 @@ import com.distributed26.videostreaming.shared.upload.StatusEventBus;
 import com.distributed26.videostreaming.shared.upload.events.TranscodeSegmentState;
 import com.distributed26.videostreaming.shared.upload.events.TranscodeTaskEvent;
 import com.distributed26.videostreaming.shared.upload.events.UploadMetaEvent;
-import java.lang.reflect.Field;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import org.junit.jupiter.api.BeforeEach;
@@ -36,11 +35,6 @@ class ProcessingServiceApplicationTest {
     void setUp() {
         taskQueue = new LinkedBlockingQueue<>();
         ProcessingServiceApplication.resetState();
-        setStaticField("transcodeStatusRepository", null);
-        setStaticField("processingUploadTaskRepository", null);
-        setStaticField("statusBus", null);
-        setStaticField("transcodeTaskBusRef", null);
-        setStaticField("localUploadSpoolRoot", null);
     }
 
     // ── Task count ─────────────────────────────────────────────────────────────
@@ -186,8 +180,8 @@ class ProcessingServiceApplicationTest {
 
     @Test
     void alreadyDoneSegments_areSkipped() {
-        setStaticField("transcodeStatusRepository", transcodeStatusRepository);
-        setStaticField("statusBus", bus);
+        ProcessingServiceApplication.runtime().setTranscodeStatusRepository(transcodeStatusRepository);
+        ProcessingServiceApplication.runtime().setStatusBus(bus);
         when(transcodeStatusRepository.hasState("vid1", "low", 0, TranscodeSegmentState.DONE)).thenReturn(true);
         when(transcodeStatusRepository.hasState("vid1", "medium", 0, TranscodeSegmentState.DONE)).thenReturn(false);
         when(transcodeStatusRepository.hasState("vid1", "high", 0, TranscodeSegmentState.DONE)).thenReturn(false);
@@ -210,7 +204,7 @@ class ProcessingServiceApplicationTest {
 
     @Test
     void openLocalUploadTask_isSkipped() {
-        setStaticField("processingUploadTaskRepository", processingUploadTaskRepository);
+        ProcessingServiceApplication.runtime().setProcessingUploadTaskRepository(processingUploadTaskRepository);
         when(processingUploadTaskRepository.hasOpenTask("vid1", "low", 0)).thenReturn(true);
         when(processingUploadTaskRepository.hasOpenTask("vid1", "medium", 0)).thenReturn(false);
         when(processingUploadTaskRepository.hasOpenTask("vid1", "high", 0)).thenReturn(false);
@@ -254,13 +248,4 @@ class ProcessingServiceApplicationTest {
         return last;
     }
 
-    private static void setStaticField(String fieldName, Object value) {
-        try {
-            Field field = ProcessingServiceApplication.class.getDeclaredField(fieldName);
-            field.setAccessible(true);
-            field.set(null, value);
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to set ProcessingServiceApplication." + fieldName, e);
-        }
-    }
 }

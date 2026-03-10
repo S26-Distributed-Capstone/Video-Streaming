@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
+import com.distributed26.videostreaming.upload.processing.SegmentUploadCoordinator;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.javalin.Javalin;
@@ -29,6 +30,8 @@ import java.time.Duration;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -243,15 +246,15 @@ public class UploadHandlerTest {
             Set<Integer> existingSegments = new HashSet<>();
             existingSegments.add(0);
             FakeSegmentUploadRepository fakeRepo = new FakeSegmentUploadRepository(existingSegments);
-
-            UploadHandler handler = new UploadHandler(
+            ExecutorService uploadExecutor = Executors.newSingleThreadExecutor();
+            SegmentUploadCoordinator coordinator = new SegmentUploadCoordinator(
                 mockStorageClient,
                 new TestStatusEventBus(),
                 new TestTranscodeTaskBus(),
-                null,
                 fakeRepo,
-                "test-machine",
-                null
+                uploadExecutor,
+                2,
+                10
             );
 
             Path tempDir = Files.createTempDirectory("upload-test-segments-");
@@ -265,18 +268,8 @@ public class UploadHandlerTest {
 
                 Set<Path> uploadedFiles = new HashSet<>();
                 Set<Integer> uploadedSegmentNumbers = new HashSet<>(existingSegments);
-
-                var method = UploadHandler.class.getDeclaredMethod(
-                    "uploadReadySegments",
-                    Path.class,
-                    String.class,
-                    Set.class,
-                    Set.class,
-                    boolean.class
-                );
-                method.setAccessible(true);
                 String videoId = "123e4567-e89b-12d3-a456-426614174000";
-                method.invoke(handler, tempDir, videoId, uploadedFiles, uploadedSegmentNumbers, true);
+                coordinator.uploadReadySegments(tempDir, videoId, uploadedFiles, uploadedSegmentNumbers, true);
 
                 List<String> uploadedKeys = keyCaptor.getAllValues();
                 Set<Integer> uploadedSegments = extractSegmentNumbersFromKeys(uploadedKeys);
@@ -285,6 +278,7 @@ public class UploadHandlerTest {
                 assertTrue(uploadedSegments.contains(1), "segment 1 should be uploaded");
                 assertTrue(uploadedSegmentNumbers.contains(1), "uploaded segment numbers should be updated");
             } finally {
+                uploadExecutor.shutdownNow();
                 try (var walk = Files.walk(tempDir)) {
                     walk.sorted((a, b) -> b.compareTo(a)).forEach(path -> path.toFile().delete());
                 }
@@ -295,14 +289,15 @@ public class UploadHandlerTest {
         @DisplayName("Should not record a segment when transcode task publish fails")
         void shouldNotRecordSegmentWhenTranscodePublishFails() throws Exception {
             FakeSegmentUploadRepository fakeRepo = new FakeSegmentUploadRepository(Set.of());
-            UploadHandler handler = new UploadHandler(
+            ExecutorService uploadExecutor = Executors.newSingleThreadExecutor();
+            SegmentUploadCoordinator coordinator = new SegmentUploadCoordinator(
                 mockStorageClient,
                 new TestStatusEventBus(),
                 new FailingTranscodeTaskBus(),
-                null,
                 fakeRepo,
-                "test-machine",
-                null
+                uploadExecutor,
+                2,
+                10
             );
 
             Path tempDir = Files.createTempDirectory("upload-test-failure-");
@@ -310,24 +305,14 @@ public class UploadHandlerTest {
                 Path seg0 = tempDir.resolve("output0.ts");
                 Files.writeString(seg0, "seg0");
 
-                var method = UploadHandler.class.getDeclaredMethod("uploadSegment", Path.class, String.class);
-                method.setAccessible(true);
-
                 RuntimeException thrown = assertThrows(RuntimeException.class, () -> {
-                    try {
-                        method.invoke(handler, seg0, "123e4567-e89b-12d3-a456-426614174000");
-                    } catch (java.lang.reflect.InvocationTargetException e) {
-                        Throwable cause = e.getCause();
-                        if (cause instanceof RuntimeException runtimeException) {
-                            throw runtimeException;
-                        }
-                        throw new RuntimeException(cause);
-                    }
+                    coordinator.uploadSegment(seg0, "123e4567-e89b-12d3-a456-426614174000", 0d);
                 });
 
                 assertTrue(thrown.getMessage().contains("Failed to upload segment"));
                 assertTrue(fakeRepo.inserted.isEmpty(), "segment should not be recorded when publish fails");
             } finally {
+                uploadExecutor.shutdownNow();
                 try (var walk = Files.walk(tempDir)) {
                     walk.sorted((a, b) -> b.compareTo(a)).forEach(path -> path.toFile().delete());
                 }
