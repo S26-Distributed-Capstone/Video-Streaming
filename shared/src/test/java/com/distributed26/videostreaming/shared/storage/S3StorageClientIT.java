@@ -46,6 +46,9 @@ class S3StorageClientIT {
 
     @AfterAll
     static void tearDown() {
+        if (storageClient != null) {
+            storageClient.close();
+        }
         if (adminClient != null) {
             adminClient.close();
         }

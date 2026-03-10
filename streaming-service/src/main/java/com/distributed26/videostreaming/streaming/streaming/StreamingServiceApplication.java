@@ -8,8 +8,10 @@ import io.javalin.Javalin;
 import io.javalin.http.HttpStatus;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.Map;
 import java.util.Properties;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -35,15 +37,32 @@ public class StreamingServiceApplication {
 
     static Javalin createStreamingApp() {
         StorageConfig storageConfig = loadStorageConfig();
+        if (storageConfig.getPublicEndpointUrl().equals(storageConfig.getEndpointUrl())) {
+            logger.warn("MINIO_PUBLIC_ENDPOINT is not set — presigned URLs will use internal endpoint '{}'. "
+                    + "Set MINIO_PUBLIC_ENDPOINT to a browser-accessible URL.", storageConfig.getEndpointUrl());
+        } else {
+            logger.info("Presigned URLs will use public endpoint: {}", storageConfig.getPublicEndpointUrl());
+        }
         ObjectStorageClient storageClient = new S3StorageClient(storageConfig);
         VideoStatusRepository videoStatusRepository = createVideoStatusRepository();
         return createStreamingApp(storageClient, videoStatusRepository);
     }
 
     static Javalin createStreamingApp(ObjectStorageClient storageClient, VideoStatusRepository videoStatusRepository) {
+        Map<String, CachedPlaylist> playlistCache = new ConcurrentHashMap<>();
+
         Javalin app = Javalin.create(config -> {
             config.http.prefer405over404 = true;
         });
+
+        app.events(event -> event.serverStopped(() -> {
+            try {
+                storageClient.close();
+            } catch (Exception e) {
+                logger.warn("Error closing storage client on shutdown", e);
+            }
+        }));
+
         app.before(ctx -> {
             ctx.header("Access-Control-Allow-Origin", "*");
             ctx.header("Access-Control-Allow-Methods", "GET,OPTIONS");
@@ -73,34 +92,6 @@ public class StreamingServiceApplication {
                 ctx.status(HttpStatus.INTERNAL_SERVER_ERROR).result("Failed to read manifest");
             }
         });
-        app.get("/stream/{videoId}/segment/{segmentId}", ctx -> {
-            if (!validateVideoId(ctx)) {
-                return;
-            }
-            if (!requireCompleted(ctx, videoStatusRepository)) {
-                return;
-            }
-            String videoId = ctx.pathParam("videoId");
-            String segmentId = ctx.pathParam("segmentId");
-            if (!isValidSegmentId(segmentId)) {
-                ctx.status(HttpStatus.BAD_REQUEST).result("Invalid segment ID");
-                return;
-            }
-            String fileName = segmentId.endsWith(".ts") ? segmentId : segmentId + ".ts";
-            String objectKey = videoId + "/chunks/" + fileName;
-            try (InputStream is = storageClient.downloadFile(objectKey)) {
-                byte[] content = is.readAllBytes();
-                ctx.status(HttpStatus.OK)
-                    .contentType("video/MP2T")
-                    .result(content);
-            } catch (NoSuchKeyException e) {
-                ctx.status(HttpStatus.NOT_FOUND).result("Segment not found");
-            } catch (IOException e) {
-                logger.error("Failed to read segment {}", objectKey, e);
-                ctx.status(HttpStatus.INTERNAL_SERVER_ERROR).result("Failed to read segment");
-            }
-        });
-
         app.get("/stream/{videoId}/variant/{profile}/playlist.m3u8", ctx -> {
             if (!validateVideoId(ctx)) {
                 return;
@@ -114,13 +105,26 @@ public class StreamingServiceApplication {
                 return;
             }
             String videoId = ctx.pathParam("videoId");
+            String cacheKey = videoId + "/" + profile;
+            CachedPlaylist cached = playlistCache.get(cacheKey);
+            if (cached != null && !cached.isExpired()) {
+                logger.info("Serving cached variant playlist for videoId={} profile={}", videoId, profile);
+                ctx.status(HttpStatus.OK)
+                    .header("Cache-Control", "no-store, max-age=0")
+                    .contentType("application/vnd.apple.mpegurl")
+                    .result(cached.content());
+                return;
+            }
             String objectKey = videoId + "/manifest/" + profile + ".m3u8";
             try (InputStream is = storageClient.downloadFile(objectKey)) {
                 String content = new String(is.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
-                String userAgent = ctx.header("User-Agent");
-                String rewritten = rewriteVariantManifest(content, userAgent);
+                String rewritten = rewriteVariantManifestWithPresignedUrls(content, videoId, profile, storageClient);
+                long segmentCount = rewritten.lines().filter(l -> l.startsWith("http")).count();
+                logger.info("Generated variant playlist for videoId={} profile={} with {} presigned segment URLs",
+                        videoId, profile, segmentCount);
+                playlistCache.put(cacheKey, new CachedPlaylist(rewritten, System.currentTimeMillis()));
                 ctx.status(HttpStatus.OK)
-                    .header("Cache-Control", "public, max-age=30")
+                    .header("Cache-Control", "no-store, max-age=0")
                     .contentType("application/vnd.apple.mpegurl")
                     .result(rewritten);
             } catch (NoSuchKeyException e) {
@@ -131,38 +135,6 @@ public class StreamingServiceApplication {
             }
         });
 
-        app.get("/stream/{videoId}/variant/{profile}/segment/{segmentId}", ctx -> {
-            if (!validateVideoId(ctx)) {
-                return;
-            }
-            String profile = ctx.pathParam("profile");
-            if (!validateProfile(profile)) {
-                ctx.status(HttpStatus.BAD_REQUEST).result("Invalid profile");
-                return;
-            }
-            if (!requireCompleted(ctx, videoStatusRepository)) {
-                return;
-            }
-            String videoId = ctx.pathParam("videoId");
-            String segmentId = ctx.pathParam("segmentId");
-            if (!isValidSegmentId(segmentId)) {
-                ctx.status(HttpStatus.BAD_REQUEST).result("Invalid segment ID");
-                return;
-            }
-            String fileName = segmentId.endsWith(".ts") ? segmentId : segmentId + ".ts";
-            String objectKey = videoId + "/processed/" + profile + "/" + fileName;
-            try (InputStream is = storageClient.downloadFile(objectKey)) {
-                byte[] content = is.readAllBytes();
-                ctx.status(HttpStatus.OK)
-                    .contentType("video/MP2T")
-                    .result(content);
-            } catch (NoSuchKeyException e) {
-                ctx.status(HttpStatus.NOT_FOUND).result("Segment not found");
-            } catch (IOException e) {
-                logger.error("Failed to read segment {}", objectKey, e);
-                ctx.status(HttpStatus.INTERNAL_SERVER_ERROR).result("Failed to read segment");
-            }
-        });
 
         app.get("/stream/ready", ctx -> {
             if (videoStatusRepository == null) {
@@ -207,6 +179,7 @@ public class StreamingServiceApplication {
 
         return new StorageConfig(
             getEnvOrProp("MINIO_ENDPOINT", props, "minio.endpoint", "http://localhost:9000"),
+            getEnvOrProp("MINIO_PUBLIC_ENDPOINT", props, "minio.public-endpoint", null),
             getEnvOrProp("MINIO_ACCESS_KEY", props, "minio.access-key", "minioadmin"),
             getEnvOrProp("MINIO_SECRET_KEY", props, "minio.secret-key", "minioadmin"),
             getEnvOrProp("MINIO_BUCKET_NAME", props, "minio.bucket-name", "uploads"),
@@ -267,19 +240,11 @@ public class StreamingServiceApplication {
         return true;
     }
 
-    private static boolean isValidSegmentId(String segmentId) {
-        if (segmentId == null || segmentId.isBlank()) {
-            return false;
-        }
-        return segmentId.matches("^[A-Za-z0-9_-]+(\\.ts)?$");
-    }
-
     private static boolean validateProfile(String profile) {
         return profile != null && profile.matches("^[A-Za-z0-9_-]+$");
     }
 
     private static String rewriteMasterManifest(String content) {
-        // Prefix variant playlist entries so they resolve under /stream/{videoId}/variant/...
         String[] lines = content.split("\\r?\\n");
         StringBuilder rewritten = new StringBuilder(content.length() + lines.length * 8);
         for (String line : lines) {
@@ -297,31 +262,31 @@ public class StreamingServiceApplication {
         return rewritten.toString();
     }
 
-    private static String rewriteVariantManifest(String content, String userAgent) {
-        // Keep variant manifests as VOD for all clients. Rewriting to EVENT/no-ENDLIST
-        // makes players treat playback as live and aggressively prefetch/poll.
+    private static final long PRESIGNED_URL_DURATION_SECONDS = 3600; // 1 hour
+    private static final long PLAYLIST_CACHE_TTL_MILLIS = 30 * 60 * 1000L; // 30 minutes
+
+    private record CachedPlaylist(String content, long createdAtMillis) {
+        boolean isExpired() {
+            return System.currentTimeMillis() - createdAtMillis > PLAYLIST_CACHE_TTL_MILLIS;
+        }
+    }
+
+    private static String rewriteVariantManifestWithPresignedUrls(
+            String content, String videoId, String profile, ObjectStorageClient storageClient) {
         String[] lines = content.split("\\r?\\n");
-        StringBuilder rewritten = new StringBuilder(content.length() + lines.length * 8);
+        StringBuilder rewritten = new StringBuilder(content.length() * 2);
         for (String line : lines) {
             if (!line.isEmpty() && !line.startsWith("#")) {
-                rewritten.append("segment/").append(line);
+                // This is a segment filename — replace with a presigned S3 URL
+                String segmentFile = line.endsWith(".ts") ? line : line + ".ts";
+                String objectKey = videoId + "/processed/" + profile + "/" + segmentFile;
+                String presignedUrl = storageClient.generatePresignedUrl(objectKey, PRESIGNED_URL_DURATION_SECONDS);
+                rewritten.append(presignedUrl);
             } else {
                 rewritten.append(line);
             }
             rewritten.append('\n');
         }
         return rewritten.toString();
-    }
-
-    private static boolean isNativeSafari(String userAgent) {
-        if (userAgent == null || userAgent.isBlank()) {
-            return false;
-        }
-        String ua = userAgent.toLowerCase(java.util.Locale.ROOT);
-        return ua.contains("safari")
-            && !ua.contains("chrome")
-            && !ua.contains("chromium")
-            && !ua.contains("crios")
-            && !ua.contains("edg");
     }
 }

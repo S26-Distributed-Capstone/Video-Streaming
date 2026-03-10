@@ -164,6 +164,7 @@ public class ProcessingServiceApplication {
             transcodeTaskBusRef = null;
             try { transcodeTaskBus.close(); } catch (Exception e) { LOGGER.warn("Error closing transcode task bus", e); }
             try { statusEventBus.close(); } catch (Exception e) { LOGGER.warn("Error closing status event bus", e); }
+            try { storageClient.close(); } catch (Exception e) { LOGGER.warn("Error closing storage client", e); }
         }));
 
         Thread.currentThread().join();

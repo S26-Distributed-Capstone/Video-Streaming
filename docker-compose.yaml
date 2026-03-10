@@ -105,6 +105,7 @@ services:
     environment:
       PG_URL: jdbc:postgresql://postgres:5432/${PG_DB}
       MINIO_ENDPOINT: http://minio:9000
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-http://localhost:9000}
       STREAMING_PORT: 8083
     command:
       - /bin/sh

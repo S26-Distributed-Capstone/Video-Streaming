@@ -647,11 +647,13 @@ function uploadFile({ preserveLog, isRetry } = {}) {
   console.log("[upload-ui] uploadFile", { isRetry, preserveLog });
   const file = fileInput.files[0];
   if (!file) {
+    console.error("[upload-ui] uploadFile requires a selected file");
     appendLog("Select a video file before uploading.", "error");
     return;
   }
   const videoName = videoNameInput ? videoNameInput.value.trim() : "";
   if (!videoName) {
+    console.error("[upload-ui] uploadFile requires videoName");
     appendLog("Enter a video name before uploading.", "error");
     return;
   }

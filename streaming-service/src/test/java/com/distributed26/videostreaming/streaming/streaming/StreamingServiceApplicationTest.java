@@ -46,9 +46,11 @@ class StreamingServiceApplicationTest {
 
         // Seed data for tests
         statuses.put(VIDEO_ID, "COMPLETED");
-        storage.put(VIDEO_ID + "/chunks/output.m3u8",
+        storage.put(VIDEO_ID + "/manifest/master.m3u8",
+            "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nlow/playlist.m3u8\n".getBytes(StandardCharsets.UTF_8));
+        storage.put(VIDEO_ID + "/manifest/low.m3u8",
             "#EXTM3U\n#EXTINF:10,\n000.ts\n".getBytes(StandardCharsets.UTF_8));
-        storage.put(VIDEO_ID + "/chunks/000.ts", "segment-000".getBytes(StandardCharsets.UTF_8));
+        storage.put(VIDEO_ID + "/processed/low/000.ts", "segment-000".getBytes(StandardCharsets.UTF_8));
     }
 
     @AfterEach
@@ -70,13 +72,13 @@ class StreamingServiceApplicationTest {
         assertEquals(HttpURLConnection.HTTP_OK, response.statusCode());
         String body = new String(response.body(), StandardCharsets.UTF_8);
         assertTrue(body.contains("#EXTM3U"));
-        assertTrue(body.contains("segment/000.ts"));
+        assertTrue(body.contains("variant/low/playlist.m3u8"));
     }
 
     @Test
-    void segmentReturnsContentWhenCompleted() throws Exception {
+    void variantPlaylistContainsPresignedUrls() throws Exception {
         HttpRequest request = HttpRequest.newBuilder()
-            .uri(URI.create("http://localhost:" + port + "/stream/" + VIDEO_ID + "/segment/000"))
+            .uri(URI.create("http://localhost:" + port + "/stream/" + VIDEO_ID + "/variant/low/playlist.m3u8"))
             .GET()
             .build();
 
@@ -84,7 +86,9 @@ class StreamingServiceApplicationTest {
 
         assertEquals(HttpURLConnection.HTTP_OK, response.statusCode());
         String body = new String(response.body(), StandardCharsets.UTF_8);
-        assertEquals("segment-000", body);
+        assertTrue(body.contains("#EXTM3U"));
+        assertTrue(body.contains("presigned://"), "Expected presigned URLs for segments");
+        assertTrue(body.contains(VIDEO_ID + "/processed/low/000.ts"));
     }
 
     @Test
@@ -132,12 +136,12 @@ class StreamingServiceApplicationTest {
     }
 
     @Test
-    void returns404WhenSegmentMissingFromStorage() throws Exception {
+    void returns404WhenVariantManifestMissingFromStorage() throws Exception {
         String videoId = "55555555-5555-5555-5555-555555555555";
         statuses.put(videoId, "COMPLETED");
 
         HttpRequest request = HttpRequest.newBuilder()
-            .uri(URI.create("http://localhost:" + port + "/stream/" + videoId + "/segment/999.ts"))
+            .uri(URI.create("http://localhost:" + port + "/stream/" + videoId + "/variant/low/playlist.m3u8"))
             .GET()
             .build();
 
@@ -201,6 +205,11 @@ class StreamingServiceApplicationTest {
         @Override
         public void ensureBucketExists() {
             // No-op for tests.
+        }
+
+        @Override
+        public String generatePresignedUrl(String key, long durationSeconds) {
+            return "presigned://" + key + "?duration=" + durationSeconds;
         }
     }
 }
