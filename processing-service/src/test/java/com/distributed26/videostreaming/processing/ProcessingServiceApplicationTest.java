@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
+import com.distributed26.videostreaming.processing.db.ProcessingUploadTaskRepository;
 import com.distributed26.videostreaming.processing.db.TranscodedSegmentStatusRepository;
 import com.distributed26.videostreaming.shared.jobs.Status;
 import com.distributed26.videostreaming.shared.upload.StatusEventBus;
@@ -26,6 +27,8 @@ class ProcessingServiceApplicationTest {
     private StatusEventBus bus;
     @Mock
     private TranscodedSegmentStatusRepository transcodeStatusRepository;
+    @Mock
+    private ProcessingUploadTaskRepository processingUploadTaskRepository;
 
     private BlockingQueue<TranscodingTask> taskQueue;
 
@@ -34,7 +37,10 @@ class ProcessingServiceApplicationTest {
         taskQueue = new LinkedBlockingQueue<>();
         ProcessingServiceApplication.resetState();
         setStaticField("transcodeStatusRepository", null);
+        setStaticField("processingUploadTaskRepository", null);
         setStaticField("statusBus", null);
+        setStaticField("transcodeTaskBusRef", null);
+        setStaticField("localUploadSpoolRoot", null);
     }
 
     // ── Task count ─────────────────────────────────────────────────────────────
@@ -200,6 +206,21 @@ class ProcessingServiceApplicationTest {
                         && t.getSegmentNumber() == 0
                         && t.getState() == TranscodeSegmentState.DONE
         ));
+    }
+
+    @Test
+    void openLocalUploadTask_isSkipped() {
+        setStaticField("processingUploadTaskRepository", processingUploadTaskRepository);
+        when(processingUploadTaskRepository.hasOpenTask("vid1", "low", 0)).thenReturn(true);
+        when(processingUploadTaskRepository.hasOpenTask("vid1", "medium", 0)).thenReturn(false);
+        when(processingUploadTaskRepository.hasOpenTask("vid1", "high", 0)).thenReturn(false);
+
+        sendChunks("vid1", "vid1/chunks/seg0.ts");
+
+        assertEquals(2, taskQueue.size(), "One profile should be skipped because a local upload task already exists");
+        verify(processingUploadTaskRepository).hasOpenTask("vid1", "low", 0);
+        verify(processingUploadTaskRepository).hasOpenTask("vid1", "medium", 0);
+        verify(processingUploadTaskRepository).hasOpenTask("vid1", "high", 0);
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────

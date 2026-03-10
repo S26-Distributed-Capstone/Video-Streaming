@@ -118,4 +118,5 @@ docker stack rm video
 - `upload-service` publishes both:
   - status events for UI/WebSocket updates
   - transcode task events for processing workers
-- `processing-service` consumes only the transcode task queue and publishes progress back onto the status event bus.
+- `processing-service` consumes only the transcode task queue, writes completed profile outputs into a local spool, and a same-node uploader pushes those files to object storage.
+- `processing-service` keeps its durable local-upload handoff in Postgres (`processing_upload_task`) and stores spool files under `PROCESSING_SPOOL_ROOT` (default `processing-spool/`).
