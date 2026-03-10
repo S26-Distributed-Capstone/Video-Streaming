@@ -51,12 +51,12 @@ public class RabbitMQStatusEventBus implements StatusEventBus {
             this.channel = connection.createChannel();
 
             channel.exchangeDeclare(this.exchange, BuiltinExchangeType.TOPIC, true);
-            this.consumerQueueName = declareConsumerQueue(config);
-            channel.queueBind(this.consumerQueueName, this.exchange, config.statusBinding());
-
             if (consumeStatus) {
+                this.consumerQueueName = declareConsumerQueue(config);
+                channel.queueBind(this.consumerQueueName, this.exchange, config.statusBinding());
                 startConsumer(this.consumerQueueName);
             } else {
+                this.consumerQueueName = null;
                 LOGGER.info("Status event consumer disabled for {}", this.exchange);
             }
         } catch (IOException | TimeoutException e) {
