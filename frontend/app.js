@@ -659,7 +659,6 @@ function uploadFile({ preserveLog, isRetry } = {}) {
   }
 
   const baseUrl = resolveBaseUrl();
-  console.log("base url", baseUrl);
   const uploadUrl = `${baseUrl}/upload`;
 
   uploadBtn.disabled = true;
