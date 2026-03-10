@@ -1,5 +1,7 @@
 package com.distributed26.videostreaming.processing;
 
+import com.distributed26.videostreaming.processing.TranscodingTask.CompletedTranscode;
+import com.distributed26.videostreaming.processing.db.ProcessingUploadTaskRepository;
 import com.distributed26.videostreaming.processing.db.TranscodedSegmentStatusRepository;
 import com.distributed26.videostreaming.processing.db.VideoProcessingRepository;
 import com.distributed26.videostreaming.shared.config.StorageConfig;
@@ -22,6 +24,8 @@ import io.github.cdimascio.dotenv.Dotenv;
 import io.javalin.Javalin;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -58,9 +62,13 @@ public class ProcessingServiceApplication {
     private static final Set<String> MANIFESTS_IN_FLIGHT = ConcurrentHashMap.newKeySet();
     private static volatile TranscodedSegmentStatusRepository transcodeStatusRepository;
     private static volatile VideoProcessingRepository videoProcessingRepository;
+    private static volatile ProcessingUploadTaskRepository processingUploadTaskRepository;
     private static volatile StatusEventBus statusBus;
+    private static volatile TranscodeTaskBus transcodeTaskBusRef;
     private static volatile AbrManifestService manifestServiceRef;
     private static volatile ExecutorService manifestExecutorRef;
+    private static volatile ExecutorService uploadExecutorRef;
+    private static volatile Path localUploadSpoolRoot;
 
     static final TranscodingProfile[] PROFILES = {
         TranscodingProfile.LOW,
@@ -87,6 +95,7 @@ public class ProcessingServiceApplication {
         StatusEventBus statusEventBus = RabbitMQStatusEventBus.fromEnv();
         TranscodeTaskBus transcodeTaskBus = RabbitMQTranscodeTaskBus.fromEnv();
         statusBus = statusEventBus;
+        transcodeTaskBusRef = transcodeTaskBus;
         AbrManifestService manifestService = new AbrManifestService(
                 storageClient,
                 Integer.parseInt(getEnvOrDotenv(dotenv, "ABR_MANIFEST_WAIT_SECONDS", "120"))
@@ -103,11 +112,34 @@ public class ProcessingServiceApplication {
         int poolSize = Integer.parseInt(getEnvOrDotenv(dotenv, "WORKER_POOL_SIZE", "4"));
         transcodeStatusRepository = createTranscodeStatusRepository();
         videoProcessingRepository = createVideoProcessingRepository();
+        processingUploadTaskRepository = createProcessingUploadTaskRepository();
+        localUploadSpoolRoot = initializeSpoolRoot(getEnvOrDotenv(dotenv, "PROCESSING_SPOOL_ROOT", "processing-spool"));
         List<Worker> workers = createWorkers(poolSize);
         Map<Thread, Worker> workersByThread = new ConcurrentHashMap<>();
         ThreadPoolExecutor taskExecutor = createTaskExecutor(poolSize, workers, workersByThread);
         taskExecutor.prestartAllCoreThreads();
         LOGGER.info("Started {} transcoding worker(s)", poolSize);
+
+        if (processingUploadTaskRepository == null) {
+            throw new IllegalStateException("Processing upload queue requires Postgres configuration");
+        }
+        if (localUploadSpoolRoot == null) {
+            throw new IllegalStateException("Processing upload spool could not be initialized");
+        }
+        int resetUploads = processingUploadTaskRepository.resetUploadingTasks();
+        if (resetUploads > 0) {
+            LOGGER.info("Reset {} local upload task(s) from UPLOADING to PENDING during startup", resetUploads);
+        }
+        int uploadWorkerCount = Integer.parseInt(getEnvOrDotenv(dotenv, "LOCAL_UPLOAD_WORKER_COUNT", "2"));
+        long uploadPollMillis = Long.parseLong(getEnvOrDotenv(dotenv, "LOCAL_UPLOAD_POLL_MILLIS", "500"));
+        long uploadClaimTimeoutMillis = Long.parseLong(getEnvOrDotenv(dotenv, "LOCAL_UPLOAD_CLAIM_TIMEOUT_MILLIS", "60000"));
+        ExecutorService uploadExecutor = startUploadWorkers(
+                uploadWorkerCount,
+                uploadPollMillis,
+                uploadClaimTimeoutMillis,
+                storageClient
+        );
+        uploadExecutorRef = uploadExecutor;
 
         transcodeTaskBus.subscribe(ev -> submitTranscodeTask(ev, taskExecutor, storageClient, workersByThread));
         statusEventBus.subscribeAll(ev -> onStatusEvent(ev, manifestService, manifestExecutor));
@@ -125,6 +157,11 @@ public class ProcessingServiceApplication {
             manifestExecutor.shutdownNow();
             manifestExecutorRef = null;
             manifestServiceRef = null;
+            if (uploadExecutorRef != null) {
+                uploadExecutorRef.shutdownNow();
+                uploadExecutorRef = null;
+            }
+            transcodeTaskBusRef = null;
             try { transcodeTaskBus.close(); } catch (Exception e) { LOGGER.warn("Error closing transcode task bus", e); }
             try { statusEventBus.close(); } catch (Exception e) { LOGGER.warn("Error closing status event bus", e); }
         }));
@@ -226,10 +263,15 @@ public class ProcessingServiceApplication {
         if (segmentNumber < 0) {
             segmentNumber = parseSegmentNumber(chunkKey);
         }
-        if (isAlreadyTranscoded(videoId, profile.getName(), segmentNumber)) {
-            LOGGER.info("Skipping already transcoded segment videoId={} profile={} segment={}",
+        if (isAlreadyDone(videoId, profile.getName(), segmentNumber)) {
+            LOGGER.info("Skipping already uploaded segment videoId={} profile={} segment={}",
                     videoId, profile.getName(), segmentNumber);
             publishTranscodeState(videoId, profile.getName(), segmentNumber, TranscodeSegmentState.DONE);
+            return null;
+        }
+        if (hasOpenLocalUploadTask(videoId, profile.getName(), segmentNumber)) {
+            LOGGER.info("Skipping segment with existing local upload task videoId={} profile={} segment={}",
+                    videoId, profile.getName(), segmentNumber);
             return null;
         }
         publishTranscodeState(videoId, profile.getName(), segmentNumber, TranscodeSegmentState.QUEUED);
@@ -256,16 +298,20 @@ public class ProcessingServiceApplication {
         }
         List<String> videoIds;
         try {
-            videoIds = videoProcessingRepository.findVideoIdsByStatus("PROCESSING");
+            Set<String> recoverableVideoIds = new HashSet<>(videoProcessingRepository.findVideoIdsByStatus("PROCESSING"));
+            if (processingUploadTaskRepository != null) {
+                recoverableVideoIds.addAll(processingUploadTaskRepository.findVideoIdsWithOpenTasks());
+            }
+            videoIds = new ArrayList<>(recoverableVideoIds);
         } catch (Exception e) {
-            LOGGER.warn("Startup recovery failed to load PROCESSING videos", e);
+            LOGGER.warn("Startup recovery failed to load recoverable videos", e);
             return;
         }
         if (videoIds.isEmpty()) {
-            LOGGER.info("Startup recovery found no PROCESSING videos");
+            LOGGER.info("Startup recovery found no recoverable videos");
             return;
         }
-        LOGGER.info("Startup recovery inspecting {} PROCESSING video(s)", videoIds.size());
+        LOGGER.info("Startup recovery inspecting {} recoverable video(s)", videoIds.size());
         for (String videoId : videoIds) {
             recoverVideo(videoId, storageClient, transcodeTaskBus, manifestService, manifestExecutor);
         }
@@ -287,6 +333,7 @@ public class ProcessingServiceApplication {
 
             int totalSegments = Math.max(findTotalSegments(videoId), chunkKeys.size());
             Map<String, Set<Integer>> doneSegmentsByProfile = loadDoneSegmentsByProfile(videoId);
+            Map<String, Set<Integer>> openUploadSegmentsByProfile = loadOpenUploadSegmentsByProfile(videoId);
             int republished = 0;
             Set<String> touchedProfiles = new HashSet<>();
 
@@ -300,7 +347,8 @@ public class ProcessingServiceApplication {
                 }
                 for (TranscodingProfile profile : PROFILES) {
                     Set<Integer> doneSegments = doneSegmentsByProfile.getOrDefault(profile.getName(), Set.of());
-                    if (doneSegments.contains(segmentNumber)) {
+                    Set<Integer> openSegments = openUploadSegmentsByProfile.getOrDefault(profile.getName(), Set.of());
+                    if (doneSegments.contains(segmentNumber) || openSegments.contains(segmentNumber)) {
                         continue;
                     }
                     transcodeTaskBus.publish(new TranscodeTaskEvent(
@@ -360,6 +408,25 @@ public class ProcessingServiceApplication {
             }
         }
         return doneSegmentsByProfile;
+    }
+
+    private static Map<String, Set<Integer>> loadOpenUploadSegmentsByProfile(String videoId) {
+        Map<String, Set<Integer>> openSegmentsByProfile = new HashMap<>();
+        if (processingUploadTaskRepository == null) {
+            return openSegmentsByProfile;
+        }
+        for (TranscodingProfile profile : PROFILES) {
+            try {
+                openSegmentsByProfile.put(
+                        profile.getName(),
+                        processingUploadTaskRepository.findOpenSegmentNumbers(videoId, profile.getName())
+                );
+            } catch (Exception e) {
+                LOGGER.warn("Startup recovery failed to load local upload tasks videoId={} profile={}",
+                        videoId, profile.getName(), e);
+            }
+        }
+        return openSegmentsByProfile;
     }
 
     private static String getEnvOrDotenv(Dotenv dotenv, String key, String defaultValue) {
@@ -467,9 +534,25 @@ public class ProcessingServiceApplication {
                 task.getProfile().getName());
         emitState(task, TranscodeSegmentState.TRANSCODING);
         try {
-            task.execute(storageClient, () -> emitState(task, TranscodeSegmentState.UPLOADING));
+            CompletedTranscode completed = task.transcodeToSpool(storageClient, localUploadSpoolRoot);
+            if (completed == null) {
+                task.setStatus(Status.SUCCEEDED);
+                emitState(task, TranscodeSegmentState.DONE);
+                LOGGER.info("Task {} skipped because output already exists", task.getId());
+                return true;
+            }
+            processingUploadTaskRepository.upsertPending(
+                    task.getJobId(),
+                    task.getProfile().getName(),
+                    parseSegmentNumber(task.getChunkKey()),
+                    task.getChunkKey(),
+                    completed.outputKey(),
+                    completed.localPath().toString(),
+                    completed.sizeBytes(),
+                    completed.outputTsOffsetSeconds()
+            );
+            emitState(task, TranscodeSegmentState.TRANSCODED);
             task.setStatus(Status.SUCCEEDED);
-            emitState(task, TranscodeSegmentState.DONE);
             LOGGER.info("Task {} succeeded", task.getId());
             return true;
         } catch (Exception e) {
@@ -542,6 +625,9 @@ public class ProcessingServiceApplication {
             manifestExecutor.execute(() -> {
                 try {
                     manifestService.generateIfNeeded(videoId, totalSegments);
+                    if (videoProcessingRepository != null) {
+                        videoProcessingRepository.updateStatus(videoId, "COMPLETED");
+                    }
                 } catch (Exception e) {
                     LOGGER.error("Manifest generation failed for videoId={}", videoId, e);
                 } finally {
@@ -632,14 +718,28 @@ public class ProcessingServiceApplication {
         return null;
     }
 
-    private static boolean isAlreadyTranscoded(String videoId, String profile, int segmentNumber) {
-        if (transcodeStatusRepository == null || segmentNumber < 0) {
+    private static boolean isAlreadyDone(String videoId, String profile, int segmentNumber) {
+        if (segmentNumber < 0) {
             return false;
         }
         try {
-            return transcodeStatusRepository.hasState(videoId, profile, segmentNumber, TranscodeSegmentState.DONE);
+            return transcodeStatusRepository != null
+                    && transcodeStatusRepository.hasState(videoId, profile, segmentNumber, TranscodeSegmentState.DONE);
         } catch (Exception e) {
             LOGGER.warn("Failed transcode-state lookup videoId={} profile={} segment={}",
+                    videoId, profile, segmentNumber, e);
+            return false;
+        }
+    }
+
+    private static boolean hasOpenLocalUploadTask(String videoId, String profile, int segmentNumber) {
+        if (segmentNumber < 0 || processingUploadTaskRepository == null) {
+            return false;
+        }
+        try {
+            return processingUploadTaskRepository.hasOpenTask(videoId, profile, segmentNumber);
+        } catch (Exception e) {
+            LOGGER.warn("Failed local upload-task lookup videoId={} profile={} segment={}",
                     videoId, profile, segmentNumber, e);
             return false;
         }
@@ -661,5 +761,137 @@ public class ProcessingServiceApplication {
             LOGGER.warn("Postgres not configured; video metadata lookups disabled: {}", e.getMessage());
             return null;
         }
+    }
+
+    private static ProcessingUploadTaskRepository createProcessingUploadTaskRepository() {
+        try {
+            return ProcessingUploadTaskRepository.fromEnv();
+        } catch (IllegalStateException e) {
+            LOGGER.warn("Postgres not configured; local upload queue disabled: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    private static Path initializeSpoolRoot(String rawPath) {
+        try {
+            Path path = Path.of(rawPath).toAbsolutePath().normalize();
+            Files.createDirectories(path);
+            LOGGER.info("Local processing upload spool ready: {}", path);
+            return path;
+        } catch (Exception e) {
+            LOGGER.warn("Failed to initialize local processing upload spool '{}'",
+                    rawPath, e);
+            return null;
+        }
+    }
+
+    private static ExecutorService startUploadWorkers(
+            int uploadWorkerCount,
+            long uploadPollMillis,
+            long uploadClaimTimeoutMillis,
+            ObjectStorageClient storageClient
+    ) {
+        ExecutorService executor = Executors.newFixedThreadPool(
+                Math.max(1, uploadWorkerCount),
+                new ThreadFactory() {
+                    private int index = 0;
+
+                    @Override
+                    public synchronized Thread newThread(Runnable runnable) {
+                        Thread thread = new Thread(runnable, "processing-uploader-" + index);
+                        index += 1;
+                        return thread;
+                    }
+                }
+        );
+        for (int i = 0; i < Math.max(1, uploadWorkerCount); i++) {
+            final int uploaderIndex = i;
+            executor.execute(() -> runUploadLoop(
+                    "processing-uploader-" + uploaderIndex,
+                    uploadPollMillis,
+                    uploadClaimTimeoutMillis,
+                    storageClient
+            ));
+        }
+        LOGGER.info("Started {} local upload worker(s)", Math.max(1, uploadWorkerCount));
+        return executor;
+    }
+
+    private static void runUploadLoop(
+            String uploaderId,
+            long uploadPollMillis,
+            long uploadClaimTimeoutMillis,
+            ObjectStorageClient storageClient
+    ) {
+        while (!Thread.currentThread().isInterrupted()) {
+            try {
+                if (processingUploadTaskRepository == null) {
+                    return;
+                }
+                var task = processingUploadTaskRepository.claimNextReady(uploaderId, uploadClaimTimeoutMillis);
+                if (task.isEmpty()) {
+                    Thread.sleep(Math.max(50L, uploadPollMillis));
+                    continue;
+                }
+                uploadSpoolTask(task.get(), storageClient);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            } catch (Exception e) {
+                LOGGER.error("Local upload worker {} failed in polling loop", uploaderId, e);
+                try {
+                    Thread.sleep(Math.max(250L, uploadPollMillis));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }
+    }
+
+    private static void uploadSpoolTask(LocalSpoolUploadTask task, ObjectStorageClient storageClient) {
+        Path spoolPath = Path.of(task.spoolPath());
+        try {
+            if (storageClient.fileExists(task.outputKey())) {
+                LOGGER.info("Local upload task {} already present in object storage, cleaning up spool", task.id());
+                completeUploadTask(task, spoolPath);
+                return;
+            }
+            if (!Files.exists(spoolPath)) {
+                LOGGER.warn("Local spool file missing for upload task {} path={}, requeueing transcode",
+                        task.id(), spoolPath);
+                processingUploadTaskRepository.deleteById(task.id());
+                publishTranscodeState(task.videoId(), task.profile(), task.segmentNumber(), TranscodeSegmentState.FAILED);
+                if (transcodeTaskBusRef != null) {
+                    transcodeTaskBusRef.publish(new TranscodeTaskEvent(
+                            task.videoId(),
+                            task.chunkKey(),
+                            task.profile(),
+                            task.segmentNumber(),
+                            task.outputTsOffsetSeconds()
+                    ));
+                }
+                return;
+            }
+            publishTranscodeState(task.videoId(), task.profile(), task.segmentNumber(), TranscodeSegmentState.UPLOADING);
+            try (InputStream is = Files.newInputStream(spoolPath)) {
+                storageClient.uploadFile(task.outputKey(), is, task.sizeBytes());
+            }
+            completeUploadTask(task, spoolPath);
+        } catch (Exception e) {
+            LOGGER.warn("Failed local upload task {} videoId={} profile={} segment={} attempt={}",
+                    task.id(), task.videoId(), task.profile(), task.segmentNumber(), task.attemptCount(), e);
+            processingUploadTaskRepository.markPending(task.id());
+        }
+    }
+
+    private static void completeUploadTask(LocalSpoolUploadTask task, Path spoolPath) {
+        try {
+            Files.deleteIfExists(spoolPath);
+        } catch (Exception e) {
+            LOGGER.warn("Failed to delete local spool file after upload task {} path={}", task.id(), spoolPath, e);
+        }
+        processingUploadTaskRepository.deleteById(task.id());
+        publishTranscodeState(task.videoId(), task.profile(), task.segmentNumber(), TranscodeSegmentState.DONE);
     }
 }

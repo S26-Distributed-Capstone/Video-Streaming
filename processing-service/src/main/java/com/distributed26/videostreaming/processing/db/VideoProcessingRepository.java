@@ -67,4 +67,16 @@ public class VideoProcessingRepository {
             throw new RuntimeException("Failed to query video_upload by status", e);
         }
     }
+
+    public void updateStatus(String videoId, String status) {
+        String sql = "UPDATE video_upload SET status = ? WHERE video_id = ?";
+        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, status);
+            ps.setObject(2, UUID.fromString(videoId));
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to update video_upload status", e);
+        }
+    }
 }

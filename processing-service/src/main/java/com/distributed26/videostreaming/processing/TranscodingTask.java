@@ -122,51 +122,8 @@ public class TranscodingTask extends Task {
         Path outputTemp = Files.createTempFile("transcode-out-", ".ts");
 
         try {
-            LOGGER.info("Downloading source chunk: {}", chunkKey);
-            downloadChunkWithRetry(storageClient, inputTemp);
-
-            LOGGER.info("Transcoding chunk={} profile={}", chunkKey, profile.getName());
-            // Use CRF for quality-based encoding with a hard maxrate ceiling.
-            // -b:v alone is only an average target and libx264 can freely exceed it,
-            // causing the HIGH profile to inflate the file size above the source.
-            // -maxrate/-bufsize enforce the VBV ceiling; -crf avoids wasting bits on
-            // simple scenes that would otherwise be padded up to the ABR target.
-            String maxrate = profile.getBitrate() + ""; // bps string for ffmpeg
-            String bufsize = (profile.getBitrate() * 2) + "";
-            int segmentNumber = extractSegmentNumber(chunkKey);
-            double effectiveOutputTsOffsetSeconds = outputTsOffsetSeconds >= 0d
-                    ? outputTsOffsetSeconds
-                    : segmentNumber >= 0
-                    ? (double) segmentNumber * Math.max(1, CHUNK_DURATION_SECONDS)
-                    : 0d;
-            FFmpegBuilder builder = new FFmpegBuilder()
-                    .setInput(inputTemp.toString())
-                    .addOutput(outputTemp.toString())
-                    .setFormat("mpegts")
-                        // Keep a continuous media timeline across independently transcoded segments.
-                        .addExtraArgs("-output_ts_offset", String.format(java.util.Locale.US, "%.3f", effectiveOutputTsOffsetSeconds))
-                        .addExtraArgs("-vf", "scale=-2:" + profile.getVerticalResolution())
-                        .addExtraArgs("-c:v", "libx264")
-                        .addExtraArgs("-preset", FFMPEG_PRESET)
-                        .addExtraArgs("-crf", "23")
-                        .addExtraArgs("-pix_fmt", "yuv420p")
-                        .addExtraArgs("-maxrate", maxrate)
-                        .addExtraArgs("-bufsize", bufsize)
-                        .addExtraArgs("-x264-params", "scenecut=0:open_gop=0")
-                        .addExtraArgs("-threads", String.valueOf(FFMPEG_THREADS))
-                        // Re-encode audio with async resampling so each chunk has stable audio timing.
-                        .addExtraArgs("-c:a", "aac")
-                        .addExtraArgs("-b:a", "128k")
-                        .addExtraArgs("-ac", "2")
-                        .addExtraArgs("-ar", "48000")
-                        .addExtraArgs("-af", "aresample=async=1:first_pts=0")
-                        .addExtraArgs("-muxpreload", "0")
-                        .addExtraArgs("-muxdelay", "0")
-                        .done();
-
-            new FFmpegExecutor(FfmpegHolder.FFMPEG, FfmpegHolder.FFPROBE).createJob(builder).run();
-
-            long size = Files.size(outputTemp);
+            CompletedTranscode completed = transcodeInternal(storageClient, inputTemp, outputTemp);
+            long size = completed.sizeBytes();
             if (beforeUpload != null) {
                 beforeUpload.run();
             }
@@ -180,6 +137,95 @@ public class TranscodingTask extends Task {
             Files.deleteIfExists(inputTemp);
             Files.deleteIfExists(outputTemp);
         }
+    }
+
+    public CompletedTranscode transcodeToSpool(ObjectStorageClient storageClient, Path spoolRoot) throws IOException {
+        if (storageClient.fileExists(outputKey)) {
+            LOGGER.info("Output already exists in object storage, skipping local spool: {}", outputKey);
+            return null;
+        }
+
+        Path inputTemp = Files.createTempFile("transcode-in-", ".ts");
+        Path outputTemp = Files.createTempFile("transcode-out-", ".ts");
+
+        try {
+            CompletedTranscode completed = transcodeInternal(storageClient, inputTemp, outputTemp);
+            Path finalPath = spoolPath(spoolRoot);
+            Files.createDirectories(finalPath.getParent());
+            Path partialPath = finalPath.resolveSibling(finalPath.getFileName() + ".part");
+            Files.copy(outputTemp, partialPath, StandardCopyOption.REPLACE_EXISTING);
+            Files.move(partialPath, finalPath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            long size = Files.size(finalPath);
+            return new CompletedTranscode(finalPath, outputKey, size, completed.outputTsOffsetSeconds());
+        } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+            Path finalPath = spoolPath(spoolRoot);
+            Files.createDirectories(finalPath.getParent());
+            Files.copy(outputTemp, finalPath, StandardCopyOption.REPLACE_EXISTING);
+            long size = Files.size(finalPath);
+            return new CompletedTranscode(finalPath, outputKey, size, extractEffectiveOffsetSeconds());
+        } finally {
+            Files.deleteIfExists(inputTemp);
+            Files.deleteIfExists(outputTemp);
+        }
+    }
+
+    public Path spoolPath(Path spoolRoot) {
+        String fileName = outputKey.substring(outputKey.lastIndexOf('/') + 1);
+        return spoolRoot
+                .resolve(getJobId())
+                .resolve(profile.getName())
+                .resolve(fileName);
+    }
+
+    private CompletedTranscode transcodeInternal(
+            ObjectStorageClient storageClient,
+            Path inputTemp,
+            Path outputTemp
+    ) throws IOException {
+        LOGGER.info("Downloading source chunk: {}", chunkKey);
+        downloadChunkWithRetry(storageClient, inputTemp);
+
+        LOGGER.info("Transcoding chunk={} profile={}", chunkKey, profile.getName());
+        String maxrate = profile.getBitrate() + "";
+        String bufsize = (profile.getBitrate() * 2) + "";
+        double effectiveOutputTsOffsetSeconds = extractEffectiveOffsetSeconds();
+        FFmpegBuilder builder = new FFmpegBuilder()
+                .setInput(inputTemp.toString())
+                .addOutput(outputTemp.toString())
+                .setFormat("mpegts")
+                    .addExtraArgs("-output_ts_offset", String.format(java.util.Locale.US, "%.3f", effectiveOutputTsOffsetSeconds))
+                    .addExtraArgs("-vf", "scale=-2:" + profile.getVerticalResolution())
+                    .addExtraArgs("-c:v", "libx264")
+                    .addExtraArgs("-preset", FFMPEG_PRESET)
+                    .addExtraArgs("-crf", "23")
+                    .addExtraArgs("-pix_fmt", "yuv420p")
+                    .addExtraArgs("-maxrate", maxrate)
+                    .addExtraArgs("-bufsize", bufsize)
+                    .addExtraArgs("-x264-params", "scenecut=0:open_gop=0")
+                    .addExtraArgs("-threads", String.valueOf(FFMPEG_THREADS))
+                    .addExtraArgs("-c:a", "aac")
+                    .addExtraArgs("-b:a", "128k")
+                    .addExtraArgs("-ac", "2")
+                    .addExtraArgs("-ar", "48000")
+                    .addExtraArgs("-af", "aresample=async=1:first_pts=0")
+                    .addExtraArgs("-muxpreload", "0")
+                    .addExtraArgs("-muxdelay", "0")
+                    .done();
+
+        new FFmpegExecutor(FfmpegHolder.FFMPEG, FfmpegHolder.FFPROBE).createJob(builder).run();
+        return new CompletedTranscode(outputTemp, outputKey, Files.size(outputTemp), effectiveOutputTsOffsetSeconds);
+    }
+
+    private double extractEffectiveOffsetSeconds() {
+        int segmentNumber = extractSegmentNumber(chunkKey);
+        return outputTsOffsetSeconds >= 0d
+                ? outputTsOffsetSeconds
+                : segmentNumber >= 0
+                ? (double) segmentNumber * Math.max(1, CHUNK_DURATION_SECONDS)
+                : 0d;
+    }
+
+    record CompletedTranscode(Path localPath, String outputKey, long sizeBytes, double outputTsOffsetSeconds) {
     }
 
     private void downloadChunkWithRetry(ObjectStorageClient storageClient, Path inputTemp) throws IOException {

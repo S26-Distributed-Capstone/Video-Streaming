@@ -406,11 +406,9 @@ public class UploadHandler {
             int totalChunks = uploadedFiles.size();
             long duration = System.currentTimeMillis() - startTime;
             logger.info("Successfully segmented and uploaded video: {}. Uploaded {} chunks (including playlist). Total time: {} ms", videoId, totalChunks, duration);
-            if (videoUploadRepository != null) {
-                videoUploadRepository.updateStatus(videoId, "COMPLETED");
-            }
 
-            // Here you would typically update a database status to "COMPLETED"
+            // The video remains PROCESSING until processing-service uploads every profile
+            // segment and successfully writes the manifests.
 
         } catch (Exception e) {
             logger.error("Upload/Processing failed for video: " + videoId, e);

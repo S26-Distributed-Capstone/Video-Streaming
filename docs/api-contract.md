@@ -54,14 +54,14 @@ Provide a clear, shared reference for client interactions. Once merged, any chan
 			}
 			```
 	- `transcode_progress`
-		- emitted by `processing-service` as each `(segment, profile)` task is queued / completes / fails
+		- emitted by `processing-service` as each `(segment, profile)` task is queued, transcoded locally, uploaded, completed, or failed
 		- example:
 			```json
 			{
 				"jobId": "<uuid>",
 				"profile": "high",
 				"segmentNumber": 7,
-				"state": "QUEUED | TRANSCODING | UPLOADING | DONE | FAILED",
+				"state": "QUEUED | TRANSCODING | TRANSCODED | UPLOADING | DONE | FAILED",
 				"doneSegments": 5,
 				"totalSegments": 12,
 				"type": "transcode_progress"
