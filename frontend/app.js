@@ -781,7 +781,7 @@ async function fetchUploadInfo(baseUrl, videoId, uploadStatusUrl) {
 }
 
 function uploadFile({ preserveLog, isRetry } = {}) {
-  if (uploadInFlight || uploadBtn.disabled) {
+  if (uploadInFlight || (uploadBtn.disabled && !isRetry)) {
     return;
   }
   console.log("[upload-ui] uploadFile", { isRetry, preserveLog });

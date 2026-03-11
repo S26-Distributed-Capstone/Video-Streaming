@@ -5,8 +5,12 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.UUID;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 public class ProcessingTaskClaimRepository {
+    private static final Logger LOGGER = LogManager.getLogger(ProcessingTaskClaimRepository.class);
+
     private final String jdbcUrl;
     private final String username;
     private final String password;
@@ -31,7 +35,7 @@ public class ProcessingTaskClaimRepository {
         return new ProcessingTaskClaimRepository(url, user, pass);
     }
 
-    public void claim(String videoId, String profile, int segmentNumber, String stage, String claimedBy) {
+    public boolean claim(String videoId, String profile, int segmentNumber, String stage, String claimedBy) {
         String sql = """
             INSERT INTO processing_task_claim (
                 video_id,
@@ -55,12 +59,15 @@ public class ProcessingTaskClaimRepository {
             ps.setString(4, stage);
             ps.setString(5, claimedBy);
             ps.executeUpdate();
-        } catch (SQLException e) {
-            throw new RuntimeException("Failed to claim processing_task_claim", e);
+            return true;
+        } catch (SQLException | RuntimeException e) {
+            LOGGER.warn("Failed to claim processing_task_claim videoId={} profile={} segment={} stage={} claimedBy={}",
+                    videoId, profile, segmentNumber, stage, claimedBy, e);
+            return false;
         }
     }
 
-    public void release(String videoId, String profile, int segmentNumber) {
+    public boolean release(String videoId, String profile, int segmentNumber) {
         String sql = """
             DELETE FROM processing_task_claim
             WHERE video_id = ? AND profile = ? AND segment_number = ?
@@ -71,8 +78,11 @@ public class ProcessingTaskClaimRepository {
             ps.setString(2, profile);
             ps.setInt(3, segmentNumber);
             ps.executeUpdate();
-        } catch (SQLException e) {
-            throw new RuntimeException("Failed to release processing_task_claim", e);
+            return true;
+        } catch (SQLException | RuntimeException e) {
+            LOGGER.warn("Failed to release processing_task_claim videoId={} profile={} segment={}",
+                    videoId, profile, segmentNumber, e);
+            return false;
         }
     }
 }

@@ -137,15 +137,20 @@ def get_container_id(event):
 def derive_service_name(name_or_prefix: str):
     if not name_or_prefix:
         return None
-    first_prefix = next((part.strip() for part in name_or_prefix.split(",") if part.strip()), "")
-    if not first_prefix:
-        return None
-    normalized = first_prefix.lower().replace("_", "-")
-    for suffix in ("-service", "-container"):
-        if normalized.endswith(suffix):
-            normalized = normalized[: -len(suffix)]
-            break
-    return normalized or None
+    parts = [part.strip() for part in name_or_prefix.split(",") if part.strip()]
+    for part in parts:
+        normalized = part.lower().replace("_", "-")
+        if "processing-service" in normalized:
+            return "processing"
+        if "upload-service" in normalized:
+            return "upload"
+        for suffix in ("-service", "-container"):
+            if normalized.endswith(suffix):
+                normalized = normalized[: -len(suffix)]
+                break
+        if normalized:
+            return normalized
+    return None
 
 
 def resolve_failure_reason(configured_reason: str, name_prefix: str):
