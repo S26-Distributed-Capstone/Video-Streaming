@@ -1,6 +1,11 @@
 const fileInput = document.getElementById("fileInput");
+const fileNameLabel = document.getElementById("fileNameLabel");
 const videoNameInput = document.getElementById("videoName");
 const uploadBtn = document.getElementById("uploadBtn");
+const uploadTabBtn = document.getElementById("uploadTabBtn");
+const streamTabBtn = document.getElementById("streamTabBtn");
+const uploadTab = document.getElementById("uploadTab");
+const streamTab = document.getElementById("streamTab");
 const responseBox = document.getElementById("responseBox");
 const infoBox = document.getElementById("infoBox");
 const wsUrlLabel = document.getElementById("wsUrl");
@@ -45,7 +50,10 @@ let retryTimerId = null;
 let retryCountdownId = null;
 const RETRY_TOTAL_SECONDS = 10;
 const RETRY_INTERVAL_MS = 1000;
-let retrySecondsLeft = 0;
+let retryDeadlineMs = 0;
+let retryServiceLabel = "Upload Service";
+let retryMode = "upload";
+let progressRefreshTimerId = null;
 let hlsInstance = null;
 let selectedVideoId = null;
 const transcodeProfiles = {
@@ -53,6 +61,31 @@ const transcodeProfiles = {
   medium: { done: 0, transcoding: 0, uploading: 0, failed: 0, segments: new Map() },
   high: { done: 0, transcoding: 0, uploading: 0, failed: 0, segments: new Map() }
 };
+
+function setPlayerVisible(visible) {
+  if (!player) {
+    return;
+  }
+  player.classList.toggle("hidden", !visible);
+}
+
+function setActiveTab(tab) {
+  const isUpload = tab === "upload";
+  if (uploadTab) {
+    uploadTab.classList.toggle("hidden", !isUpload);
+  }
+  if (streamTab) {
+    streamTab.classList.toggle("hidden", isUpload);
+  }
+  if (uploadTabBtn) {
+    uploadTabBtn.classList.toggle("active", isUpload);
+    uploadTabBtn.setAttribute("aria-selected", String(isUpload));
+  }
+  if (streamTabBtn) {
+    streamTabBtn.classList.toggle("active", !isUpload);
+    streamTabBtn.setAttribute("aria-selected", String(!isUpload));
+  }
+}
 
 function clearRetryTimers() {
   if (retryTimerId) {
@@ -65,48 +98,141 @@ function clearRetryTimers() {
   }
 }
 
+function clearRetryTimeout() {
+  if (retryTimerId) {
+    clearTimeout(retryTimerId);
+    retryTimerId = null;
+  }
+}
+
+function clearRetryCountdown() {
+  if (retryCountdownId) {
+    clearInterval(retryCountdownId);
+    retryCountdownId = null;
+  }
+}
+
+function clearProgressRefreshTimer() {
+  if (progressRefreshTimerId) {
+    clearTimeout(progressRefreshTimerId);
+    progressRefreshTimerId = null;
+  }
+}
+
+function inferRetryServiceLabel(reason, fallback = "Upload Service") {
+  const normalized = `${reason || ""}`.toLowerCase();
+  if (
+    normalized.includes("processing") ||
+    normalized.includes("transcode") ||
+    normalized.includes("manifest")
+  ) {
+    return "Processing Service";
+  }
+  return fallback;
+}
+
+function deriveProcessingHealthUrl(baseUrl) {
+  const scheme = baseUrl.startsWith("https://") ? "https" : "http";
+  const host = baseUrl.replace(/^https?:\/\//, "").replace(/:\d+$/, "");
+  return `${scheme}://${host}:8082/health`;
+}
+
+function failRetryWindow() {
+  retryInFlight = false;
+  retryDeadlineMs = 0;
+  retryServiceLabel = "Upload Service";
+  retryMode = "upload";
+  processingComplete = true;
+  failureTerminal = true;
+  uploadInFlight = false;
+  uploadBtn.disabled = false;
+  clearRetryTimers();
+  if (doneMessage) {
+    setDoneMessage("Upload failed.", { success: false });
+  }
+}
+
 function updateRetryCountdown() {
   if (!doneMessage) {
     return;
   }
-  const start = Date.now();
-  const targetSeconds = retrySecondsLeft;
-  const initialSeconds = Math.max(1, targetSeconds);
-  setDoneMessage(`Retrying... ${initialSeconds}s`, { success: false });
-  if (retryCountdownId) {
-    clearInterval(retryCountdownId);
-  }
-  retryCountdownId = setInterval(() => {
-    const elapsed = Date.now() - start;
-    const remaining = Math.max(1, targetSeconds - Math.floor(elapsed / 1000));
-    setDoneMessage(`Retrying... ${remaining}s`, { success: false });
-    if (remaining <= 1) {
-      clearInterval(retryCountdownId);
-      retryCountdownId = null;
+  const renderCountdown = () => {
+    const remainingMs = retryDeadlineMs - Date.now();
+    const remaining = Math.max(0, Math.ceil(remainingMs / 1000));
+    const actionLabel = retryMode === "processing_recovery" ? "Waiting for recovery for" : "Retrying for";
+    setDoneMessage(`${retryServiceLabel} failed. ${actionLabel} ${remaining}s`, { success: false });
+    if (remaining <= 0) {
+      failRetryWindow();
     }
-  }, 250);
+  };
+  renderCountdown();
+  clearRetryCountdown();
+  retryCountdownId = setInterval(renderCountdown, 250);
 }
 
-function scheduleRetry(reason) {
-  if (retrySecondsLeft <= 0) {
-    retrySecondsLeft = RETRY_TOTAL_SECONDS;
+function scheduleRetry(reason, serviceLabel = retryServiceLabel) {
+  retryMode = "upload";
+  retryServiceLabel = serviceLabel;
+  if (!retryDeadlineMs) {
+    retryDeadlineMs = Date.now() + (RETRY_TOTAL_SECONDS * 1000);
   }
-  if (retrySecondsLeft <= 1) {
-    retryInFlight = false;
-    clearRetryTimers();
-    if (doneMessage) {
-      setDoneMessage("Upload failed.", { success: false });
-    }
+  const remainingMs = retryDeadlineMs - Date.now();
+  if (remainingMs <= 0) {
+    failRetryWindow();
     return;
   }
   updateRetryCountdown();
   const nextDelay = RETRY_INTERVAL_MS;
-  clearRetryTimers();
+  clearRetryTimeout();
   retryTimerId = setTimeout(() => {
     uploadFile({ preserveLog: true, isRetry: true });
   }, nextDelay);
-  retrySecondsLeft -= 1;
   appendLog(`Retry scheduled in ${Math.ceil(nextDelay / 1000)}s (${reason})`, "error");
+}
+
+function clearRecoveryState({ hideMessage = false } = {}) {
+  retryInFlight = false;
+  retryDeadlineMs = 0;
+  retryServiceLabel = "Upload Service";
+  retryMode = "upload";
+  clearRetryTimers();
+  if (hideMessage && doneMessage) {
+    setDoneMessage("", { hidden: true });
+  }
+}
+
+async function checkProcessingServiceHealth() {
+  const resp = await fetch(deriveProcessingHealthUrl(resolveBaseUrl()), { cache: "no-store" });
+  return resp.ok;
+}
+
+function waitForProcessingRecovery(reason) {
+  retryInFlight = true;
+  retryMode = "processing_recovery";
+  retryServiceLabel = "Processing Service";
+  uploadBtn.disabled = true;
+  if (!retryDeadlineMs) {
+    retryDeadlineMs = Date.now() + (RETRY_TOTAL_SECONDS * 1000);
+  }
+  updateRetryCountdown();
+  clearRetryTimeout();
+  retryTimerId = setTimeout(async () => {
+    const remainingMs = retryDeadlineMs - Date.now();
+    if (remainingMs <= 0) {
+      failRetryWindow();
+      return;
+    }
+    try {
+      if (await checkProcessingServiceHealth()) {
+        appendLog(`Processing Service recovered (${reason || "health check ok"})`);
+        clearRecoveryState({ hideMessage: true });
+        return;
+      }
+    } catch (_) {
+      // Keep waiting until the deadline expires.
+    }
+    waitForProcessingRecovery(reason);
+  }, RETRY_INTERVAL_MS);
 }
 
 function resetStateForNextUpload() {
@@ -116,7 +242,9 @@ function resetStateForNextUpload() {
   processingComplete = false;
   failureTerminal = false;
   retryInFlight = false;
-  retrySecondsLeft = 0;
+  retryDeadlineMs = 0;
+  retryMode = "upload";
+  clearProgressRefreshTimer();
   ["low", "medium", "high"].forEach((profile) => {
     const state = transcodeProfiles[profile];
     state.done = 0;
@@ -168,6 +296,58 @@ function updateTranscodeProfileUi(profile) {
   } else {
     dom.percent.textContent = `${state.done} done`;
   }
+}
+
+function applyUploadInfoSnapshot(payload) {
+  if (!payload || typeof payload !== "object") {
+    return;
+  }
+
+  if (typeof payload.totalSegments === "number" && payload.totalSegments >= 0) {
+    totalSegments = payload.totalSegments;
+  }
+
+  if (typeof payload.uploadedSegments === "number") {
+    completedSegments = payload.uploadedSegments;
+    if (processingBlock) {
+      processingBlock.classList.remove("hidden");
+    }
+    if (totalSegments) {
+      const percent = Math.min(100, Math.round((completedSegments / totalSegments) * 100));
+      processingBar.style.width = `${percent}%`;
+      processingPercent.textContent = `${percent}% (${completedSegments}/${totalSegments})`;
+      processingTrack.classList.remove("indeterminate");
+      sourceSegmentsComplete = completedSegments >= totalSegments;
+    } else {
+      processingPercent.textContent = `${completedSegments} source chunks`;
+    }
+  }
+
+  const transcode = payload.transcode || {};
+  if (typeof transcode.lowDone === "number") {
+    transcodeProfiles.low.done = transcode.lowDone;
+  }
+  if (typeof transcode.mediumDone === "number") {
+    transcodeProfiles.medium.done = transcode.mediumDone;
+  }
+  if (typeof transcode.highDone === "number") {
+    transcodeProfiles.high.done = transcode.highDone;
+  }
+  if (transcodeBlock) {
+    transcodeBlock.classList.remove("hidden");
+  }
+  ["low", "medium", "high"].forEach((profile) => updateTranscodeProfileUi(profile));
+  tryFinalizeSuccess();
+}
+
+function scheduleProgressRefresh() {
+  if (!currentVideoId || progressRefreshTimerId) {
+    return;
+  }
+  progressRefreshTimerId = setTimeout(async () => {
+    progressRefreshTimerId = null;
+    await fetchUploadInfo(resolveBaseUrl(), currentVideoId);
+  }, 150);
 }
 
 function allProfilesDone() {
@@ -250,9 +430,11 @@ function teardownPlayer() {
     hlsInstance = null;
   }
   if (player) {
+    player.controls = false;
     player.removeAttribute("src");
     player.load();
   }
+  setPlayerVisible(false);
   setPlayerStatus("", { hidden: true });
 }
 
@@ -263,9 +445,11 @@ function startStreamingPlayback(videoId) {
   const baseUrl = resolveBaseUrl();
   const manifestUrl = deriveStreamingUrl(baseUrl, videoId);
   teardownPlayer();
-    setPlayerStatus("", { hidden: true });
+  setPlayerStatus("", { hidden: true });
 
   if (window.Hls && window.Hls.isSupported()) {
+    setPlayerVisible(true);
+    player.controls = true;
     hlsInstance = new window.Hls({
       // VOD ABR tuning: keep startup buffer small to avoid aggressive prefetch.
       lowLatencyMode: false,
@@ -292,6 +476,8 @@ function startStreamingPlayback(videoId) {
   }
 
   if (player.canPlayType("application/vnd.apple.mpegurl")) {
+    setPlayerVisible(true);
+    player.controls = true;
     player.src = manifestUrl;
     player.addEventListener("loadedmetadata", () => {
       // Ensure playback starts from the beginning.
@@ -377,6 +563,9 @@ async function refreshReadyList() {
 }
 
 function resetProgress({ preserveRetry } = {}) {
+  if (preserveRetry) {
+    return;
+  }
   uploadBar.style.width = "0%";
   uploadPercent.textContent = "";
   processingBar.style.width = "0%";
@@ -405,9 +594,7 @@ function resetProgress({ preserveRetry } = {}) {
   if (doneMessage && !preserveRetry) {
     setDoneMessage("Upload complete.", { success: true, hidden: true });
   }
-  if (!preserveRetry) {
-    resetStateForNextUpload();
-  }
+  resetStateForNextUpload();
 }
 
 function resolveBaseUrl() {
@@ -461,8 +648,7 @@ function connectWebSocket(wsUrl, videoId) {
       return;
     }
     appendLog("WebSocket connected");
-    retryInFlight = false;
-    clearRetryTimers();
+    clearRecoveryState({ hideMessage: true });
     setDoneMessage("Upload complete.", { success: true, hidden: true });
     console.log("[upload-ui] ws open", { wsUrl, videoId, token });
     if (videoId) {
@@ -479,69 +665,42 @@ function connectWebSocket(wsUrl, videoId) {
     try {
       const payload = JSON.parse(event.data);
       if (payload && payload.type === "meta" && typeof payload.totalSegments === "number") {
-        totalSegments = payload.totalSegments;
-        if (processingTrack) {
-          processingTrack.classList.remove("indeterminate");
-        }
-        if (processingPercent) {
-          const pct = totalSegments > 0 ? Math.min(100, Math.round((completedSegments / totalSegments) * 100)) : 0;
-          processingBar.style.width = `${pct}%`;
-          processingPercent.textContent = `${pct}% (${completedSegments}/${totalSegments})`;
-        }
-        ["low", "medium", "high"].forEach((profile) => updateTranscodeProfileUi(profile));
+        scheduleProgressRefresh();
         return;
       }
       if (payload && payload.type === "progress" && typeof payload.completedSegments === "number") {
-        completedSegments = payload.completedSegments;
-        if (totalSegments) {
-          const percent = Math.min(100, Math.round((completedSegments / totalSegments) * 100));
-          processingBar.style.width = `${percent}%`;
-          processingPercent.textContent = `${percent}% (${completedSegments}/${totalSegments})`;
-          processingTrack.classList.remove("indeterminate");
-          if (completedSegments >= totalSegments) {
-            sourceSegmentsComplete = true;
-            tryFinalizeSuccess();
-          }
-        } else {
-          processingPercent.textContent = `${completedSegments} source chunks`;
+        if (retryMode === "processing_recovery") {
+          clearRecoveryState({ hideMessage: true });
         }
+        scheduleProgressRefresh();
         return;
       }
       if (payload && payload.type === "transcode_progress" && payload.profile) {
-        const profile = `${payload.profile}`.toLowerCase();
-        const state = transcodeProfiles[profile];
-        if (!state) {
-          return;
+        if (retryMode === "processing_recovery") {
+          clearRecoveryState({ hideMessage: true });
         }
-        if (typeof payload.doneSegments === "number") {
-          state.done = Math.max(state.done, payload.doneSegments);
-        }
-        if (typeof payload.totalSegments === "number" && payload.totalSegments > 0) {
-          totalSegments = payload.totalSegments;
-        }
-        if (typeof payload.segmentNumber === "number" && payload.segmentNumber >= 0 && payload.state) {
-          state.segments.set(payload.segmentNumber, payload.state);
-          recalcTranscodeCounters(profile);
-        }
-        updateTranscodeProfileUi(profile);
-        tryFinalizeSuccess();
+        scheduleProgressRefresh();
         return;
       }
       if (payload && payload.type === "failed") {
         const reason = `${payload.reason || ""}`.trim();
         const normalizedReason = reason.toLowerCase().replace(/\s+/g, "_");
+        const retryServiceLabelForReason = inferRetryServiceLabel(reason);
         const isContainerDied =
           normalizedReason === "container_died" ||
           (normalizedReason.includes("container") && normalizedReason.includes("die"));
         if (isContainerDied) {
           containerDeathRetries += 1;
-          retryInFlight = true;
-          uploadBtn.disabled = false;
           uploadInFlight = false;
-          retrySecondsLeft = RETRY_TOTAL_SECONDS;
-          appendLog(`Container died. Retrying upload (${containerDeathRetries})...`, "error");
+          appendLog(`${retryServiceLabelForReason} container died.`, "error");
           console.log("[upload-ui] scheduling retry", { containerDeathRetries, reason });
-          scheduleRetry("container_died");
+          if (retryServiceLabelForReason === "Processing Service") {
+            waitForProcessingRecovery(reason);
+          } else {
+            retryInFlight = true;
+            uploadBtn.disabled = true;
+            scheduleRetry("container_died", retryServiceLabelForReason);
+          }
           return;
         }
         failureTerminal = true;
@@ -555,19 +714,10 @@ function connectWebSocket(wsUrl, videoId) {
         return;
       }
       if (payload && payload.taskId) {
-        completedSegments += 1;
-        if (totalSegments) {
-          const percent = Math.min(100, Math.round((completedSegments / totalSegments) * 100));
-          processingBar.style.width = `${percent}%`;
-          processingPercent.textContent = `${percent}% (${completedSegments}/${totalSegments})`;
-          processingTrack.classList.remove("indeterminate");
-          if (completedSegments >= totalSegments) {
-            sourceSegmentsComplete = true;
-            tryFinalizeSuccess();
-          }
-        } else {
-          processingPercent.textContent = `${completedSegments} source chunks`;
+        if (retryMode === "processing_recovery") {
+          clearRecoveryState({ hideMessage: true });
         }
+        scheduleProgressRefresh();
       }
     } catch (err) {
       // Non-JSON messages are fine.
@@ -582,11 +732,10 @@ function connectWebSocket(wsUrl, videoId) {
     if (!processingComplete && !failureTerminal) {
       if (!retryInFlight) {
         retryInFlight = true;
-        uploadBtn.disabled = false;
+        uploadBtn.disabled = true;
         uploadInFlight = false;
-        retrySecondsLeft = RETRY_TOTAL_SECONDS;
         appendLog("Upload service disconnected. Retrying...", "error");
-        scheduleRetry("ws_disconnected");
+        scheduleRetry("ws_disconnected", "Upload Service");
       }
     }
   });
@@ -599,11 +748,10 @@ function connectWebSocket(wsUrl, videoId) {
     if (!processingComplete && !failureTerminal) {
       if (!retryInFlight) {
         retryInFlight = true;
-        uploadBtn.disabled = false;
+        uploadBtn.disabled = true;
         uploadInFlight = false;
-        retrySecondsLeft = RETRY_TOTAL_SECONDS;
         appendLog("Upload service error. Retrying...", "error");
-        scheduleRetry("ws_error");
+        scheduleRetry("ws_error", "Upload Service");
       }
     }
   });
@@ -624,15 +772,7 @@ async function fetchUploadInfo(baseUrl, videoId, uploadStatusUrl) {
     if (infoBox) {
       renderJson(infoBox, payload);
     }
-    if (payload.totalSegments != null) {
-      totalSegments = payload.totalSegments;
-      if (processingPercent) {
-        processingPercent.textContent = `0% (0/${totalSegments})`;
-      }
-      if (processingTrack) {
-        processingTrack.classList.remove("indeterminate");
-      }
-    }
+    applyUploadInfoSnapshot(payload);
   } catch (err) {
     if (infoBox) {
       infoBox.textContent = `Upload info error: ${err}`;
@@ -667,10 +807,11 @@ function uploadFile({ preserveLog, isRetry } = {}) {
   if (!isRetry) {
     containerDeathRetries = 0;
     retryInFlight = false;
-    retrySecondsLeft = 0;
+    retryDeadlineMs = 0;
     clearRetryTimers();
   } else {
     retryInFlight = true;
+    uploadBtn.disabled = true;
   }
   if (responseBox) {
     responseBox.textContent = "—";
@@ -699,6 +840,7 @@ function uploadFile({ preserveLog, isRetry } = {}) {
     }
     const percent = Math.round((event.loaded / event.total) * 100);
     uploadBar.style.width = `${percent}%`;
+    uploadPercent.textContent = `${percent}%`;
   });
 
   xhr.addEventListener("load", async () => {
@@ -715,6 +857,8 @@ function uploadFile({ preserveLog, isRetry } = {}) {
 
     if (xhr.status !== 202) {
       retryInFlight = false;
+      retryDeadlineMs = 0;
+      retryMode = "upload";
       clearRetryTimers();
       appendLog(`Upload failed: ${xhr.status}`, "error");
       if (doneMessage) {
@@ -735,6 +879,8 @@ function uploadFile({ preserveLog, isRetry } = {}) {
       uploadBtn.disabled = false;
       uploadInFlight = false;
       retryInFlight = false;
+      retryDeadlineMs = 0;
+      retryMode = "upload";
       clearRetryTimers();
       resetStateForNextUpload();
       return;
@@ -745,6 +891,9 @@ function uploadFile({ preserveLog, isRetry } = {}) {
     }
     clearRetryTimers();
     retryInFlight = false;
+    retryDeadlineMs = 0;
+    retryServiceLabel = "Upload Service";
+    retryMode = "upload";
 
     if (processingBlock) {
       processingBlock.classList.remove("hidden");
@@ -765,12 +914,17 @@ function uploadFile({ preserveLog, isRetry } = {}) {
   });
 
   xhr.addEventListener("error", () => {
-    uploadBtn.disabled = false;
     uploadInFlight = false;
     if (retryInFlight) {
-      scheduleRetry("network_error");
+      if (retryMode === "processing_recovery") {
+        waitForProcessingRecovery("network_error");
+      } else {
+        uploadBtn.disabled = true;
+        scheduleRetry("network_error", retryServiceLabel);
+      }
       return;
     }
+    uploadBtn.disabled = false;
     appendLog("Upload failed due to a network error.", "error");
     clearRetryTimers();
     resetStateForNextUpload();
@@ -783,6 +937,20 @@ function uploadFile({ preserveLog, isRetry } = {}) {
 }
 
 uploadBtn.addEventListener("click", uploadFile);
+if (fileInput) {
+  fileInput.addEventListener("change", () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (fileNameLabel) {
+      fileNameLabel.textContent = file ? file.name : "No file selected";
+    }
+  });
+}
+if (uploadTabBtn) {
+  uploadTabBtn.addEventListener("click", () => setActiveTab("upload"));
+}
+if (streamTabBtn) {
+  streamTabBtn.addEventListener("click", () => setActiveTab("stream"));
+}
 if (reconnectBtn) {
   reconnectBtn.addEventListener("click", reconnect);
 }
@@ -800,3 +968,5 @@ if (refreshReadyBtn) {
 }
 
 refreshReadyList();
+setActiveTab("upload");
+setPlayerVisible(false);

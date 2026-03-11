@@ -1,6 +1,7 @@
 package com.distributed26.videostreaming.processing;
 
 import com.distributed26.videostreaming.processing.db.ProcessingUploadTaskRepository;
+import com.distributed26.videostreaming.processing.db.ProcessingTaskClaimRepository;
 import com.distributed26.videostreaming.processing.db.TranscodedSegmentStatusRepository;
 import com.distributed26.videostreaming.processing.db.VideoProcessingRepository;
 import com.distributed26.videostreaming.processing.runtime.LocalSpoolUploadWorkerPool;
@@ -92,16 +93,20 @@ public class ProcessingServiceApplication {
         TranscodedSegmentStatusRepository transcodeStatusRepository = createTranscodeStatusRepository();
         VideoProcessingRepository videoProcessingRepository = createVideoProcessingRepository();
         ProcessingUploadTaskRepository processingUploadTaskRepository = createProcessingUploadTaskRepository();
+        ProcessingTaskClaimRepository processingTaskClaimRepository = createProcessingTaskClaimRepository();
         Path localUploadSpoolRoot = initializeSpoolRoot(getEnvOrDotenv(dotenv, "PROCESSING_SPOOL_ROOT", "processing-spool"));
+        String processorInstanceId = getEnvOrDotenv(dotenv, "HOSTNAME", "processing-service");
         ProcessingRuntime runtime = new ProcessingRuntime(
                 transcodeStatusRepository,
                 videoProcessingRepository,
                 processingUploadTaskRepository,
+                processingTaskClaimRepository,
                 statusEventBus,
                 transcodeTaskBus,
                 manifestService,
                 manifestExecutor,
-                localUploadSpoolRoot
+                localUploadSpoolRoot,
+                processorInstanceId
         );
         runtimeRef = runtime;
         List<Worker> workers = createWorkers(poolSize);
@@ -282,6 +287,15 @@ public class ProcessingServiceApplication {
         }
     }
 
+    private static ProcessingTaskClaimRepository createProcessingTaskClaimRepository() {
+        try {
+            return ProcessingTaskClaimRepository.fromEnv();
+        } catch (IllegalStateException e) {
+            LOGGER.warn("Postgres not configured; cannot track processing task claims: {}", e.getMessage());
+            return null;
+        }
+    }
+
     private static Path initializeSpoolRoot(String rawPath) {
         try {
             Path path = Path.of(rawPath).toAbsolutePath().normalize();
@@ -308,14 +322,14 @@ public class ProcessingServiceApplication {
 
     static TranscodingTask onTranscodeTaskEvent(TranscodeTaskEvent taskEvent) {
         if (runtimeRef == null) {
-            runtimeRef = new ProcessingRuntime(null, null, null, null, null, null, null, null);
+            runtimeRef = new ProcessingRuntime(null, null, null, null, null, null, null, null, null, null);
         }
         return runtimeRef.onTranscodeTaskEvent(taskEvent, PROFILES);
     }
 
     static ProcessingRuntime runtime() {
         if (runtimeRef == null) {
-            runtimeRef = new ProcessingRuntime(null, null, null, null, null, null, null, null);
+            runtimeRef = new ProcessingRuntime(null, null, null, null, null, null, null, null, null, null);
         }
         return runtimeRef;
     }

@@ -177,7 +177,7 @@ services:
     environment:
       PG_URL: jdbc:postgresql://postgres:5432/${PG_DB}
       RABBITMQ_HOST: rabbitmq
-      WATCH_CONTAINER_NAME_PREFIX: upload-service
+      WATCH_CONTAINER_NAME_PREFIX: upload-service,processing-service
       FAILURE_REASON: container_died
       UPDATE_DB_STATUS: "true"
       PYTHONUNBUFFERED: "1"

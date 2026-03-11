@@ -3,95 +3,124 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Upload Console</title>
+  <title>Video Streaming</title>
   <link rel="stylesheet" href="/app.css" />
 </head>
 <body>
-  <main class="app">
-    <header class="header">
-      <div>
-        <h1>Upload Console</h1>
-        <p>Track upload, source chunking, and distributed transcoding in real time.</p>
-      </div>
+  <main class="app-shell">
+    <header class="page-header">
+      <h1>Video Streaming</h1>
     </header>
 
-    <section class="panel">
-      <div class="field">
-        <label for="videoName">Video Name</label>
-        <input id="videoName" type="text" placeholder="Enter a title" maxlength="200" />
-      </div>
-      <div class="field">
-        <label for="fileInput">Video File</label>
-        <input id="fileInput" type="file" accept="video/*" />
+    <section class="panel app-panel">
+      <div class="tab-bar" role="tablist" aria-label="Application views">
+        <button id="uploadTabBtn" class="tab-button active" type="button" role="tab" aria-selected="true" aria-controls="uploadTab">Upload</button>
+        <button id="streamTabBtn" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="streamTab">Stream</button>
       </div>
 
-      <div class="actions">
-        <button id="uploadBtn">Upload</button>
-      </div>
-      <div id="doneMessage" class="done hidden">Upload complete.</div>
+      <section id="uploadTab" class="tab-panel" role="tabpanel" aria-labelledby="uploadTabBtn">
+        <div class="controls">
+          <input id="videoName" type="text" placeholder="Video name" maxlength="200" />
+          <label class="file-picker" for="fileInput">
+            <span class="file-picker-button">Choose File</span>
+            <span id="fileNameLabel" class="file-picker-label">No file selected</span>
+          </label>
+          <input id="fileInput" class="native-file-input" type="file" accept="video/*" />
+          <button id="uploadBtn" type="button">Upload</button>
+        </div>
 
-      <div class="progress-block">
-        <div class="progress-labels">
-          <span>Upload</span>
-          <span id="uploadPercent"></span>
-        </div>
-        <div class="progress">
-          <div id="uploadBar" class="bar"></div>
-        </div>
-      </div>
+        <div id="doneMessage" class="status-banner hidden">Upload complete.</div>
 
-      <div class="progress-block hidden" id="processingBlock">
-        <div class="progress-labels">
-          <span>Source Chunks Uploaded</span>
-          <span id="processingPercent"></span>
-        </div>
-        <div class="progress indeterminate" id="processingTrack">
-          <div id="processingBar" class="bar"></div>
-        </div>
-      </div>
+        <div class="stage-grid">
+          <article class="stage-card" id="uploadStage">
+            <div class="stage-heading">
+              <span class="stage-index">01</span>
+              <h2>Upload</h2>
+            </div>
+            <div class="progress-block">
+              <div class="progress-labels">
+                <span>Upload</span>
+                <span id="uploadPercent"></span>
+              </div>
+              <div class="progress">
+                <div id="uploadBar" class="bar"></div>
+              </div>
+            </div>
+          </article>
 
-      <div class="progress-block hidden" id="transcodeBlock">
-        <div class="progress-labels">
-          <span>Transcode (Low)</span>
-          <span id="transcodeLowPercent"></span>
+          <article class="stage-card hidden" id="processingBlock">
+            <div class="stage-heading">
+              <span class="stage-index">02</span>
+              <h2>Source Chunks</h2>
+            </div>
+            <div class="progress-block">
+              <div class="progress-labels">
+                <span>Source Chunks Uploaded</span>
+                <span id="processingPercent"></span>
+              </div>
+              <div class="progress indeterminate" id="processingTrack">
+                <div id="processingBar" class="bar"></div>
+              </div>
+            </div>
+          </article>
+
+          <article class="stage-card hidden" id="transcodeBlock">
+            <div class="stage-heading">
+              <span class="stage-index">03</span>
+              <h2>Transcode</h2>
+            </div>
+
+            <div class="profile-progress">
+              <div class="progress-labels">
+                <span>Low</span>
+                <span id="transcodeLowPercent"></span>
+              </div>
+              <div class="progress indeterminate" id="transcodeLowTrack">
+                <div id="transcodeLowBar" class="bar"></div>
+              </div>
+            </div>
+
+            <div class="profile-progress">
+              <div class="progress-labels">
+                <span>Medium</span>
+                <span id="transcodeMediumPercent"></span>
+              </div>
+              <div class="progress indeterminate" id="transcodeMediumTrack">
+                <div id="transcodeMediumBar" class="bar"></div>
+              </div>
+            </div>
+
+            <div class="profile-progress">
+              <div class="progress-labels">
+                <span>High</span>
+                <span id="transcodeHighPercent"></span>
+              </div>
+              <div class="progress indeterminate" id="transcodeHighTrack">
+                <div id="transcodeHighBar" class="bar"></div>
+              </div>
+            </div>
+          </article>
         </div>
-        <div class="progress indeterminate" id="transcodeLowTrack">
-          <div id="transcodeLowBar" class="bar"></div>
+      </section>
+
+      <section id="streamTab" class="tab-panel hidden" role="tabpanel" aria-labelledby="streamTabBtn">
+        <div class="stream-panel">
+          <div class="stream-actions">
+            <button id="refreshReadyBtn" type="button" class="secondary">Refresh Library</button>
+            <button id="playBtn" type="button">Play Selected</button>
+          </div>
+
+          <video id="player" class="hidden" playsinline preload="metadata"></video>
+          <div id="playerStatus" class="status-banner hidden"></div>
+
+          <ul id="readyList" class="ready-list"></ul>
         </div>
-        <div class="progress-labels">
-          <span>Transcode (Medium)</span>
-          <span id="transcodeMediumPercent"></span>
-        </div>
-        <div class="progress indeterminate" id="transcodeMediumTrack">
-          <div id="transcodeMediumBar" class="bar"></div>
-        </div>
-        <div class="progress-labels">
-          <span>Transcode (High)</span>
-          <span id="transcodeHighPercent"></span>
-        </div>
-        <div class="progress indeterminate" id="transcodeHighTrack">
-          <div id="transcodeHighBar" class="bar"></div>
-        </div>
-      </div>
+      </section>
     </section>
 
-    <section class="panel">
-      <div class="field">
-        <label for="player">Stream Preview</label>
-        <video id="player" controls playsinline preload="metadata"></video>
-      </div>
-      <div class="actions">
-        <button id="playBtn" type="button">Play Selected</button>
-        <button id="refreshReadyBtn" type="button">Refresh Ready Videos</button>
-      </div>
-      <div class="field">
-        <label>Ready Videos</label>
-        <ul id="readyList" class="ready-list"></ul>
-      </div>
-      <div id="playerStatus" class="done hidden"></div>
-    </section>
-
-    <!-- Response, upload info, and status stream removed as requested -->
+    <pre id="responseBox" class="hidden">—</pre>
+    <pre id="infoBox" class="hidden">—</pre>
+    <div id="log" class="hidden"></div>
   </main>
 
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.18"></script>

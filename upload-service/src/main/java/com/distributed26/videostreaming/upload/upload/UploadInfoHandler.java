@@ -2,14 +2,24 @@ package com.distributed26.videostreaming.upload.upload;
 
 import com.distributed26.videostreaming.upload.db.VideoUploadRecord;
 import com.distributed26.videostreaming.upload.db.VideoUploadRepository;
+import com.distributed26.videostreaming.upload.db.SegmentUploadRepository;
+import com.distributed26.videostreaming.upload.db.TranscodedSegmentStatusRepository;
 import io.javalin.http.Context;
 import java.util.Optional;
 
 public class UploadInfoHandler {
     private final VideoUploadRepository videoUploadRepository;
+    private final SegmentUploadRepository segmentUploadRepository;
+    private final TranscodedSegmentStatusRepository transcodedSegmentStatusRepository;
 
-    public UploadInfoHandler(VideoUploadRepository videoUploadRepository) {
+    public UploadInfoHandler(
+            VideoUploadRepository videoUploadRepository,
+            SegmentUploadRepository segmentUploadRepository,
+            TranscodedSegmentStatusRepository transcodedSegmentStatusRepository
+    ) {
         this.videoUploadRepository = videoUploadRepository;
+        this.segmentUploadRepository = segmentUploadRepository;
+        this.transcodedSegmentStatusRepository = transcodedSegmentStatusRepository;
     }
 
     public void getInfo(Context ctx) {
@@ -26,14 +36,27 @@ public class UploadInfoHandler {
         }
 
         VideoUploadRecord r = record.get();
+        int uploadedSegments = segmentUploadRepository == null ? 0 : segmentUploadRepository.countByVideoId(videoId);
+        int lowDone = transcodedSegmentStatusRepository == null ? 0 : transcodedSegmentStatusRepository.countByState(videoId, "low", "DONE");
+        int mediumDone = transcodedSegmentStatusRepository == null ? 0 : transcodedSegmentStatusRepository.countByState(videoId, "medium", "DONE");
+        int highDone = transcodedSegmentStatusRepository == null ? 0 : transcodedSegmentStatusRepository.countByState(videoId, "high", "DONE");
         ctx.json(new UploadInfoResponse(
                 r.getVideoId(),
                 r.getVideoName(),
                 r.getStatus(),
                 r.getTotalSegments(),
                 r.getMachineId(),
-                r.getContainerId()
+                r.getContainerId(),
+                uploadedSegments,
+                new TranscodeProgressSnapshot(lowDone, mediumDone, highDone)
         ));
+    }
+
+    private record TranscodeProgressSnapshot(
+            int lowDone,
+            int mediumDone,
+            int highDone
+    ) {
     }
 
     private record UploadInfoResponse(
@@ -42,7 +65,9 @@ public class UploadInfoHandler {
             String status,
             int totalSegments,
             String machineId,
-            String containerId
+            String containerId,
+            int uploadedSegments,
+            TranscodeProgressSnapshot transcode
     ) {
     }
 }

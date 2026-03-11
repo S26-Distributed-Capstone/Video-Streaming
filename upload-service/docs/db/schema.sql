@@ -56,3 +56,17 @@ CREATE TABLE IF NOT EXISTS processing_upload_task (
 
 CREATE INDEX IF NOT EXISTS idx_processing_upload_task_state_updated
     ON processing_upload_task(state, updated_at);
+
+CREATE TABLE IF NOT EXISTS processing_task_claim (
+    id SERIAL PRIMARY KEY,
+    video_id UUID NOT NULL REFERENCES video_upload(video_id) ON DELETE CASCADE,
+    profile VARCHAR(32) NOT NULL,
+    segment_number INTEGER NOT NULL,
+    stage VARCHAR(32) NOT NULL,
+    claimed_by VARCHAR(128) NOT NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (video_id, profile, segment_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_processing_task_claim_claimed_by
+    ON processing_task_claim(claimed_by, updated_at);

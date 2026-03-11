@@ -69,7 +69,7 @@ public final class LocalSpoolUploadWorkerPool {
                 if (runtime.processingUploadTaskRepository() == null) {
                     return;
                 }
-                var task = runtime.processingUploadTaskRepository().claimNextReady(uploaderId, uploadClaimTimeoutMillis);
+                var task = runtime.processingUploadTaskRepository().claimNextReady(runtime.processorInstanceId(), uploadClaimTimeoutMillis);
                 if (task.isEmpty()) {
                     Thread.sleep(Math.max(50L, uploadPollMillis));
                     continue;
@@ -92,6 +92,15 @@ public final class LocalSpoolUploadWorkerPool {
 
     private void uploadSpoolTask(LocalSpoolUploadTask task, ObjectStorageClient storageClient) {
         Path spoolPath = Path.of(task.spoolPath());
+        if (runtime.processingTaskClaimRepository() != null) {
+            runtime.processingTaskClaimRepository().claim(
+                    task.videoId(),
+                    task.profile(),
+                    task.segmentNumber(),
+                    "UPLOADING",
+                    runtime.processorInstanceId()
+            );
+        }
         try {
             if (storageClient.fileExists(task.outputKey())) {
                 LOGGER.info("Local upload task {} already present in object storage, cleaning up spool", task.id());
@@ -101,6 +110,9 @@ public final class LocalSpoolUploadWorkerPool {
             if (!Files.exists(spoolPath)) {
                 LOGGER.warn("Local spool file missing for upload task {} path={}, requeueing transcode", task.id(), spoolPath);
                 runtime.processingUploadTaskRepository().deleteById(task.id());
+                if (runtime.processingTaskClaimRepository() != null) {
+                    runtime.processingTaskClaimRepository().release(task.videoId(), task.profile(), task.segmentNumber());
+                }
                 runtime.publishTranscodeState(task.videoId(), task.profile(), task.segmentNumber(),
                         TranscodeSegmentState.FAILED, profiles);
                 TranscodeTaskBus transcodeTaskBusRef = runtime.transcodeTaskBusRef();
@@ -125,6 +137,9 @@ public final class LocalSpoolUploadWorkerPool {
             LOGGER.warn("Failed local upload task {} videoId={} profile={} segment={} attempt={}",
                     task.id(), task.videoId(), task.profile(), task.segmentNumber(), task.attemptCount(), e);
             runtime.processingUploadTaskRepository().markPending(task.id());
+            if (runtime.processingTaskClaimRepository() != null) {
+                runtime.processingTaskClaimRepository().release(task.videoId(), task.profile(), task.segmentNumber());
+            }
         }
     }
 
@@ -135,6 +150,9 @@ public final class LocalSpoolUploadWorkerPool {
             LOGGER.warn("Failed to delete local spool file after upload task {} path={}", task.id(), spoolPath, e);
         }
         runtime.processingUploadTaskRepository().deleteById(task.id());
+        if (runtime.processingTaskClaimRepository() != null) {
+            runtime.processingTaskClaimRepository().release(task.videoId(), task.profile(), task.segmentNumber());
+        }
         runtime.publishTranscodeState(task.videoId(), task.profile(), task.segmentNumber(),
                 TranscodeSegmentState.DONE, profiles);
     }
