@@ -5,6 +5,7 @@ import com.distributed26.videostreaming.processing.TranscodingProfile;
 import com.distributed26.videostreaming.processing.TranscodingTask;
 import com.distributed26.videostreaming.processing.TranscodingTask.CompletedTranscode;
 import com.distributed26.videostreaming.processing.db.ProcessingUploadTaskRepository;
+import com.distributed26.videostreaming.processing.db.ProcessingTaskClaimRepository;
 import com.distributed26.videostreaming.processing.db.TranscodedSegmentStatusRepository;
 import com.distributed26.videostreaming.processing.db.VideoProcessingRepository;
 import com.distributed26.videostreaming.shared.jobs.Status;
@@ -38,30 +39,36 @@ public final class ProcessingRuntime {
     private TranscodedSegmentStatusRepository transcodeStatusRepository;
     private VideoProcessingRepository videoProcessingRepository;
     private ProcessingUploadTaskRepository processingUploadTaskRepository;
+    private ProcessingTaskClaimRepository processingTaskClaimRepository;
     private StatusEventBus statusBus;
     private TranscodeTaskBus transcodeTaskBusRef;
     private AbrManifestService manifestServiceRef;
     private ExecutorService manifestExecutorRef;
     private Path localUploadSpoolRoot;
+    private final String processorInstanceId;
 
     public ProcessingRuntime(
             TranscodedSegmentStatusRepository transcodeStatusRepository,
             VideoProcessingRepository videoProcessingRepository,
             ProcessingUploadTaskRepository processingUploadTaskRepository,
+            ProcessingTaskClaimRepository processingTaskClaimRepository,
             StatusEventBus statusBus,
             TranscodeTaskBus transcodeTaskBus,
             AbrManifestService manifestService,
             ExecutorService manifestExecutor,
-            Path localUploadSpoolRoot
+            Path localUploadSpoolRoot,
+            String processorInstanceId
     ) {
         this.transcodeStatusRepository = transcodeStatusRepository;
         this.videoProcessingRepository = videoProcessingRepository;
         this.processingUploadTaskRepository = processingUploadTaskRepository;
+        this.processingTaskClaimRepository = processingTaskClaimRepository;
         this.statusBus = statusBus;
         this.transcodeTaskBusRef = transcodeTaskBus;
         this.manifestServiceRef = manifestService;
         this.manifestExecutorRef = manifestExecutor;
         this.localUploadSpoolRoot = localUploadSpoolRoot;
+        this.processorInstanceId = processorInstanceId;
     }
 
     public void resetForTests() {
@@ -69,6 +76,7 @@ public final class ProcessingRuntime {
         transcodeStatusRepository = null;
         videoProcessingRepository = null;
         processingUploadTaskRepository = null;
+        processingTaskClaimRepository = null;
         statusBus = null;
         transcodeTaskBusRef = null;
         manifestServiceRef = null;
@@ -82,6 +90,10 @@ public final class ProcessingRuntime {
 
     public void setProcessingUploadTaskRepository(ProcessingUploadTaskRepository repository) {
         processingUploadTaskRepository = repository;
+    }
+
+    public void setProcessingTaskClaimRepository(ProcessingTaskClaimRepository repository) {
+        processingTaskClaimRepository = repository;
     }
 
     public void setStatusBus(StatusEventBus bus) {
@@ -176,6 +188,15 @@ public final class ProcessingRuntime {
         if (task == null) {
             return CompletableFuture.completedFuture(true);
         }
+        if (processingTaskClaimRepository != null) {
+            processingTaskClaimRepository.claim(
+                    task.getJobId(),
+                    task.getProfile().getName(),
+                    parseSegmentNumber(task.getChunkKey()),
+                    "TRANSCODING",
+                    processorInstanceId
+            );
+        }
         return CompletableFuture.supplyAsync(
                 () -> executeTranscodingTask(task, storageClient, workersByThread, profiles),
                 taskExecutor
@@ -183,6 +204,14 @@ public final class ProcessingRuntime {
             LOGGER.error("Transcode task execution crashed jobId={} chunk={} profile={}",
                     task.getJobId(), task.getChunkKey(), task.getProfile().getName(), e);
             return false;
+        }).whenComplete((ignored, error) -> {
+            if (processingTaskClaimRepository != null) {
+                processingTaskClaimRepository.release(
+                        task.getJobId(),
+                        task.getProfile().getName(),
+                        parseSegmentNumber(task.getChunkKey())
+                );
+            }
         });
     }
 
@@ -215,6 +244,14 @@ public final class ProcessingRuntime {
 
     public ProcessingUploadTaskRepository processingUploadTaskRepository() {
         return processingUploadTaskRepository;
+    }
+
+    public ProcessingTaskClaimRepository processingTaskClaimRepository() {
+        return processingTaskClaimRepository;
+    }
+
+    public String processorInstanceId() {
+        return processorInstanceId;
     }
 
     public VideoProcessingRepository videoProcessingRepository() {

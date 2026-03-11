@@ -52,24 +52,32 @@ def connect_rabbitmq():
     return conn, ch, exchange
 
 
-def find_processing_video_ids(conn, container_id):
-    # Match full or prefix (HOSTNAME often uses short ID)
-    like_prefix = container_id[:12] + "%"
+def normalize_container_id(container_id):
+    if not container_id:
+        return None
+    return container_id[:12]
+
+
+def find_upload_video_ids(conn, container_id):
+    short_id = normalize_container_id(container_id)
     with conn.cursor() as cur:
         cur.execute(
             "SELECT video_id FROM video_upload WHERE status = 'PROCESSING' AND (container_id = %s OR container_id LIKE %s)",
-            (container_id, like_prefix),
+            (container_id, f"{short_id}%"),
         )
         return [row[0] for row in cur.fetchall()]
 
 
-def find_processing_video_ids_by_machine(conn, machine_id):
-    if not machine_id:
-        return []
+def find_processing_video_ids(conn, container_id):
+    short_id = normalize_container_id(container_id)
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT video_id FROM video_upload WHERE status = 'PROCESSING' AND machine_id = %s AND (container_id IS NULL OR container_id = '')",
-            (machine_id,),
+            """
+            SELECT DISTINCT video_id
+            FROM processing_task_claim
+            WHERE claimed_by = %s OR claimed_by = %s
+            """,
+            (container_id, short_id),
         )
         return [row[0] for row in cur.fetchall()]
 
@@ -92,7 +100,7 @@ def publish_failed(ch, exchange, video_id, reason, machine_id, container_id):
     ch.basic_publish(exchange=exchange, routing_key=routing_key, body=json.dumps(payload).encode("utf-8"))
 
 
-def is_upload_container(event, name_prefix, label_filter):
+def matches_watched_container(event, name_prefix, label_filter):
     attrs = event.get("Actor", {}).get("Attributes", {})
     name = attrs.get("name", "")
     if label_filter:
@@ -105,6 +113,12 @@ def is_upload_container(event, name_prefix, label_filter):
             if name.startswith(prefix) or prefix in name:
                 return True
     return False
+
+
+def get_container_name(event):
+    actor = event.get("Actor", {})
+    attrs = actor.get("Attributes", {})
+    return attrs.get("name")
 
 
 def get_container_id(event):
@@ -120,17 +134,45 @@ def get_container_id(event):
     return None
 
 
+def derive_service_name(name_or_prefix: str):
+    if not name_or_prefix:
+        return None
+    parts = [part.strip() for part in name_or_prefix.split(",") if part.strip()]
+    for part in parts:
+        normalized = part.lower().replace("_", "-")
+        if "processing-service" in normalized:
+            return "processing"
+        if "upload-service" in normalized:
+            return "upload"
+        for suffix in ("-service", "-container"):
+            if normalized.endswith(suffix):
+                normalized = normalized[: -len(suffix)]
+                break
+        if normalized:
+            return normalized
+    return None
+
+
+def resolve_failure_reason(configured_reason: str, name_prefix: str):
+    if configured_reason and configured_reason not in {"container_died", "service_container_died"}:
+        return configured_reason
+    service_name = derive_service_name(name_prefix)
+    if service_name:
+        return f"{service_name}_container_died"
+    return configured_reason or "container_died"
+
+
 def main():
     print("SETTING UP THE NODE WATCHER", flush=True)
-    name_prefix = get_env("WATCH_CONTAINER_NAME_PREFIX", "upload-service")
+    name_prefix = get_env("WATCH_CONTAINER_NAME_PREFIX", "upload-service,processing-service")
     label_filter = get_env("WATCH_CONTAINER_LABEL")
-    reason = get_env("FAILURE_REASON", "container_died")
+    reason = resolve_failure_reason(get_env("FAILURE_REASON", "container_died"), name_prefix)
     update_db = get_env("UPDATE_DB_STATUS", "true").lower() == "true"
     machine_id = get_env("MACHINE_ID")
     debug_events = get_env("DEBUG_EVENTS", "false").lower() == "true"
     print(
         f"node-watcher: config name_prefix={name_prefix} label_filter={label_filter} "
-        f"update_db={update_db} machine_id={machine_id}",
+        f"failure_reason={reason} update_db={update_db} machine_id={machine_id}",
         flush=True,
     )
 
@@ -163,10 +205,11 @@ def main():
                     f"name={name} id={cid}",
                     flush=True,
                 )
-            if not is_upload_container(event, name_prefix, label_filter):
+            if not matches_watched_container(event, name_prefix, label_filter):
                 if debug_events:
-                    print("node-watcher: event did not match upload filter", flush=True)
+                    print("node-watcher: event did not match configured container filter", flush=True)
                 continue
+            container_name = get_container_name(event)
             container_id = get_container_id(event)
             if not container_id:
                 print(f"node-watcher: event missing container id keys={list(event.keys())}", flush=True)
@@ -187,23 +230,20 @@ def main():
                 continue
             seen_containers[container_id] = now
             print(f"node-watcher: container down id={container_id}", flush=True)
-            video_ids = find_processing_video_ids(db_conn, container_id)
-            if not video_ids:
-                fallback_ids = find_processing_video_ids_by_machine(db_conn, machine_id)
-                if fallback_ids:
-                    print(
-                        f"node-watcher: no container_id match; falling back to machine_id={machine_id} ids={fallback_ids}",
-                        flush=True,
-                    )
-                video_ids = fallback_ids
+            event_reason = resolve_failure_reason(get_env("FAILURE_REASON", "container_died"), container_name or name_prefix)
+            service_name = derive_service_name(container_name or name_prefix)
+            if service_name == "processing":
+                video_ids = find_processing_video_ids(db_conn, container_id)
+            else:
+                video_ids = find_upload_video_ids(db_conn, container_id)
             if not video_ids:
                 print(
-                    f"node-watcher: no processing uploads found for container_id={container_id}",
+                    f"node-watcher: no active {service_name or 'watched'} jobs found for container_id={container_id}",
                     flush=True,
                 )
             for video_id in video_ids:
                 print(f"node-watcher: publishing failed for video_id={video_id}", flush=True)
-                publish_failed(channel, exchange, video_id, reason, machine_id, container_id)
+                publish_failed(channel, exchange, video_id, event_reason, machine_id, container_id)
                 if update_db:
                     mark_failed(db_conn, video_id)
                     print(f"node-watcher: marked FAILED video_id={video_id}", flush=True)

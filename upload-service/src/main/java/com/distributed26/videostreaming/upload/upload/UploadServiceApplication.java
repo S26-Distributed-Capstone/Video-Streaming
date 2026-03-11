@@ -100,7 +100,11 @@ public class UploadServiceApplication {
         TranscodedSegmentStatusRepository transcodedSegmentStatusRepository = createTranscodedSegmentStatusRepository();
         UploadStatusWebSocket uploadStatusWebSocket =
             new UploadStatusWebSocket(statusEventBus, segmentUploadRepository, transcodedSegmentStatusRepository);
-        UploadInfoHandler uploadInfoHandler = new UploadInfoHandler(videoUploadRepository);
+        UploadInfoHandler uploadInfoHandler = new UploadInfoHandler(
+                videoUploadRepository,
+                segmentUploadRepository,
+                transcodedSegmentStatusRepository
+        );
 
         Javalin app = Javalin.create();
         app.before(ctx -> {
