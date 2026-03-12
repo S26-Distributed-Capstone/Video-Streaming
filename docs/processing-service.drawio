@@ -1,32 +1,20 @@
 <mxfile host="65bd71144e">
     <diagram id="processing-service-flow" name="Processing Service">
-        <mxGraphModel dx="1218" dy="1293" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="900" math="0" shadow="0">
+        <mxGraphModel dx="1222" dy="1293" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="900" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
                 <mxCell id="serviceBox" value="" style="rounded=0;whiteSpace=wrap;html=1;strokeWidth=2;" parent="1" vertex="1">
-                    <mxGeometry x="140" y="60" width="900" height="520" as="geometry"/>
-                </mxCell>
-                <mxCell id="9" style="edgeStyle=none;html=1;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="tasks" target="runtime">
-                    <mxGeometry relative="1" as="geometry">
-                        <Array as="points">
-                            <mxPoint x="250" y="155"/>
-                        </Array>
-                    </mxGeometry>
-                </mxCell>
-                <mxCell id="10" value="consume" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" vertex="1" connectable="0" parent="9">
-                    <mxGeometry x="-0.4371" y="5" relative="1" as="geometry">
-                        <mxPoint as="offset"/>
-                    </mxGeometry>
+                    <mxGeometry x="330" y="100" width="710" height="370" as="geometry"/>
                 </mxCell>
                 <mxCell id="tasks" value="RabbitMQ&#xa;Transcode Tasks" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
-                    <mxGeometry x="160" y="285" width="180" height="70" as="geometry"/>
+                    <mxGeometry x="150" y="230" width="170" height="70" as="geometry"/>
                 </mxCell>
-                <mxCell id="7" style="edgeStyle=none;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="runtime" target="status">
-                    <mxGeometry relative="1" as="geometry"/>
-                </mxCell>
-                <mxCell id="8" value="publish progress" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" vertex="1" connectable="0" parent="7">
-                    <mxGeometry x="-0.0775" y="1" relative="1" as="geometry">
+                <mxCell id="16" value="consume / publish tasks" style="edgeStyle=none;html=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="runtime" target="tasks" edge="1">
+                    <mxGeometry x="-0.6279" relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="460" y="265"/>
+                        </Array>
                         <mxPoint as="offset"/>
                     </mxGeometry>
                 </mxCell>
@@ -40,13 +28,35 @@
                     <mxGeometry x="630" y="240" width="200" height="80" as="geometry"/>
                 </mxCell>
                 <mxCell id="manifest" value="Manifest Generation" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
-                    <mxGeometry x="360" y="400" width="200" height="70" as="geometry"/>
+                    <mxGeometry x="360" y="315" width="200" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="14" style="edgeStyle=none;html=1;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" parent="1" source="recovery" target="tasks" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="235" y="415"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="15" value="republish&lt;div&gt;missing tasks&lt;/div&gt;" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" parent="14" vertex="1" connectable="0">
+                    <mxGeometry x="0.7118" y="1" relative="1" as="geometry">
+                        <mxPoint as="offset"/>
+                    </mxGeometry>
                 </mxCell>
                 <mxCell id="recovery" value="Startup Recovery" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
-                    <mxGeometry x="640" y="480" width="180" height="70" as="geometry"/>
+                    <mxGeometry x="640" y="380" width="180" height="70" as="geometry"/>
                 </mxCell>
-                <mxCell id="status" value="RabbitMQ&#xa;Status Events" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
-                    <mxGeometry x="370" y="285" width="180" height="70" as="geometry"/>
+                <mxCell id="11" style="edgeStyle=none;html=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;exitX=-0.012;exitY=0.847;exitDx=0;exitDy=0;exitPerimeter=0;" parent="1" source="minio" target="recovery" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="950" y="340"/>
+                            <mxPoint x="950" y="415"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="12" value="list source chunks&lt;div&gt;&lt;br&gt;&lt;/div&gt;" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" parent="11" vertex="1" connectable="0">
+                    <mxGeometry x="0.0755" relative="1" as="geometry">
+                        <mxPoint as="offset"/>
+                    </mxGeometry>
                 </mxCell>
                 <mxCell id="minio" value="MinIO / S3&#xa;source chunks&#xa;processed segments&#xa;manifests" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
                     <mxGeometry x="1110" y="220" width="210" height="140" as="geometry"/>
@@ -64,9 +74,9 @@
                     <mxGeometry x="-0.597" relative="1" as="geometry">
                         <mxPoint x="460" y="40" as="targetPoint"/>
                         <Array as="points">
-                            <mxPoint x="460" y="30"/>
-                            <mxPoint x="90" y="30"/>
-                            <mxPoint x="90" y="640"/>
+                            <mxPoint x="460" y="80"/>
+                            <mxPoint x="130" y="80"/>
+                            <mxPoint x="130" y="530"/>
                         </Array>
                         <mxPoint as="offset"/>
                     </mxGeometry>
@@ -79,50 +89,34 @@
                 <mxCell id="e9" value="write manifests" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.65;" parent="1" source="manifest" target="minio" edge="1">
                     <mxGeometry x="-0.5252" relative="1" as="geometry">
                         <Array as="points">
-                            <mxPoint x="850" y="435"/>
+                            <mxPoint x="850" y="350"/>
                             <mxPoint x="850" y="311"/>
                         </Array>
                         <mxPoint as="offset"/>
                     </mxGeometry>
                 </mxCell>
-                <mxCell id="e11" value="list source chunks" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.75;entryX=1;entryY=0.5;exitDx=0;exitDy=0;entryDx=0;entryDy=0;" parent="1" source="minio" target="recovery" edge="1">
-                    <mxGeometry x="0.5492" relative="1" as="geometry">
-                        <Array as="points">
-                            <mxPoint x="910" y="325"/>
-                            <mxPoint x="910" y="515"/>
-                        </Array>
-                        <mxPoint as="offset"/>
-                    </mxGeometry>
-                </mxCell>
-                <mxCell id="e12" value="re-publish missing tasks" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" parent="1" source="recovery" target="tasks" edge="1">
+                <mxCell id="3" style="edgeStyle=none;html=1;entryX=0.75;entryY=1;entryDx=0;entryDy=0;" parent="1" source="2" target="recovery" edge="1">
                     <mxGeometry relative="1" as="geometry">
                         <Array as="points">
-                            <mxPoint x="250" y="530"/>
+                            <mxPoint x="775" y="530"/>
                         </Array>
                     </mxGeometry>
                 </mxCell>
-                <mxCell id="3" style="edgeStyle=none;html=1;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="2" target="recovery">
-                    <mxGeometry relative="1" as="geometry">
-                        <Array as="points">
-                            <mxPoint x="730" y="640"/>
-                        </Array>
-                    </mxGeometry>
-                </mxCell>
-                <mxCell id="4" value="load recoverable videos" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" vertex="1" connectable="0" parent="3">
+                <mxCell id="4" value="load recoverable videos" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" parent="3" vertex="1" connectable="0">
                     <mxGeometry x="-0.2514" y="-1" relative="1" as="geometry">
                         <mxPoint x="-1" as="offset"/>
                     </mxGeometry>
                 </mxCell>
-                <mxCell id="5" style="edgeStyle=none;html=1;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="2" target="manifest">
+                <mxCell id="5" style="edgeStyle=none;html=1;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" parent="1" source="2" target="manifest" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="6" value="all profiles done" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" vertex="1" connectable="0" parent="5">
+                <mxCell id="6" value="all profiles done" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" parent="5" vertex="1" connectable="0">
                     <mxGeometry x="-0.1903" y="2" relative="1" as="geometry">
-                        <mxPoint y="-50" as="offset"/>
+                        <mxPoint x="2" y="-18" as="offset"/>
                     </mxGeometry>
                 </mxCell>
-                <mxCell id="2" value="Postgres" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
-                    <mxGeometry x="360" y="600" width="200" height="80" as="geometry"/>
+                <mxCell id="2" value="Postgres" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="360" y="490" width="200" height="80" as="geometry"/>
                 </mxCell>
             </root>
         </mxGraphModel>
