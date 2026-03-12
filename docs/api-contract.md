@@ -31,8 +31,18 @@ Provide a clear, shared reference for client interactions. Once merged, any chan
 - Protocol: HTTP upgrade to WebSocket (endpoint corresponds to `uploadStatusUrl`)
 - Message format: JSON status events pushed to the client as upload and transcoding progress
 - Event types currently sent over the socket:
+	- `progress`
+		- emitted immediately on connect as a DB-backed snapshot of uploaded source chunks
+		- example:
+			```json
+			{
+				"jobId": "<uuid>",
+				"completedSegments": 7,
+				"type": "progress"
+			}
+			```
 	- `task`
-		- emitted when a source chunk is uploaded by `upload-service`
+		- emitted as live source chunk progress by `upload-service`
 		- example:
 			```json
 			{
@@ -40,9 +50,6 @@ Provide a clear, shared reference for client interactions. Once merged, any chan
 				"taskId": "<videoId>/chunks/output7.ts"
 			}
 			```
-		- note:
-			- these messages currently do not include a `type` field
-			- clients should treat a message with `jobId` + `taskId` and no explicit `type` as a source chunk upload progress event
 	- `meta`
 		- emitted when the upload service knows the total number of source segments
 		- example:
@@ -91,6 +98,29 @@ Provide a clear, shared reference for client interactions. Once merged, any chan
 - Error responses:
 	- `400 Bad Request` — invalid WebSocket upgrade request
 
+#### `GET /upload-info/{videoId}`
+- Purpose: DB-backed progress snapshot for the upload/status UI
+- Success response: `200 OK`
+	```json
+	{
+		"videoId": "<uuid>",
+		"videoName": "Intro to Streaming",
+		"status": "PROCESSING",
+		"totalSegments": 12,
+		"machineId": "node-a",
+		"containerId": "abc123",
+		"uploadedSegments": 7,
+		"transcode": {
+			"lowDone": 5,
+			"mediumDone": 4,
+			"highDone": 4
+		}
+	}
+	```
+- Error responses:
+	- `404 Not Found` — unknown video ID
+	- `500 Internal Server Error` — upload info store not configured
+
 ## 2. Streaming Service Endpoints
 
 #### Service status
@@ -98,7 +128,6 @@ Provide a clear, shared reference for client interactions. Once merged, any chan
 
 #### `GET /stream/ready`
 - Returns a list of videos that are ready for playback (ID + name)
-- Only includes videos that are `COMPLETED` and have a manifest in object storage
 - Success response: `200 OK`
 	- Body: JSON array of objects:
 		```json
@@ -123,21 +152,11 @@ Provide a clear, shared reference for client interactions. Once merged, any chan
 - Success response: `200 OK`
 	- Body: HLS playlist (M3U8) variant manifest
 	- `Content-Type: application/vnd.apple.mpegurl`
-	- Segment URIs are rewritten to `segment/{segmentId}` so they resolve under this endpoint
+	- Segment URIs are rewritten to presigned MinIO URLs
+	- The streaming service does not proxy segment bytes
 - Error responses:
 	- `400 Bad Request` — invalid profile
 	- `404 Not Found` — unknown video or missing variant manifest
-
-#### `GET /stream/{videoId}/variant/{profile}/segment/{segmentId}`
-- Returns a specific video segment
-- Success response:
-	- `200 OK` — full segment response
-	- May return `206 Partial Content` when honoring `Range` requests
-	- Content-Type: `video/MP2T` (represents a single `.ts` segment)
-	- Supports HTTP byte-range requests via the `Range` header
-	- Cacheable by CDNs/clients (specific `Cache-Control` directives TBD)
-- Error responses:
-	- `404 Not Found` — unknown video or segment
 
 ## 3. Processing Service Endpoints
 
@@ -161,16 +180,3 @@ Provide a clear, shared reference for client interactions. Once merged, any chan
 	}
 	```
 - `status` values: `IDLE` | `BUSY` | `OFFLINE`
-
----
-### Lifecycle and Visibility Guarantees
-> ### Will be expanded in a separate doc in week 4
-- Streaming endpoints return `409` (not `404`) for videos that exist but are not ready
-- Video IDs are stable and permanent once issued
-
-### Contract Intentionally Hides
-- Internal storage paths and bucket layout
-- RabbitMQ status-queue vs task-queue routing
-- Processing node coordination
-- Segmentation and transcoding implementation details
-- Inter-service communication

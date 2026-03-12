@@ -10,24 +10,11 @@
 - `status-service` is the browser-facing progress fanout layer:
   - sends an initial DB-backed progress snapshot when the socket connects
   - forwards live RabbitMQ status events over WebSocket
-- `streaming-service` serves completed manifests and segments from object storage once Postgres reports the video as ready
+- `streaming-service` serves completed manifests once Postgres reports the video as ready
+- the browser fetches video segments directly from MinIO through presigned URLs embedded in variant playlists
 
 ## Processing Notes
 
-- `DONE` still means the processed segment is present in object storage.
+- `DONE` means the processed segment is present in object storage.
 - `TRANSCODED` means the worker finished FFmpeg and persisted a same-node upload task in Postgres.
 - The processing node now uses a local spool directory, configured with `PROCESSING_SPOOL_ROOT` and defaulting to `processing-spool/`.
-- `processing-service` now requires both Postgres and the local spool directory at startup; there is no inline-upload fallback path.
-
-## Client Contract
-
-- `POST /upload` returns:
-  - `videoId`
-  - `uploadStatusUrl`
-- the browser opens `uploadStatusUrl` on `status-service`
-- the socket currently emits:
-  - `task` for source chunk upload progress
-  - `meta` for total segment count
-  - `transcode_progress` for per-profile transcoding progress
-  - `failed` for terminal failures
-- the browser does not connect to `processing-service` directly for progress
