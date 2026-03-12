@@ -21,6 +21,7 @@ Edit `.env` with your credentials. See `.env` for required variables:
 - MinIO credentials (`MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`)
 - RabbitMQ credentials (`RABBITMQ_USER`, `RABBITMQ_PASS`)
 - PostgreSQL credentials (`PG_USER`, `PG_PASSWORD`, `PG_DB`)
+- Browser-facing MinIO endpoint for playback (`MINIO_PUBLIC_ENDPOINT`, usually `http://localhost:9000` in local dev)
 
 ### 2) Start All Services (Choose One)
 
@@ -39,6 +40,7 @@ This starts:
 - **Status Service** at `http://localhost:8081` (container `status-service`)
 - **Processing Service** at `http://localhost:8082` (container `processing-service`)
 - **Streaming Service** at `http://localhost:8083` (container `streaming-service`)
+- **Node Watcher** as a background container for terminal failure detection
 
 RabbitMQ is used in two separate ways:
 - status event bus: upload/status/progress fan-out for the browser and status service
@@ -121,3 +123,5 @@ docker stack rm video
 - `processing-service` consumes only the transcode task queue, writes completed profile outputs into a local spool, and a same-node uploader pushes those files to object storage.
 - `processing-service` keeps its durable local-upload handoff in Postgres (`processing_upload_task`) and stores spool files under `PROCESSING_SPOOL_ROOT` (default `processing-spool/`).
 - `status-service` now declares a replica-local RabbitMQ queue per instance, so multiple status replicas each receive the full event stream and can safely fan out updates to the WebSockets connected to that replica.
+- `status-service` also exposes `GET /upload-info/{videoId}` for a DB-backed progress snapshot.
+- `streaming-service` serves manifests only; the browser fetches segments directly from MinIO through presigned URLs.
