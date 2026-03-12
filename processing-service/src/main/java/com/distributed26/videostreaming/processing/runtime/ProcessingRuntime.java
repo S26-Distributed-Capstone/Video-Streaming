@@ -403,22 +403,22 @@ public final class ProcessingRuntime {
             TranscodingProfile[] profiles
     ) {
         Worker worker = workersByThread.get(Thread.currentThread());
-        if (worker != null) {
-            worker.setStatus(WorkerStatus.BUSY);
-        }
-        if (isVideoFailed(task.getJobId())) {
-            LOGGER.info("Skipping queued transcode task for failed videoId={} profile={} chunk={}",
-                    task.getJobId(), task.getProfile().getName(), task.getChunkKey());
-            return false;
-        }
-        task.setStatus(Status.RUNNING);
-        LOGGER.info("Worker {} picked up task {} (chunk={} profile={})",
-                worker == null ? "unknown" : worker.getId(),
-                task.getId(),
-                task.getChunkKey(),
-                task.getProfile().getName());
-        emitState(task, TranscodeSegmentState.TRANSCODING, profiles);
         try {
+            if (worker != null) {
+                worker.setStatus(WorkerStatus.BUSY);
+            }
+            if (isVideoFailed(task.getJobId())) {
+                LOGGER.info("Skipping queued transcode task for failed videoId={} profile={} chunk={}",
+                        task.getJobId(), task.getProfile().getName(), task.getChunkKey());
+                return false;
+            }
+            task.setStatus(Status.RUNNING);
+            LOGGER.info("Worker {} picked up task {} (chunk={} profile={})",
+                    worker == null ? "unknown" : worker.getId(),
+                    task.getId(),
+                    task.getChunkKey(),
+                    task.getProfile().getName());
+            emitState(task, TranscodeSegmentState.TRANSCODING, profiles);
             CompletedTranscode completed = task.transcodeToSpool(storageClient, localUploadSpoolRoot);
             if (completed == null) {
                 task.setStatus(Status.SUCCEEDED);

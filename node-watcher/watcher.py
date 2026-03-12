@@ -195,7 +195,7 @@ class PendingFailureStore:
     def upsert(self, video_id, payload):
         with self._lock:
             existing = self._items.get(video_id)
-            if existing is None or payload["deadline"] > existing["deadline"]:
+            if existing is None or payload["deadline"] < existing["deadline"]:
                 self._items[video_id] = payload
 
     def due_items(self, now):
@@ -242,11 +242,11 @@ def process_pending_failures(store, stop_event):
                     )
                     continue
                 rabbit_conn, channel, exchange = connect_rabbitmq()
-                print(f"node-watcher: publishing failed for video_id={video_id}", flush=True)
-                publish_failed(channel, exchange, video_id, payload["reason"], machine_id, payload["container_id"])
                 if update_db:
                     mark_failed(db_conn, video_id)
                     print(f"node-watcher: marked FAILED video_id={video_id}", flush=True)
+                print(f"node-watcher: publishing failed for video_id={video_id}", flush=True)
+                publish_failed(channel, exchange, video_id, payload["reason"], machine_id, payload["container_id"])
             except Exception as exc:
                 print(f"node-watcher: pending failure processing error video_id={video_id}: {exc}", file=sys.stderr, flush=True)
             finally:
