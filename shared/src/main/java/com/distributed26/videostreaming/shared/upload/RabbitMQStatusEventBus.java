@@ -18,6 +18,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeoutException;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import com.distributed26.videostreaming.shared.upload.events.UploadFailedEvent;
 
 /**
  * RabbitMQ-backed bus for status/progress events. This is the queue path used
@@ -31,6 +32,7 @@ public class RabbitMQStatusEventBus implements StatusEventBus {
     private final Channel channel;
     private final String exchange;
     private final String consumerQueueName;
+    private final String failureQueueName;
     private final Map<String, List<JobEventListener>> listenersByJobId = new ConcurrentHashMap<>();
     private final List<JobEventListener> globalListeners = new CopyOnWriteArrayList<>();
 
@@ -55,8 +57,14 @@ public class RabbitMQStatusEventBus implements StatusEventBus {
                 this.consumerQueueName = declareConsumerQueue(config);
                 channel.queueBind(this.consumerQueueName, this.exchange, config.statusBinding());
                 startConsumer(this.consumerQueueName);
+                this.failureQueueName = declareFailureQueue(config);
+                if (this.failureQueueName != null) {
+                    channel.queueBind(this.failureQueueName, this.exchange, config.failureBinding());
+                    startConsumer(this.failureQueueName);
+                }
             } else {
                 this.consumerQueueName = null;
+                this.failureQueueName = null;
                 LOGGER.info("Status event consumer disabled for {}", this.exchange);
             }
         } catch (IOException | TimeoutException e) {
@@ -73,6 +81,9 @@ public class RabbitMQStatusEventBus implements StatusEventBus {
             LOGGER.debug("Publishing status event jobId={} type={}",
                     event.getJobId(), RabbitMQStatusEventCodec.describeEventType(event));
             channel.basicPublish(exchange, routingKey, null, body);
+            if (event instanceof UploadFailedEvent) {
+                channel.basicPublish(exchange, "upload.failure", null, body);
+            }
         } catch (IOException e) {
             throw new RuntimeException("Failed to publish status event", e);
         }
@@ -144,14 +155,31 @@ public class RabbitMQStatusEventBus implements StatusEventBus {
         return config.statusQueue();
     }
 
+    private String declareFailureQueue(RabbitMQBusConfig config) throws IOException {
+        if (!shouldUseReplicaFailureQueue()) {
+            return null;
+        }
+        String queueName = channel.queueDeclare("", false, true, true, null).getQueue();
+        LOGGER.info("Declared replica-local failure queue={} exchange={}", queueName, exchange);
+        return queueName;
+    }
+
     private static boolean shouldConsumeStatusEvents() {
         String mode = System.getenv("SERVICE_MODE");
-        return "status".equalsIgnoreCase(mode) || "processing".equalsIgnoreCase(mode);
+        return "status".equalsIgnoreCase(mode)
+                || "processing".equalsIgnoreCase(mode)
+                || "upload".equalsIgnoreCase(mode);
     }
 
     private static boolean shouldUseReplicaStatusQueue() {
         String mode = System.getenv("SERVICE_MODE");
-        return "status".equalsIgnoreCase(mode);
+        return "status".equalsIgnoreCase(mode)
+                || "upload".equalsIgnoreCase(mode);
+    }
+
+    private static boolean shouldUseReplicaFailureQueue() {
+        String mode = System.getenv("SERVICE_MODE");
+        return "processing".equalsIgnoreCase(mode);
     }
 
     @Override

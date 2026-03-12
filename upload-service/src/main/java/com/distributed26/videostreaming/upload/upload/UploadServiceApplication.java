@@ -1,12 +1,14 @@
 package com.distributed26.videostreaming.upload.upload;
 
 import com.distributed26.videostreaming.shared.config.StorageConfig;
+import com.distributed26.videostreaming.shared.upload.FailedVideoRegistry;
 import com.distributed26.videostreaming.shared.upload.RabbitMQStatusEventBus;
 import com.distributed26.videostreaming.shared.upload.RabbitMQTranscodeTaskBus;
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
 import com.distributed26.videostreaming.shared.storage.S3StorageClient;
 import com.distributed26.videostreaming.shared.upload.StatusEventBus;
 import com.distributed26.videostreaming.shared.upload.TranscodeTaskBus;
+import com.distributed26.videostreaming.shared.upload.events.UploadFailedEvent;
 import com.distributed26.videostreaming.upload.db.SegmentUploadRepository;
 import com.distributed26.videostreaming.upload.db.TranscodedSegmentStatusRepository;
 import com.distributed26.videostreaming.upload.db.VideoUploadRepository;
@@ -55,6 +57,12 @@ public class UploadServiceApplication {
         SegmentUploadRepository segmentUploadRepository = createSegmentUploadRepository();
         String machineId = resolveMachineId();
         String containerId = resolveContainerId();
+        FailedVideoRegistry failedVideoRegistry = new FailedVideoRegistry();
+        statusEventBus.subscribeAll(event -> {
+            if (event instanceof UploadFailedEvent failed) {
+                failedVideoRegistry.markFailed(failed.getJobId());
+            }
+        });
 
         UploadHandler uploadHandler = new UploadHandler(
                 storageClient,
@@ -63,7 +71,8 @@ public class UploadServiceApplication {
                 videoUploadRepository,
                 segmentUploadRepository,
                 machineId,
-                containerId
+                containerId,
+                failedVideoRegistry
         );
 
         Javalin app = Javalin.create(config -> {
@@ -75,6 +84,7 @@ public class UploadServiceApplication {
             });
         });
 
+        app.get("/health", ctx -> ctx.json(java.util.Map.of("status", "ok")));
         app.post("/upload", uploadHandler::upload);
 
         app.events(event -> event.serverStopped(() -> {
@@ -113,6 +123,7 @@ public class UploadServiceApplication {
             ctx.header("Access-Control-Allow-Headers", "Content-Type,Authorization");
         });
         app.options("/*", ctx -> ctx.status(204));
+        app.get("/health", ctx -> ctx.json(java.util.Map.of("status", "ok")));
         app.ws("/upload-status", uploadStatusWebSocket::configure);
         app.get("/upload-info/{videoId}", uploadInfoHandler::getInfo);
         return app;

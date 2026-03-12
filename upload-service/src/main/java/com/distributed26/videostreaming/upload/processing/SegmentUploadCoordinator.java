@@ -1,6 +1,7 @@
 package com.distributed26.videostreaming.upload.processing;
 
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
+import com.distributed26.videostreaming.shared.upload.FailedVideoRegistry;
 import com.distributed26.videostreaming.shared.upload.StatusEventBus;
 import com.distributed26.videostreaming.shared.upload.TranscodeTaskBus;
 import com.distributed26.videostreaming.shared.upload.events.JobEvent;
@@ -37,6 +38,7 @@ public final class SegmentUploadCoordinator {
     private final StatusEventBus statusEventBus;
     private final TranscodeTaskBus transcodeTaskBus;
     private final SegmentUploadRepository segmentUploadRepository;
+    private final FailedVideoRegistry failedVideoRegistry;
     private final ExecutorService segmentUploadExecutor;
     private final int maxInFlightSegmentUploads;
     private final int segmentDuration;
@@ -46,6 +48,7 @@ public final class SegmentUploadCoordinator {
             StatusEventBus statusEventBus,
             TranscodeTaskBus transcodeTaskBus,
             SegmentUploadRepository segmentUploadRepository,
+            FailedVideoRegistry failedVideoRegistry,
             ExecutorService segmentUploadExecutor,
             int maxInFlightSegmentUploads,
             int segmentDuration
@@ -54,6 +57,7 @@ public final class SegmentUploadCoordinator {
         this.statusEventBus = statusEventBus;
         this.transcodeTaskBus = transcodeTaskBus;
         this.segmentUploadRepository = segmentUploadRepository;
+        this.failedVideoRegistry = failedVideoRegistry;
         this.segmentUploadExecutor = segmentUploadExecutor;
         this.maxInFlightSegmentUploads = maxInFlightSegmentUploads;
         this.segmentDuration = segmentDuration;
@@ -88,6 +92,7 @@ public final class SegmentUploadCoordinator {
     }
 
     public void uploadSegment(Path path, String videoId, double outputTsOffsetSeconds) {
+        ensureVideoActive(videoId);
         try {
             String fileName = path.getFileName().toString();
             String objectKey = videoId + "/chunks/" + fileName;
@@ -117,6 +122,7 @@ public final class SegmentUploadCoordinator {
             Map<Path, PendingUpload> inFlightUploads,
             boolean isFinalSweep
     ) {
+        ensureVideoActive(videoId);
         List<Path> files;
         try (Stream<Path> stream = Files.list(tempOutput)) {
             files = stream.toList();
@@ -136,6 +142,7 @@ public final class SegmentUploadCoordinator {
         int tsLimit = isFinalSweep ? tsFiles.size() : Math.max(0, tsFiles.size() - 1);
 
         for (int i = 0; i < tsLimit; i++) {
+            ensureVideoActive(videoId);
             Path path = tsFiles.get(i);
             if (uploadedFiles.contains(path) || inFlightUploads.containsKey(path)) {
                 continue;
@@ -153,7 +160,7 @@ public final class SegmentUploadCoordinator {
             double outputTsOffsetSeconds = timing != null
                     ? timing.startOffsetSeconds()
                     : fallbackOffsetForSegment(segmentNumber);
-            waitForUploadCapacity(inFlightUploads, uploadedFiles, uploadedSegmentNumbers);
+            waitForUploadCapacity(videoId, inFlightUploads, uploadedFiles, uploadedSegmentNumbers);
             inFlightUploads.put(
                     path,
                     new PendingUpload(
@@ -174,6 +181,7 @@ public final class SegmentUploadCoordinator {
             files.stream()
                     .filter(p -> p.getFileName().toString().endsWith(".m3u8"))
                     .forEach(path -> {
+                        ensureVideoActive(videoId);
                         if (!uploadedFiles.contains(path)) {
                             uploadSegment(path, videoId, 0d);
                             uploadedFiles.add(path);
@@ -184,15 +192,20 @@ public final class SegmentUploadCoordinator {
         return uploadedCount;
     }
 
-    void waitForOrCancelInFlightUploads(Map<Path, PendingUpload> inFlightUploads) {
+    void waitForOrCancelInFlightUploads(Map<Path, PendingUpload> inFlightUploads, boolean cancelPending) {
         for (var entry : List.copyOf(inFlightUploads.entrySet())) {
             Path path = entry.getKey();
             CompletableFuture<Void> future = entry.getValue().future();
             try {
+                if (cancelPending && !future.isDone()) {
+                    future.cancel(true);
+                }
                 future.join();
             } catch (CompletionException e) {
                 Throwable cause = e.getCause() == null ? e : e.getCause();
                 logger.warn("In-flight segment upload finished with error during cleanup: {}", path, cause);
+            } catch (java.util.concurrent.CancellationException e) {
+                logger.info("Cancelled in-flight segment upload during cleanup: {}", path);
             } catch (RuntimeException e) {
                 future.cancel(true);
                 logger.warn("Failed while waiting for in-flight upload during cleanup: {}", path, e);
@@ -206,11 +219,13 @@ public final class SegmentUploadCoordinator {
     }
 
     private void waitForUploadCapacity(
+            String videoId,
             Map<Path, PendingUpload> inFlightUploads,
             Set<Path> uploadedFiles,
             Set<Integer> uploadedSegmentNumbers
     ) {
         while (inFlightUploads.size() >= Math.max(1, maxInFlightSegmentUploads)) {
+            ensureVideoActive(videoId);
             int drained = collectCompletedUploads(inFlightUploads, uploadedFiles, uploadedSegmentNumbers, false);
             if (drained > 0) {
                 return;
@@ -353,6 +368,12 @@ public final class SegmentUploadCoordinator {
         return segmentNumber.isPresent()
                 ? (double) segmentNumber.getAsInt() * Math.max(1, segmentDuration)
                 : 0d;
+    }
+
+    private void ensureVideoActive(String videoId) {
+        if (failedVideoRegistry != null && failedVideoRegistry.isFailed(videoId)) {
+            throw new RuntimeException("Upload already marked FAILED for videoId=" + videoId);
+        }
     }
 
     private record SegmentTiming(double startOffsetSeconds, double durationSeconds) {

@@ -11,6 +11,7 @@ record RabbitMQBusConfig(
         String exchange,
         String statusQueue,
         String statusBinding,
+        String failureBinding,
         String taskQueue,
         String taskBinding
 ) {
@@ -25,6 +26,7 @@ record RabbitMQBusConfig(
                 getEnvOrDotenv(dotenv, "RABBITMQ_EXCHANGE", "upload.events"),
                 getEnvOrDotenv(dotenv, "RABBITMQ_STATUS_QUEUE", "upload.status.queue"),
                 getEnvOrDotenv(dotenv, "RABBITMQ_STATUS_BINDING", "upload.status.*"),
+                getEnvOrDotenv(dotenv, "RABBITMQ_FAILURE_BINDING", "upload.failure"),
                 getEnvOrDotenv(dotenv, "RABBITMQ_TASK_QUEUE", "processing.tasks.queue"),
                 getEnvOrDotenv(dotenv, "RABBITMQ_TASK_BINDING", "upload.task.transcode")
         );

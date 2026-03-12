@@ -217,6 +217,15 @@ class ProcessingServiceApplicationTest {
         verify(processingUploadTaskRepository).hasOpenTask("vid1", "high", 0);
     }
 
+    @Test
+    void failedVideo_doesNotQueueMoreTranscodeTasks() {
+        ProcessingServiceApplication.runtime().markVideoFailed("vid1");
+
+        sendChunks("vid1", "vid1/chunks/seg0.ts");
+
+        assertEquals(0, taskQueue.size(), "Failed videos should not enqueue more transcode work");
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────────
 
     private void sendChunks(String videoId, String... chunkKeys) {

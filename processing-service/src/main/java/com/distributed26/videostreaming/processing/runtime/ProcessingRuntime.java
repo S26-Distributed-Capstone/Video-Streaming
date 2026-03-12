@@ -12,6 +12,7 @@ import com.distributed26.videostreaming.shared.jobs.Status;
 import com.distributed26.videostreaming.shared.jobs.Worker;
 import com.distributed26.videostreaming.shared.jobs.WorkerStatus;
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
+import com.distributed26.videostreaming.shared.upload.FailedVideoRegistry;
 import com.distributed26.videostreaming.shared.upload.StatusEventBus;
 import com.distributed26.videostreaming.shared.upload.TranscodeTaskBus;
 import com.distributed26.videostreaming.shared.upload.events.JobEvent;
@@ -20,6 +21,7 @@ import com.distributed26.videostreaming.shared.upload.events.TranscodeSegmentSta
 import com.distributed26.videostreaming.shared.upload.events.TranscodeTaskEvent;
 import com.distributed26.videostreaming.shared.upload.events.UploadFailedEvent;
 import com.distributed26.videostreaming.shared.upload.events.UploadMetaEvent;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Set;
 import java.util.UUID;
@@ -45,6 +47,7 @@ public final class ProcessingRuntime {
     private AbrManifestService manifestServiceRef;
     private ExecutorService manifestExecutorRef;
     private Path localUploadSpoolRoot;
+    private FailedVideoRegistry failedVideoRegistry;
     private final String processorInstanceId;
 
     public ProcessingRuntime(
@@ -68,6 +71,7 @@ public final class ProcessingRuntime {
         this.manifestServiceRef = manifestService;
         this.manifestExecutorRef = manifestExecutor;
         this.localUploadSpoolRoot = localUploadSpoolRoot;
+        this.failedVideoRegistry = new FailedVideoRegistry();
         this.processorInstanceId = processorInstanceId;
     }
 
@@ -82,6 +86,7 @@ public final class ProcessingRuntime {
         manifestServiceRef = null;
         manifestExecutorRef = null;
         localUploadSpoolRoot = null;
+        failedVideoRegistry = new FailedVideoRegistry();
     }
 
     public void setTranscodeStatusRepository(TranscodedSegmentStatusRepository repository) {
@@ -94,6 +99,10 @@ public final class ProcessingRuntime {
 
     public void setProcessingTaskClaimRepository(ProcessingTaskClaimRepository repository) {
         processingTaskClaimRepository = repository;
+    }
+
+    public void setVideoProcessingRepository(VideoProcessingRepository repository) {
+        videoProcessingRepository = repository;
     }
 
     public void setStatusBus(StatusEventBus bus) {
@@ -118,6 +127,15 @@ public final class ProcessingRuntime {
 
     public void onStatusEvent(JobEvent event) {
         String videoId = event.getJobId();
+        if (event instanceof UploadFailedEvent failed) {
+            markVideoFailed(failed.getJobId());
+            LOGGER.info("Marked videoId={} cancelled from failure event reason={}", failed.getJobId(), failed.getReason());
+        }
+        if (isVideoFailed(videoId)) {
+            LOGGER.info("Ignoring status event for failed videoId={} type={}",
+                    videoId, event.getClass().getSimpleName());
+            return;
+        }
 
         if (event instanceof UploadMetaEvent meta) {
             if (manifestServiceRef == null || manifestExecutorRef == null) {
@@ -141,6 +159,11 @@ public final class ProcessingRuntime {
 
     public TranscodingTask onTranscodeTaskEvent(TranscodeTaskEvent taskEvent, TranscodingProfile[] profiles) {
         String videoId = taskEvent.getJobId();
+        if (isVideoFailed(videoId)) {
+            LOGGER.info("Skipping transcode task for failed videoId={} profile={} chunk={}",
+                    videoId, taskEvent.getProfile(), taskEvent.getChunkKey());
+            return null;
+        }
         String chunkKey = taskEvent.getChunkKey();
         int segmentNumber = taskEvent.getSegmentNumber();
         if (chunkKey == null || !chunkKey.contains("/chunks/") || !chunkKey.endsWith(".ts")) {
@@ -184,6 +207,11 @@ public final class ProcessingRuntime {
             java.util.Map<Thread, Worker> workersByThread,
             TranscodingProfile[] profiles
     ) {
+        if (isVideoFailed(taskEvent.getJobId())) {
+            LOGGER.info("Dropping submitted transcode task for failed videoId={} profile={} chunk={}",
+                    taskEvent.getJobId(), taskEvent.getProfile(), taskEvent.getChunkKey());
+            return CompletableFuture.completedFuture(true);
+        }
         TranscodingTask task = onTranscodeTaskEvent(taskEvent, profiles);
         if (task == null) {
             return CompletableFuture.completedFuture(true);
@@ -341,6 +369,33 @@ public final class ProcessingRuntime {
         return segmentNumber < 0 ? 0d : (double) segmentNumber * Math.max(1, TranscodingTask.chunkDurationSeconds());
     }
 
+    public boolean isVideoFailed(String videoId) {
+        if (failedVideoRegistry == null || !failedVideoRegistry.isFailed(videoId)) {
+            return false;
+        }
+        if (videoProcessingRepository == null) {
+            return true;
+        }
+        try {
+            if (videoProcessingRepository.isFailed(videoId)) {
+                return true;
+            }
+            failedVideoRegistry.clear(videoId);
+            LOGGER.info("Cleared stale failed marker for videoId={} after new processing attempt", videoId);
+            return false;
+        } catch (Exception e) {
+            LOGGER.warn("Failed to reconcile failed-state for videoId={}", videoId, e);
+            return true;
+        }
+    }
+
+    public void markVideoFailed(String videoId) {
+        if (failedVideoRegistry == null) {
+            failedVideoRegistry = new FailedVideoRegistry();
+        }
+        failedVideoRegistry.markFailed(videoId);
+    }
+
     private boolean executeTranscodingTask(
             TranscodingTask task,
             ObjectStorageClient storageClient,
@@ -348,23 +403,34 @@ public final class ProcessingRuntime {
             TranscodingProfile[] profiles
     ) {
         Worker worker = workersByThread.get(Thread.currentThread());
-        if (worker != null) {
-            worker.setStatus(WorkerStatus.BUSY);
-        }
-        task.setStatus(Status.RUNNING);
-        LOGGER.info("Worker {} picked up task {} (chunk={} profile={})",
-                worker == null ? "unknown" : worker.getId(),
-                task.getId(),
-                task.getChunkKey(),
-                task.getProfile().getName());
-        emitState(task, TranscodeSegmentState.TRANSCODING, profiles);
         try {
+            if (worker != null) {
+                worker.setStatus(WorkerStatus.BUSY);
+            }
+            if (isVideoFailed(task.getJobId())) {
+                LOGGER.info("Skipping queued transcode task for failed videoId={} profile={} chunk={}",
+                        task.getJobId(), task.getProfile().getName(), task.getChunkKey());
+                return false;
+            }
+            task.setStatus(Status.RUNNING);
+            LOGGER.info("Worker {} picked up task {} (chunk={} profile={})",
+                    worker == null ? "unknown" : worker.getId(),
+                    task.getId(),
+                    task.getChunkKey(),
+                    task.getProfile().getName());
+            emitState(task, TranscodeSegmentState.TRANSCODING, profiles);
             CompletedTranscode completed = task.transcodeToSpool(storageClient, localUploadSpoolRoot);
             if (completed == null) {
                 task.setStatus(Status.SUCCEEDED);
                 emitState(task, TranscodeSegmentState.DONE, profiles);
                 LOGGER.info("Task {} skipped because output already exists", task.getId());
                 return true;
+            }
+            if (isVideoFailed(task.getJobId())) {
+                Files.deleteIfExists(completed.localPath());
+                LOGGER.info("Discarded transcoded spool for failed videoId={} profile={} segment={}",
+                        task.getJobId(), task.getProfile().getName(), parseSegmentNumber(task.getChunkKey()));
+                return false;
             }
             processingUploadTaskRepository.upsertPending(
                     task.getJobId(),
