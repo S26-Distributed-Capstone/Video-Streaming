@@ -1,6 +1,7 @@
 package com.distributed26.videostreaming.upload.upload;
 
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
+import com.distributed26.videostreaming.shared.upload.FailedVideoRegistry;
 import com.distributed26.videostreaming.shared.upload.StatusEventBus;
 import com.distributed26.videostreaming.shared.upload.TranscodeTaskBus;
 import com.distributed26.videostreaming.upload.processing.SegmentUploadCoordinator;
@@ -36,9 +37,33 @@ public class UploadHandler implements AutoCloseable {
     private final ExecutorService supervisionExecutor;
     private final ExecutorService ffmpegExecutor;
     private final ExecutorService segmentUploadExecutor;
+    private final FailedVideoRegistry failedVideoRegistry;
 
     public UploadHandler(ObjectStorageClient storageClient, StatusEventBus statusEventBus, TranscodeTaskBus transcodeTaskBus) {
-        this(storageClient, statusEventBus, transcodeTaskBus, null, null, null, null);
+        this(storageClient, statusEventBus, transcodeTaskBus, null, null, null, null, new FailedVideoRegistry());
+    }
+
+    public UploadHandler(
+            ObjectStorageClient storageClient,
+            StatusEventBus statusEventBus,
+            TranscodeTaskBus transcodeTaskBus,
+            VideoUploadRepository videoUploadRepository,
+            SegmentUploadRepository segmentUploadRepository,
+            String machineId,
+            String containerId,
+            FailedVideoRegistry failedVideoRegistry
+    ) {
+        this(
+                storageClient,
+                statusEventBus,
+                transcodeTaskBus,
+                videoUploadRepository,
+                segmentUploadRepository,
+                machineId,
+                containerId,
+                failedVideoRegistry,
+                UploadProcessingConfig.fromDotenv(Dotenv.configure().directory("./").ignoreIfMissing().load())
+        );
     }
 
     public UploadHandler(
@@ -58,7 +83,7 @@ public class UploadHandler implements AutoCloseable {
                 segmentUploadRepository,
                 machineId,
                 containerId,
-                UploadProcessingConfig.fromDotenv(Dotenv.configure().directory("./").ignoreIfMissing().load())
+                new FailedVideoRegistry()
         );
     }
 
@@ -70,16 +95,19 @@ public class UploadHandler implements AutoCloseable {
             SegmentUploadRepository segmentUploadRepository,
             String machineId,
             String containerId,
+            FailedVideoRegistry failedVideoRegistry,
             UploadProcessingConfig config
     ) {
         Objects.requireNonNull(storageClient, "storageClient is null");
         Objects.requireNonNull(statusEventBus, "statusEventBus is null");
         Objects.requireNonNull(transcodeTaskBus, "transcodeTaskBus is null");
         Objects.requireNonNull(config, "config is null");
+        Objects.requireNonNull(failedVideoRegistry, "failedVideoRegistry is null");
 
         this.supervisionExecutor = Executors.newCachedThreadPool();
         this.ffmpegExecutor = Executors.newFixedThreadPool(config.ffmpegPoolSize());
         this.segmentUploadExecutor = Executors.newFixedThreadPool(config.uploadPoolSize());
+        this.failedVideoRegistry = failedVideoRegistry;
 
         logger.info("CHUNK_DURATION_SECONDS resolved to {}", config.segmentDuration());
         logger.info("Initialized FFmpeg executor with pool size: {}", config.ffmpegPoolSize());
@@ -100,6 +128,7 @@ public class UploadHandler implements AutoCloseable {
                 statusEventBus,
                 transcodeTaskBus,
                 segmentUploadRepository,
+                failedVideoRegistry,
                 this.segmentUploadExecutor,
                 config.maxInFlightSegmentUploads(),
                 config.segmentDuration()
@@ -113,7 +142,8 @@ public class UploadHandler implements AutoCloseable {
                 config.processingTimeoutMillis(),
                 config.pollingIntervalMillis(),
                 machineId,
-                containerId
+                containerId,
+                failedVideoRegistry
         );
     }
 
@@ -153,6 +183,8 @@ public class UploadHandler implements AutoCloseable {
             ctx.status(500).result("Failed to store video metadata");
             return;
         }
+
+        failedVideoRegistry.clear(request.videoId());
 
         CompletableFuture.runAsync(
                 () -> workflow.processVideo(request.videoId(), inputPath, startTime),

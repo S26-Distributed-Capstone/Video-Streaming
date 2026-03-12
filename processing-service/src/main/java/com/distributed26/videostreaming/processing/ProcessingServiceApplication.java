@@ -109,6 +109,13 @@ public class ProcessingServiceApplication {
                 processorInstanceId
         );
         runtimeRef = runtime;
+        if (videoProcessingRepository != null) {
+            try {
+                videoProcessingRepository.findVideoIdsByStatus("FAILED").forEach(runtime::markVideoFailed);
+            } catch (Exception e) {
+                LOGGER.warn("Failed to preload failed videos into processing runtime", e);
+            }
+        }
         List<Worker> workers = createWorkers(poolSize);
         Map<Thread, Worker> workersByThread = new ConcurrentHashMap<>();
         ThreadPoolExecutor taskExecutor = createTaskExecutor(poolSize, workers, workersByThread);

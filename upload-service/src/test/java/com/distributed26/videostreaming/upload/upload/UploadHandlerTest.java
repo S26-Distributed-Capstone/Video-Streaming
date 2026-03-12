@@ -252,6 +252,7 @@ public class UploadHandlerTest {
                 new TestStatusEventBus(),
                 new TestTranscodeTaskBus(),
                 fakeRepo,
+                null,
                 uploadExecutor,
                 2,
                 10
@@ -295,6 +296,7 @@ public class UploadHandlerTest {
                 new TestStatusEventBus(),
                 new FailingTranscodeTaskBus(),
                 fakeRepo,
+                null,
                 uploadExecutor,
                 2,
                 10

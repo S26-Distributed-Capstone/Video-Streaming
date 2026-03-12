@@ -42,17 +42,7 @@ let sourceSegmentsComplete = false;
 let currentWsUrl = null;
 let processingComplete = false;
 let uploadInFlight = false;
-let failureTerminal = false;
-let containerDeathRetries = 0;
-let retryInFlight = false;
 let wsToken = 0;
-let retryTimerId = null;
-let retryCountdownId = null;
-const RETRY_TOTAL_SECONDS = 10;
-const RETRY_INTERVAL_MS = 1000;
-let retryDeadlineMs = 0;
-let retryServiceLabel = "Upload Service";
-let retryMode = "upload";
 let progressRefreshTimerId = null;
 let hlsInstance = null;
 let selectedVideoId = null;
@@ -87,31 +77,6 @@ function setActiveTab(tab) {
   }
 }
 
-function clearRetryTimers() {
-  if (retryTimerId) {
-    clearTimeout(retryTimerId);
-    retryTimerId = null;
-  }
-  if (retryCountdownId) {
-    clearInterval(retryCountdownId);
-    retryCountdownId = null;
-  }
-}
-
-function clearRetryTimeout() {
-  if (retryTimerId) {
-    clearTimeout(retryTimerId);
-    retryTimerId = null;
-  }
-}
-
-function clearRetryCountdown() {
-  if (retryCountdownId) {
-    clearInterval(retryCountdownId);
-    retryCountdownId = null;
-  }
-}
-
 function clearProgressRefreshTimer() {
   if (progressRefreshTimerId) {
     clearTimeout(progressRefreshTimerId);
@@ -119,131 +84,11 @@ function clearProgressRefreshTimer() {
   }
 }
 
-function inferRetryServiceLabel(reason, fallback = "Upload Service") {
-  const normalized = `${reason || ""}`.toLowerCase();
-  if (
-    normalized.includes("processing") ||
-    normalized.includes("transcode") ||
-    normalized.includes("manifest")
-  ) {
-    return "Processing Service";
-  }
-  return fallback;
-}
-
-function deriveProcessingHealthUrl(baseUrl) {
-  const scheme = baseUrl.startsWith("https://") ? "https" : "http";
-  const host = baseUrl.replace(/^https?:\/\//, "").replace(/:\d+$/, "");
-  return `${scheme}://${host}:8082/health`;
-}
-
-function failRetryWindow() {
-  retryInFlight = false;
-  retryDeadlineMs = 0;
-  retryServiceLabel = "Upload Service";
-  retryMode = "upload";
-  processingComplete = true;
-  failureTerminal = true;
-  uploadInFlight = false;
-  uploadBtn.disabled = false;
-  clearRetryTimers();
-  if (doneMessage) {
-    setDoneMessage("Upload failed.", { success: false });
-  }
-}
-
-function updateRetryCountdown() {
-  if (!doneMessage) {
-    return;
-  }
-  const renderCountdown = () => {
-    const remainingMs = retryDeadlineMs - Date.now();
-    const remaining = Math.max(0, Math.ceil(remainingMs / 1000));
-    const actionLabel = retryMode === "processing_recovery" ? "Waiting for recovery for" : "Retrying for";
-    setDoneMessage(`${retryServiceLabel} failed. ${actionLabel} ${remaining}s`, { success: false });
-    if (remaining <= 0) {
-      failRetryWindow();
-    }
-  };
-  renderCountdown();
-  clearRetryCountdown();
-  retryCountdownId = setInterval(renderCountdown, 250);
-}
-
-function scheduleRetry(reason, serviceLabel = retryServiceLabel) {
-  retryMode = "upload";
-  retryServiceLabel = serviceLabel;
-  if (!retryDeadlineMs) {
-    retryDeadlineMs = Date.now() + (RETRY_TOTAL_SECONDS * 1000);
-  }
-  const remainingMs = retryDeadlineMs - Date.now();
-  if (remainingMs <= 0) {
-    failRetryWindow();
-    return;
-  }
-  updateRetryCountdown();
-  const nextDelay = RETRY_INTERVAL_MS;
-  clearRetryTimeout();
-  retryTimerId = setTimeout(() => {
-    uploadFile({ preserveLog: true, isRetry: true });
-  }, nextDelay);
-  appendLog(`Retry scheduled in ${Math.ceil(nextDelay / 1000)}s (${reason})`, "error");
-}
-
-function clearRecoveryState({ hideMessage = false } = {}) {
-  retryInFlight = false;
-  retryDeadlineMs = 0;
-  retryServiceLabel = "Upload Service";
-  retryMode = "upload";
-  clearRetryTimers();
-  if (hideMessage && doneMessage) {
-    setDoneMessage("", { hidden: true });
-  }
-}
-
-async function checkProcessingServiceHealth() {
-  const resp = await fetch(deriveProcessingHealthUrl(resolveBaseUrl()), { cache: "no-store" });
-  return resp.ok;
-}
-
-function waitForProcessingRecovery(reason) {
-  retryInFlight = true;
-  retryMode = "processing_recovery";
-  retryServiceLabel = "Processing Service";
-  uploadBtn.disabled = true;
-  if (!retryDeadlineMs) {
-    retryDeadlineMs = Date.now() + (RETRY_TOTAL_SECONDS * 1000);
-  }
-  updateRetryCountdown();
-  clearRetryTimeout();
-  retryTimerId = setTimeout(async () => {
-    const remainingMs = retryDeadlineMs - Date.now();
-    if (remainingMs <= 0) {
-      failRetryWindow();
-      return;
-    }
-    try {
-      if (await checkProcessingServiceHealth()) {
-        appendLog(`Processing Service recovered (${reason || "health check ok"})`);
-        clearRecoveryState({ hideMessage: true });
-        return;
-      }
-    } catch (_) {
-      // Keep waiting until the deadline expires.
-    }
-    waitForProcessingRecovery(reason);
-  }, RETRY_INTERVAL_MS);
-}
-
 function resetStateForNextUpload() {
   totalSegments = null;
   completedSegments = 0;
   sourceSegmentsComplete = false;
   processingComplete = false;
-  failureTerminal = false;
-  retryInFlight = false;
-  retryDeadlineMs = 0;
-  retryMode = "upload";
   clearProgressRefreshTimer();
   ["low", "medium", "high"].forEach((profile) => {
     const state = transcodeProfiles[profile];
@@ -253,7 +98,6 @@ function resetStateForNextUpload() {
     state.failed = 0;
     state.segments = new Map();
   });
-  clearRetryTimers();
   teardownPlayer();
 }
 
@@ -648,7 +492,6 @@ function connectWebSocket(wsUrl, videoId) {
       return;
     }
     appendLog("WebSocket connected");
-    clearRecoveryState({ hideMessage: true });
     setDoneMessage("Upload complete.", { success: true, hidden: true });
     console.log("[upload-ui] ws open", { wsUrl, videoId, token });
     if (videoId) {
@@ -669,41 +512,14 @@ function connectWebSocket(wsUrl, videoId) {
         return;
       }
       if (payload && payload.type === "progress" && typeof payload.completedSegments === "number") {
-        if (retryMode === "processing_recovery") {
-          clearRecoveryState({ hideMessage: true });
-        }
         scheduleProgressRefresh();
         return;
       }
       if (payload && payload.type === "transcode_progress" && payload.profile) {
-        if (retryMode === "processing_recovery") {
-          clearRecoveryState({ hideMessage: true });
-        }
         scheduleProgressRefresh();
         return;
       }
       if (payload && payload.type === "failed") {
-        const reason = `${payload.reason || ""}`.trim();
-        const normalizedReason = reason.toLowerCase().replace(/\s+/g, "_");
-        const retryServiceLabelForReason = inferRetryServiceLabel(reason);
-        const isContainerDied =
-          normalizedReason === "container_died" ||
-          (normalizedReason.includes("container") && normalizedReason.includes("die"));
-        if (isContainerDied) {
-          containerDeathRetries += 1;
-          uploadInFlight = false;
-          appendLog(`${retryServiceLabelForReason} container died.`, "error");
-          console.log("[upload-ui] scheduling retry", { containerDeathRetries, reason });
-          if (retryServiceLabelForReason === "Processing Service") {
-            waitForProcessingRecovery(reason);
-          } else {
-            retryInFlight = true;
-            uploadBtn.disabled = true;
-            scheduleRetry("container_died", retryServiceLabelForReason);
-          }
-          return;
-        }
-        failureTerminal = true;
         processingComplete = true;
         uploadBtn.disabled = false;
         uploadInFlight = false;
@@ -714,9 +530,6 @@ function connectWebSocket(wsUrl, videoId) {
         return;
       }
       if (payload && payload.taskId) {
-        if (retryMode === "processing_recovery") {
-          clearRecoveryState({ hideMessage: true });
-        }
         scheduleProgressRefresh();
       }
     } catch (err) {
@@ -729,13 +542,11 @@ function connectWebSocket(wsUrl, videoId) {
       return;
     }
     appendLog("WebSocket disconnected");
-    if (!processingComplete && !failureTerminal) {
-      if (!retryInFlight) {
-        retryInFlight = true;
-        uploadBtn.disabled = true;
-        uploadInFlight = false;
-        appendLog("Upload service disconnected. Retrying...", "error");
-        scheduleRetry("ws_disconnected", "Upload Service");
+    if (!processingComplete) {
+      uploadBtn.disabled = false;
+      uploadInFlight = false;
+      if (doneMessage) {
+        setDoneMessage("Connection lost.", { success: false });
       }
     }
   });
@@ -745,13 +556,11 @@ function connectWebSocket(wsUrl, videoId) {
       return;
     }
     appendLog("WebSocket error", "error");
-    if (!processingComplete && !failureTerminal) {
-      if (!retryInFlight) {
-        retryInFlight = true;
-        uploadBtn.disabled = true;
-        uploadInFlight = false;
-        appendLog("Upload service error. Retrying...", "error");
-        scheduleRetry("ws_error", "Upload Service");
+    if (!processingComplete) {
+      uploadBtn.disabled = false;
+      uploadInFlight = false;
+      if (doneMessage) {
+        setDoneMessage("Connection error.", { success: false });
       }
     }
   });
@@ -804,15 +613,6 @@ function uploadFile({ preserveLog, isRetry } = {}) {
   uploadBtn.disabled = true;
   uploadInFlight = true;
   resetProgress({ preserveRetry: isRetry });
-  if (!isRetry) {
-    containerDeathRetries = 0;
-    retryInFlight = false;
-    retryDeadlineMs = 0;
-    clearRetryTimers();
-  } else {
-    retryInFlight = true;
-    uploadBtn.disabled = true;
-  }
   if (responseBox) {
     responseBox.textContent = "—";
   }
@@ -856,10 +656,6 @@ function uploadFile({ preserveLog, isRetry } = {}) {
     }
 
     if (xhr.status !== 202) {
-      retryInFlight = false;
-      retryDeadlineMs = 0;
-      retryMode = "upload";
-      clearRetryTimers();
       appendLog(`Upload failed: ${xhr.status}`, "error");
       if (doneMessage) {
         setDoneMessage("Upload failed.", { success: false });
@@ -878,10 +674,6 @@ function uploadFile({ preserveLog, isRetry } = {}) {
       }
       uploadBtn.disabled = false;
       uploadInFlight = false;
-      retryInFlight = false;
-      retryDeadlineMs = 0;
-      retryMode = "upload";
-      clearRetryTimers();
       resetStateForNextUpload();
       return;
     }
@@ -889,11 +681,6 @@ function uploadFile({ preserveLog, isRetry } = {}) {
     if (doneMessage) {
       setDoneMessage("Upload complete.", { success: true, hidden: true });
     }
-    clearRetryTimers();
-    retryInFlight = false;
-    retryDeadlineMs = 0;
-    retryServiceLabel = "Upload Service";
-    retryMode = "upload";
 
     if (processingBlock) {
       processingBlock.classList.remove("hidden");
@@ -915,18 +702,8 @@ function uploadFile({ preserveLog, isRetry } = {}) {
 
   xhr.addEventListener("error", () => {
     uploadInFlight = false;
-    if (retryInFlight) {
-      if (retryMode === "processing_recovery") {
-        waitForProcessingRecovery("network_error");
-      } else {
-        uploadBtn.disabled = true;
-        scheduleRetry("network_error", retryServiceLabel);
-      }
-      return;
-    }
     uploadBtn.disabled = false;
     appendLog("Upload failed due to a network error.", "error");
-    clearRetryTimers();
     resetStateForNextUpload();
     if (doneMessage) {
       setDoneMessage("Upload failed.", { success: false });

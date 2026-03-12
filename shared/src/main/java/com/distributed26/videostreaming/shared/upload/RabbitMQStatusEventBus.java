@@ -146,12 +146,16 @@ public class RabbitMQStatusEventBus implements StatusEventBus {
 
     private static boolean shouldConsumeStatusEvents() {
         String mode = System.getenv("SERVICE_MODE");
-        return "status".equalsIgnoreCase(mode) || "processing".equalsIgnoreCase(mode);
+        return "status".equalsIgnoreCase(mode)
+                || "processing".equalsIgnoreCase(mode)
+                || "upload".equalsIgnoreCase(mode);
     }
 
     private static boolean shouldUseReplicaStatusQueue() {
         String mode = System.getenv("SERVICE_MODE");
-        return "status".equalsIgnoreCase(mode);
+        return "status".equalsIgnoreCase(mode)
+                || "processing".equalsIgnoreCase(mode)
+                || "upload".equalsIgnoreCase(mode);
     }
 
     @Override

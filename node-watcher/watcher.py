@@ -1,7 +1,10 @@
 import json
 import os
 import sys
+import threading
 import time
+import urllib.error
+import urllib.request
 
 import docker
 import pika
@@ -9,8 +12,8 @@ import psycopg2
 
 from datetime import datetime, timedelta
 
+
 def parse_jdbc_url(jdbc_url: str):
-    # Expected: jdbc:postgresql://host:port/db
     if not jdbc_url.startswith("jdbc:postgresql://"):
         raise ValueError(f"Unsupported PG_URL: {jdbc_url}")
     rest = jdbc_url[len("jdbc:postgresql://"):]
@@ -82,9 +85,16 @@ def find_processing_video_ids(conn, container_id):
         return [row[0] for row in cur.fetchall()]
 
 
+def is_video_processing(conn, video_id):
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM video_upload WHERE video_id = %s", (video_id,))
+        row = cur.fetchone()
+        return row is not None and row[0] == "PROCESSING"
+
+
 def mark_failed(conn, video_id):
     with conn.cursor() as cur:
-        cur.execute("UPDATE video_upload SET status = 'FAILED' WHERE video_id = %s", (video_id,))
+        cur.execute("UPDATE video_upload SET status = 'FAILED' WHERE video_id = %s AND status = 'PROCESSING'", (video_id,))
     conn.commit()
 
 
@@ -162,30 +172,120 @@ def resolve_failure_reason(configured_reason: str, name_prefix: str):
     return configured_reason or "container_died"
 
 
+def health_url_for_service(service_name: str):
+    if service_name == "processing":
+        return get_env("PROCESSING_SERVICE_HEALTH_URL", "http://processing-service:8082/health")
+    return get_env("UPLOAD_SERVICE_HEALTH_URL", "http://upload-service:8080/health")
+
+
+def service_healthy(service_name: str, timeout_seconds: float):
+    url = health_url_for_service(service_name)
+    try:
+        with urllib.request.urlopen(url, timeout=timeout_seconds) as response:
+            return 200 <= response.status < 300
+    except (urllib.error.URLError, TimeoutError, ValueError):
+        return False
+
+
+class PendingFailureStore:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._items = {}
+
+    def upsert(self, video_id, payload):
+        with self._lock:
+            existing = self._items.get(video_id)
+            if existing is None or payload["deadline"] > existing["deadline"]:
+                self._items[video_id] = payload
+
+    def due_items(self, now):
+        due = []
+        with self._lock:
+            for video_id, payload in list(self._items.items()):
+                if payload["deadline"] <= now:
+                    due.append((video_id, payload))
+                    self._items.pop(video_id, None)
+        return due
+
+    def empty(self):
+        with self._lock:
+            return not self._items
+
+
+def process_pending_failures(store, stop_event):
+    poll_interval_seconds = float(get_env("FAILURE_POLL_INTERVAL_SECONDS", "1"))
+    health_timeout_seconds = float(get_env("SERVICE_HEALTH_TIMEOUT_SECONDS", "2"))
+    update_db = get_env("UPDATE_DB_STATUS", "true").lower() == "true"
+    machine_id = get_env("MACHINE_ID")
+    while not stop_event.is_set():
+        now = datetime.utcnow()
+        due_failures = store.due_items(now)
+        for video_id, payload in due_failures:
+            service_name = payload["service_name"]
+            if service_healthy(service_name, health_timeout_seconds):
+                print(
+                    f"node-watcher: recovery succeeded service={service_name} video_id={video_id} "
+                    f"container_id={payload['container_id']}",
+                    flush=True,
+                )
+                continue
+
+            db_conn = None
+            rabbit_conn = None
+            channel = None
+            try:
+                db_conn = connect_db()
+                if not is_video_processing(db_conn, video_id):
+                    print(
+                        f"node-watcher: skip terminal failure video_id={video_id} because status is no longer PROCESSING",
+                        flush=True,
+                    )
+                    continue
+                rabbit_conn, channel, exchange = connect_rabbitmq()
+                print(f"node-watcher: publishing failed for video_id={video_id}", flush=True)
+                publish_failed(channel, exchange, video_id, payload["reason"], machine_id, payload["container_id"])
+                if update_db:
+                    mark_failed(db_conn, video_id)
+                    print(f"node-watcher: marked FAILED video_id={video_id}", flush=True)
+            except Exception as exc:
+                print(f"node-watcher: pending failure processing error video_id={video_id}: {exc}", file=sys.stderr, flush=True)
+            finally:
+                try:
+                    if channel is not None and channel.is_open:
+                        channel.close()
+                except Exception:
+                    pass
+                try:
+                    if rabbit_conn is not None and rabbit_conn.is_open:
+                        rabbit_conn.close()
+                except Exception:
+                    pass
+                try:
+                    if db_conn is not None:
+                        db_conn.close()
+                except Exception:
+                    pass
+        stop_event.wait(poll_interval_seconds)
+
+
 def main():
     print("SETTING UP THE NODE WATCHER", flush=True)
     name_prefix = get_env("WATCH_CONTAINER_NAME_PREFIX", "upload-service,processing-service")
     label_filter = get_env("WATCH_CONTAINER_LABEL")
     reason = resolve_failure_reason(get_env("FAILURE_REASON", "container_died"), name_prefix)
-    update_db = get_env("UPDATE_DB_STATUS", "true").lower() == "true"
-    machine_id = get_env("MACHINE_ID")
     debug_events = get_env("DEBUG_EVENTS", "false").lower() == "true"
+    grace_seconds = int(get_env("FAILURE_GRACE_SECONDS", "10"))
     print(
         f"node-watcher: config name_prefix={name_prefix} label_filter={label_filter} "
-        f"failure_reason={reason} update_db={update_db} machine_id={machine_id}",
+        f"failure_reason={reason} grace_seconds={grace_seconds}",
         flush=True,
     )
 
+    db_conn = None
     try:
         db_conn = connect_db()
     except Exception as exc:
         print(f"DB connection failed: {exc}", file=sys.stderr)
-        raise
-
-    try:
-        rabbit_conn, channel, exchange = connect_rabbitmq()
-    except Exception as exc:
-        print(f"RabbitMQ connection failed: {exc}", file=sys.stderr)
         raise
 
     client = docker.DockerClient(base_url="unix://var/run/docker.sock")
@@ -194,6 +294,10 @@ def main():
 
     dedupe_window_seconds = int(get_env("DEDUP_WINDOW_SECONDS", "10"))
     seen_containers = {}
+    pending_failures = PendingFailureStore()
+    stop_event = threading.Event()
+    worker = threading.Thread(target=process_pending_failures, args=(pending_failures, stop_event), daemon=True)
+    worker.start()
 
     try:
         for event in client.events(decode=True, filters=filters):
@@ -241,23 +345,37 @@ def main():
                     f"node-watcher: no active {service_name or 'watched'} jobs found for container_id={container_id}",
                     flush=True,
                 )
+                continue
+            deadline = now + timedelta(seconds=grace_seconds)
             for video_id in video_ids:
-                print(f"node-watcher: publishing failed for video_id={video_id}", flush=True)
-                publish_failed(channel, exchange, video_id, event_reason, machine_id, container_id)
-                if update_db:
-                    mark_failed(db_conn, video_id)
-                    print(f"node-watcher: marked FAILED video_id={video_id}", flush=True)
+                pending_failures.upsert(
+                    str(video_id),
+                    {
+                        "service_name": service_name or "upload",
+                        "container_id": container_id,
+                        "reason": event_reason,
+                        "deadline": deadline,
+                    },
+                )
+                print(
+                    f"node-watcher: queued terminal failure check video_id={video_id} "
+                    f"service={service_name} deadline={deadline.isoformat()}",
+                    flush=True,
+                )
     except Exception as exc:
         print(f"Watcher error: {exc}", file=sys.stderr)
         time.sleep(2)
         raise
     finally:
+        stop_event.set()
+        worker.join(timeout=2)
         try:
-            rabbit_conn.close()
+            client.close()
         except Exception:
             pass
         try:
-            db_conn.close()
+            if db_conn is not None:
+                db_conn.close()
         except Exception:
             pass
 

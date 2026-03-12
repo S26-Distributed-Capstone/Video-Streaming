@@ -61,6 +61,10 @@ public final class StartupRecoveryService {
 
     private void recoverVideo(String videoId, ObjectStorageClient storageClient) {
         try {
+            if (runtime.isVideoFailed(videoId)) {
+                LOGGER.info("Startup recovery skipping failed videoId={}", videoId);
+                return;
+            }
             List<String> chunkKeys = listSourceChunkKeys(videoId, storageClient);
             if (chunkKeys.isEmpty()) {
                 LOGGER.info("Startup recovery: no source chunks found for videoId={}", videoId);

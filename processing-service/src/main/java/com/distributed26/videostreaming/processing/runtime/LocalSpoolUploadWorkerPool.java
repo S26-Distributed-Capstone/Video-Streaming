@@ -102,6 +102,11 @@ public final class LocalSpoolUploadWorkerPool {
             );
         }
         try {
+            if (runtime.isVideoFailed(task.videoId())) {
+                LOGGER.info("Dropping local upload task {} for failed videoId={}", task.id(), task.videoId());
+                discardUploadTask(task, spoolPath);
+                return;
+            }
             if (storageClient.fileExists(task.outputKey())) {
                 LOGGER.info("Local upload task {} already present in object storage, cleaning up spool", task.id());
                 completeUploadTask(task, spoolPath);
@@ -127,6 +132,11 @@ public final class LocalSpoolUploadWorkerPool {
                 }
                 return;
             }
+            if (runtime.isVideoFailed(task.videoId())) {
+                LOGGER.info("Dropping local upload task {} before upload for failed videoId={}", task.id(), task.videoId());
+                discardUploadTask(task, spoolPath);
+                return;
+            }
             runtime.publishTranscodeState(task.videoId(), task.profile(), task.segmentNumber(),
                     TranscodeSegmentState.UPLOADING, profiles);
             try (InputStream is = Files.newInputStream(spoolPath)) {
@@ -140,6 +150,18 @@ public final class LocalSpoolUploadWorkerPool {
             if (runtime.processingTaskClaimRepository() != null) {
                 runtime.processingTaskClaimRepository().release(task.videoId(), task.profile(), task.segmentNumber());
             }
+        }
+    }
+
+    private void discardUploadTask(LocalSpoolUploadTask task, Path spoolPath) {
+        try {
+            Files.deleteIfExists(spoolPath);
+        } catch (Exception e) {
+            LOGGER.warn("Failed to delete discarded spool file for upload task {} path={}", task.id(), spoolPath, e);
+        }
+        runtime.processingUploadTaskRepository().deleteById(task.id());
+        if (runtime.processingTaskClaimRepository() != null) {
+            runtime.processingTaskClaimRepository().release(task.videoId(), task.profile(), task.segmentNumber());
         }
     }
 

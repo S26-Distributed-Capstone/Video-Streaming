@@ -79,4 +79,17 @@ public class VideoProcessingRepository {
             throw new RuntimeException("Failed to update video_upload status", e);
         }
     }
+
+    public boolean isFailed(String videoId) {
+        String sql = "SELECT 1 FROM video_upload WHERE video_id = ? AND status = 'FAILED' LIMIT 1";
+        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setObject(1, UUID.fromString(videoId));
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to query video_upload failed status", e);
+        }
+    }
 }
