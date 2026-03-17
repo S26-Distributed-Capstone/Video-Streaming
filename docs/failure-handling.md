@@ -21,34 +21,26 @@ That `failed` event is then forwarded to the browser by `status-service`.
 
 This prevents videos from being stuck forever in `PROCESSING` after a container crash.
 
-## Processing Restart Recovery
+## Failure Situations
 
-When `processing-service` (re)-starts, it checks for videos that are still recoverable:
+### Upload Service
 
-- videos still marked `PROCESSING`
-- videos with open local upload tasks in `processing_upload_task`
+1. Upload Service dies before returning videoId to client - HTTP 501 error (Service Unavailable)
+2. Upload Service fails / dies while it's segmenting - retry the upload with same videoId, skipping previously uploaded segments. Try to spin up with same instance for ~10 seconds
+3. Upload Service dies after upload but during processing - don't tell client anything
 
-For each recoverable video, it:
+### Status Service
 
-1. Lists source chunks from object storage.
-2. Checks which `(segment, profile)` outputs are already `DONE`.
-3. Checks which segments already have open local upload tasks.
-4. Re-publishes only the missing transcode tasks.
+1. Status Service dies mid-upload - show client statuses is unavailable. Retry. 
+  - Recovery: New Status Service checks Postgres for current status of the videoId. Then start listening on RabbitMQ and write to Postgres as normal
+  - Only consumes from RabbitMQ once confirmed written to Postgres - therefore if Status Service fails mid-write, we don't lose updates 
 
-If all profiles are already complete, it can also trigger manifest generation.
+### Processing Service
 
-## Terminal Failure Signal
+1. Processing Service fails / dies mid-transcoding a segment - needs to be downloaded again from S3 and retranscoded. (Never acked from RabbitMQ)
+2. Processing Service fails / dies mid-uploading a segment - checks local DB for previously transcoded segments and uploads them with the local queue. Tried to sping up for ~10 seconds. If it can't spin it up, have another processing service instance pick it up using RabbitMQ ack timeout
 
-The browser sees terminal failures through the WebSocket `failed` event:
+### Streaming Service
 
-```json
-{
-  "jobId": "<uuid>",
-  "reason": "upload_container_died",
-  "machineId": "node-a",
-  "containerId": "abc123",
-  "type": "failed"
-}
-```
+1. Streaming Service doesn't respond - tell client it's unavailable
 
-The exact `reason` depends on which watched service died.
