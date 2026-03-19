@@ -27,7 +27,6 @@ const transcodeHighBar = document.getElementById("transcodeHighBar");
 const transcodeHighPercent = document.getElementById("transcodeHighPercent");
 const transcodeHighTrack = document.getElementById("transcodeHighTrack");
 const doneMessage = document.getElementById("doneMessage");
-const reconnectBtn = document.getElementById("reconnectBtn");
 const player = document.getElementById("player");
 const playerStatus = document.getElementById("playerStatus");
 const playBtn = document.getElementById("playBtn");
@@ -39,13 +38,14 @@ let currentVideoId = null;
 let totalSegments = null;
 let completedSegments = 0;
 let sourceSegmentsComplete = false;
-let currentWsUrl = null;
 let processingComplete = false;
 let uploadInFlight = false;
 let wsToken = 0;
 let progressRefreshTimerId = null;
 let hlsInstance = null;
 let selectedVideoId = null;
+let playbackAttemptToken = 0;
+let playbackRetryTimerId = null;
 const transcodeProfiles = {
   low: { done: 0, transcoding: 0, uploading: 0, failed: 0, segments: new Map() },
   medium: { done: 0, transcoding: 0, uploading: 0, failed: 0, segments: new Map() },
@@ -81,6 +81,13 @@ function clearProgressRefreshTimer() {
   if (progressRefreshTimerId) {
     clearTimeout(progressRefreshTimerId);
     progressRefreshTimerId = null;
+  }
+}
+
+function clearPlaybackRetryTimer() {
+  if (playbackRetryTimerId) {
+    clearTimeout(playbackRetryTimerId);
+    playbackRetryTimerId = null;
   }
 }
 
@@ -245,13 +252,8 @@ function setPlayerStatus(text, { success = false, hidden = false } = {}) {
   if (!playerStatus) {
     return;
   }
-  playerStatus.textContent = text;
-  playerStatus.classList.toggle("success", success);
-  if (hidden) {
-    playerStatus.classList.add("hidden");
-  } else {
-    playerStatus.classList.remove("hidden");
-  }
+  playerStatus.textContent = "";
+  playerStatus.classList.add("hidden");
 }
 
 function deriveStreamingUrl(baseUrl, videoId) {
@@ -269,6 +271,8 @@ function deriveReadyListUrl(baseUrl) {
 }
 
 function teardownPlayer() {
+  playbackAttemptToken += 1;
+  clearPlaybackRetryTimer();
   if (hlsInstance) {
     hlsInstance.destroy();
     hlsInstance = null;
@@ -282,16 +286,61 @@ function teardownPlayer() {
   setPlayerStatus("", { hidden: true });
 }
 
-function startStreamingPlayback(videoId) {
+function schedulePlaybackRetry({ token, videoId, attempt, maxAttempts }) {
+  if (token !== playbackAttemptToken) {
+    return;
+  }
+  if (attempt >= maxAttempts) {
+    setPlayerStatus("Stream unavailable. Please try again.", { success: false });
+    return;
+  }
+  const delayMs = 1000 * (2 ** (attempt - 1));
+  setPlayerStatus("Stream unavailable. Retrying...", { success: false });
+  clearPlaybackRetryTimer();
+  playbackRetryTimerId = setTimeout(() => {
+    if (token !== playbackAttemptToken) {
+      return;
+    }
+    startStreamingPlayback(videoId, { attempt: attempt + 1, maxAttempts, reuseSession: true });
+  }, delayMs);
+}
+
+function isRetriableStartupHlsError(data) {
+  if (!data || !data.fatal) {
+    return false;
+  }
+  const retriableDetails = new Set([
+    "manifestLoadError",
+    "manifestLoadTimeOut",
+    "levelLoadError",
+    "levelLoadTimeOut"
+  ]);
+  return retriableDetails.has(data.details);
+}
+
+function startStreamingPlayback(videoId, { attempt = 1, maxAttempts = 5, reuseSession = false } = {}) {
   if (!player) {
     return;
   }
   const baseUrl = resolveBaseUrl();
   const manifestUrl = deriveStreamingUrl(baseUrl, videoId);
-  teardownPlayer();
+  if (!reuseSession) {
+    teardownPlayer();
+  } else {
+    clearPlaybackRetryTimer();
+    if (hlsInstance) {
+      hlsInstance.destroy();
+      hlsInstance = null;
+    }
+    player.removeAttribute("src");
+    player.load();
+    setPlayerVisible(false);
+  }
+  const token = playbackAttemptToken;
   setPlayerStatus("", { hidden: true });
 
   if (window.Hls && window.Hls.isSupported()) {
+    let startupComplete = false;
     setPlayerVisible(true);
     player.controls = true;
     hlsInstance = new window.Hls({
@@ -310,20 +359,40 @@ function startStreamingPlayback(videoId) {
     hlsInstance.loadSource(manifestUrl);
     hlsInstance.attachMedia(player);
     hlsInstance.on(window.Hls.Events.MANIFEST_PARSED, () => {
+      if (token !== playbackAttemptToken) {
+        return;
+      }
+      startupComplete = true;
       player.play().catch(() => {});
       setPlayerStatus("", { hidden: true });
     });
-    hlsInstance.on(window.Hls.Events.ERROR, () => {
+    hlsInstance.on(window.Hls.Events.ERROR, (_, data) => {
+      if (token !== playbackAttemptToken) {
+        return;
+      }
+      if (!data || !data.fatal) {
+        return;
+      }
+      if (!startupComplete && isRetriableStartupHlsError(data)) {
+        schedulePlaybackRetry({ token, videoId, attempt, maxAttempts });
+        return;
+      }
       setPlayerStatus("Streaming error.", { success: false });
     });
     return;
   }
 
   if (player.canPlayType("application/vnd.apple.mpegurl")) {
+    let startupComplete = false;
     setPlayerVisible(true);
     player.controls = true;
     player.src = manifestUrl;
-    player.addEventListener("loadedmetadata", () => {
+    const onLoadedMetadata = () => {
+      if (token !== playbackAttemptToken) {
+        return;
+      }
+      startupComplete = true;
+      player.removeEventListener("error", onStartupError);
       // Ensure playback starts from the beginning.
       try {
         player.currentTime = 0;
@@ -332,10 +401,19 @@ function startStreamingPlayback(videoId) {
       }
       player.play().catch(() => {});
       setPlayerStatus("", { hidden: true });
-    }, { once: true });
-    player.addEventListener("error", () => {
+    };
+    const onStartupError = () => {
+      if (token !== playbackAttemptToken) {
+        return;
+      }
+      if (!startupComplete) {
+        schedulePlaybackRetry({ token, videoId, attempt, maxAttempts });
+        return;
+      }
       setPlayerStatus("Streaming error.", { success: false });
-    }, { once: true });
+    };
+    player.addEventListener("loadedmetadata", onLoadedMetadata, { once: true });
+    player.addEventListener("error", onStartupError, { once: true });
     return;
   }
 
@@ -477,7 +555,6 @@ function connectWebSocket(wsUrl, videoId) {
   if (ws) {
     ws.close();
   }
-  currentWsUrl = wsUrl;
   wsToken += 1;
   const token = wsToken;
   console.log("[upload-ui] connectWebSocket", { wsUrl, videoId, token });
@@ -727,9 +804,6 @@ if (uploadTabBtn) {
 }
 if (streamTabBtn) {
   streamTabBtn.addEventListener("click", () => setActiveTab("stream"));
-}
-if (reconnectBtn) {
-  reconnectBtn.addEventListener("click", reconnect);
 }
 if (playBtn) {
   playBtn.addEventListener("click", () => {

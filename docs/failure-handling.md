@@ -42,5 +42,9 @@ This prevents videos from being stuck forever in `PROCESSING` after a container 
 
 ### Streaming Service
 
-1. Streaming Service doesn't respond - tell client it's unavailable
+1. A manifest request hits a streaming-service instance that dies or drops the connection mid-request
+  - Recovery: client retries the manifest request, and Swarm should route it to another healthy replica
+2. All streaming-service instances are unavailable when the client tries to fetch the manifest
+  - Recovery: client shows "stream unavailable" and retries a few times before giving up
+
 
