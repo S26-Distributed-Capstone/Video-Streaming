@@ -28,6 +28,7 @@ import org.apache.logging.log4j.Logger;
 
 public class UploadStatusWebSocket {
     private static final Logger logger = LogManager.getLogger(UploadStatusWebSocket.class);
+    private static final String instanceId = resolveInstanceId();
     private static final ObjectMapper objectMapper = new ObjectMapper()
             .registerModule(new JavaTimeModule())
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
@@ -84,7 +85,7 @@ public class UploadStatusWebSocket {
             ctx.closeSession();
             return;
         }
-        logger.debug("WS bind jobId={}", jobId);
+        logger.info("Status-service instance={} handling jobId={}", instanceId, jobId);
         JobEventListener listener = event -> {
             try {
                 logger.debug("WS send event jobId={} type={}", event.getJobId(), describeEventType(event));
@@ -131,6 +132,7 @@ public class UploadStatusWebSocket {
         String jobId = jobIdByContext.remove(ctx);
         JobEventListener jobListener = jobListenersByContext.remove(ctx);
         if (jobId != null && jobListener != null) {
+            logger.info("Status-service instance={} disconnected jobId={}", instanceId, jobId);
             statusEventBus.unsubscribe(jobId, jobListener);
         }
     }
@@ -163,5 +165,13 @@ public class UploadStatusWebSocket {
             return "transcode_progress";
         }
         return "task";
+    }
+
+    private static String resolveInstanceId() {
+        String hostname = System.getenv("HOSTNAME");
+        if (hostname != null && !hostname.isBlank()) {
+            return hostname;
+        }
+        return "status-service-unknown";
     }
 }

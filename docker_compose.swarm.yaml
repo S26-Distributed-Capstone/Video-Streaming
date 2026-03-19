@@ -124,7 +124,7 @@ services:
     ports:
       - "8081:8081"
     deploy:
-      replicas: 1
+      replicas: 3
 
   streaming-service:
     image: video-streaming-app:latest

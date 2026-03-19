@@ -31,9 +31,10 @@ This prevents videos from being stuck forever in `PROCESSING` after a container 
 
 ### Status Service
 
-1. Status Service dies mid-upload - show client statuses is unavailable. Retry. 
-  - Recovery: New Status Service checks Postgres for current status of the videoId. Then start listening on RabbitMQ and write to Postgres as normal
-  - Only consumes from RabbitMQ once confirmed written to Postgres - therefore if Status Service fails mid-write, we don't lose updates 
+1. Status-service dies mid-upload - client reconnects or retries against a healthy status-service instance
+  - Recovery: New status-service instance restores the latest known progress for that videoId from Postgres, sends the latest snapshot to the client, then resumes consuming live status events from RabbitMQ
+2. All status-service instances are unavailable during uploading / processing
+  - Recovery: client shows "status unavailable" and retries a few times before giving up
 
 ### Processing Service
 

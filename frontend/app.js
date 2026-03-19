@@ -42,6 +42,11 @@ let processingComplete = false;
 let uploadInFlight = false;
 let wsToken = 0;
 let progressRefreshTimerId = null;
+let wsReconnectTimerId = null;
+let currentWsUrl = null;
+let reconnectAttempts = 0;
+const maxReconnectAttempts = 6;
+const reconnectBaseDelayMs = 1000;
 let hlsInstance = null;
 let selectedVideoId = null;
 let playbackAttemptToken = 0;
@@ -84,11 +89,69 @@ function clearProgressRefreshTimer() {
   }
 }
 
-function clearPlaybackRetryTimer() {
-  if (playbackRetryTimerId) {
-    clearTimeout(playbackRetryTimerId);
-    playbackRetryTimerId = null;
+function clearTimer(timerId) {
+  if (timerId) {
+    clearTimeout(timerId);
   }
+  return null;
+}
+
+function clearWsReconnectTimer() {
+  wsReconnectTimerId = clearTimer(wsReconnectTimerId);
+}
+
+function clearPlaybackRetryTimer() {
+  playbackRetryTimerId = clearTimer(playbackRetryTimerId);
+}
+
+function resetWsReconnectState() {
+  clearWsReconnectTimer();
+  reconnectAttempts = 0;
+}
+
+function exponentialBackoffDelayMs(attempt, baseDelayMs = 1000) {
+  return baseDelayMs * (2 ** Math.max(0, attempt - 1));
+}
+
+function scheduleRetry({
+  activeToken,
+  expectedToken,
+  attempt,
+  maxAttempts,
+  baseDelayMs = 1000,
+  timerId,
+  clearTimerFn,
+  isCanceled = () => false,
+  onExhausted,
+  beforeSchedule,
+  run
+}) {
+  if (activeToken !== expectedToken || isCanceled()) {
+    return null;
+  }
+  if (timerId) {
+    return timerId;
+  }
+  if (attempt >= maxAttempts) {
+    if (onExhausted) {
+      onExhausted();
+    }
+    return null;
+  }
+  const nextAttempt = attempt + 1;
+  const delayMs = exponentialBackoffDelayMs(nextAttempt, baseDelayMs);
+  if (beforeSchedule) {
+    beforeSchedule({ attempt: nextAttempt, maxAttempts, delayMs });
+  }
+  if (clearTimerFn) {
+    clearTimerFn();
+  }
+  return setTimeout(() => {
+    if (activeToken !== expectedToken || isCanceled()) {
+      return;
+    }
+    run({ attempt: nextAttempt, delayMs });
+  }, delayMs);
 }
 
 function resetStateForNextUpload() {
@@ -97,6 +160,8 @@ function resetStateForNextUpload() {
   sourceSegmentsComplete = false;
   processingComplete = false;
   clearProgressRefreshTimer();
+  resetWsReconnectState();
+  currentWsUrl = null;
   ["low", "medium", "high"].forEach((profile) => {
     const state = transcodeProfiles[profile];
     state.done = 0;
@@ -287,22 +352,19 @@ function teardownPlayer() {
 }
 
 function schedulePlaybackRetry({ token, videoId, attempt, maxAttempts }) {
-  if (token !== playbackAttemptToken) {
-    return;
-  }
-  if (attempt >= maxAttempts) {
-    setPlayerStatus("Stream unavailable. Please try again.", { success: false });
-    return;
-  }
-  const delayMs = 1000 * (2 ** (attempt - 1));
-  setPlayerStatus("Stream unavailable. Retrying...", { success: false });
-  clearPlaybackRetryTimer();
-  playbackRetryTimerId = setTimeout(() => {
-    if (token !== playbackAttemptToken) {
-      return;
+  playbackRetryTimerId = scheduleRetry({
+    activeToken: token,
+    expectedToken: playbackAttemptToken,
+    attempt,
+    maxAttempts,
+    timerId: playbackRetryTimerId,
+    clearTimerFn: clearPlaybackRetryTimer,
+    onExhausted: () => setPlayerStatus("Streaming service unavailable. Please try again.", { success: false }),
+    beforeSchedule: () => setPlayerStatus("Streaming service unavailable. Retrying...", { success: false }),
+    run: ({ attempt: nextAttempt }) => {
+      startStreamingPlayback(videoId, { attempt: nextAttempt, maxAttempts, reuseSession: true });
     }
-    startStreamingPlayback(videoId, { attempt: attempt + 1, maxAttempts, reuseSession: true });
-  }, delayMs);
+  });
 }
 
 function isRetriableStartupHlsError(data) {
@@ -551,12 +613,50 @@ function deriveUploadInfoUrl(baseUrl, videoId, uploadStatusUrl) {
   return `${baseUrl.startsWith("https://") ? "https" : "http"}://${host}:${statusPort}/upload-info/${videoId}`;
 }
 
-function connectWebSocket(wsUrl, videoId) {
+function scheduleWebSocketReconnect(wsUrl, videoId, token) {
+  if (!wsUrl || !videoId) {
+    return;
+  }
+  wsReconnectTimerId = scheduleRetry({
+    activeToken: token,
+    expectedToken: wsToken,
+    attempt: reconnectAttempts,
+    maxAttempts: maxReconnectAttempts,
+    baseDelayMs: reconnectBaseDelayMs,
+    timerId: wsReconnectTimerId,
+    clearTimerFn: clearWsReconnectTimer,
+    isCanceled: () => processingComplete,
+    onExhausted: () => {
+      uploadBtn.disabled = false;
+      uploadInFlight = false;
+      setDoneMessage("Status service unavailable. Please reconnect or retry.", { success: false });
+      appendLog("WebSocket reconnect exhausted", "error");
+    },
+    beforeSchedule: ({ attempt, maxAttempts, delayMs }) => {
+      const retryWord = attempt === maxAttempts ? "final retry" : `retry ${attempt}/${maxAttempts}`;
+      reconnectAttempts = attempt;
+      setDoneMessage(`Status service connection lost. Reconnecting (${retryWord})...`, { success: false });
+      appendLog(`WebSocket reconnect scheduled in ${Math.round(delayMs / 1000)}s`);
+    },
+    run: () => {
+      connectWebSocket(wsUrl, videoId, { isReconnect: true });
+    }
+  });
+}
+
+function connectWebSocket(wsUrl, videoId, { isReconnect = false } = {}) {
+  const priorWs = ws;
+  currentWsUrl = wsUrl;
+  wsToken += 1;
+  const token = wsToken;
+  if (priorWs) {
+    ws = null;
+    priorWs.close();
+  }
+  clearWsReconnectTimer();
   if (ws) {
     ws.close();
   }
-  wsToken += 1;
-  const token = wsToken;
   console.log("[upload-ui] connectWebSocket", { wsUrl, videoId, token });
   if (wsUrlLabel) {
     wsUrlLabel.textContent = wsUrl;
@@ -568,11 +668,16 @@ function connectWebSocket(wsUrl, videoId) {
     if (token !== wsToken) {
       return;
     }
+    resetWsReconnectState();
     appendLog("WebSocket connected");
     setDoneMessage("Upload complete.", { success: true, hidden: true });
     console.log("[upload-ui] ws open", { wsUrl, videoId, token });
     if (videoId) {
       ws.send(`job:${videoId}`);
+      fetchUploadInfo(resolveBaseUrl(), videoId, wsUrl).catch(() => {});
+    }
+    if (isReconnect) {
+      appendLog("WebSocket reconnected");
     }
   });
 
@@ -598,6 +703,8 @@ function connectWebSocket(wsUrl, videoId) {
       }
       if (payload && payload.type === "failed") {
         processingComplete = true;
+        resetWsReconnectState();
+        currentWsUrl = null;
         uploadBtn.disabled = false;
         uploadInFlight = false;
         resetStateForNextUpload();
@@ -620,11 +727,7 @@ function connectWebSocket(wsUrl, videoId) {
     }
     appendLog("WebSocket disconnected");
     if (!processingComplete) {
-      uploadBtn.disabled = false;
-      uploadInFlight = false;
-      if (doneMessage) {
-        setDoneMessage("Connection lost.", { success: false });
-      }
+      scheduleWebSocketReconnect(wsUrl, videoId, token);
     }
   });
 
@@ -634,11 +737,7 @@ function connectWebSocket(wsUrl, videoId) {
     }
     appendLog("WebSocket error", "error");
     if (!processingComplete) {
-      uploadBtn.disabled = false;
-      uploadInFlight = false;
-      if (doneMessage) {
-        setDoneMessage("Connection error.", { success: false });
-      }
+      scheduleWebSocketReconnect(wsUrl, videoId, token);
     }
   });
 }
