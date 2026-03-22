@@ -90,7 +90,8 @@ public final class LocalSpoolUploadWorkerPool {
         }
     }
 
-    private void uploadSpoolTask(LocalSpoolUploadTask task, ObjectStorageClient storageClient) {
+    /** Package-private for testability. */
+    void uploadSpoolTask(LocalSpoolUploadTask task, ObjectStorageClient storageClient) {
         Path spoolPath = Path.of(task.spoolPath());
         if (runtime.processingTaskClaimRepository() != null) {
             runtime.processingTaskClaimRepository().claim(
