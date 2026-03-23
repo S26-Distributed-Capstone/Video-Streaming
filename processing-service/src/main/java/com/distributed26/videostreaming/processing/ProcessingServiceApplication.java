@@ -138,6 +138,12 @@ public class ProcessingServiceApplication {
             LOGGER.info("Reset {} local upload task(s) from UPLOADING to PENDING during startup", resetUploads);
         }
 
+        // Register listeners BEFORE recovery so that any tasks published to RabbitMQ
+        // (by recovery or already sitting in the queue) are consumed by the listener
+        // instead of being ack'd into the void by the empty-listener fast path.
+        transcodeTaskBus.subscribe(ev -> runtime.submitTranscodeTask(ev, taskExecutor, storageClient, workersByThread, PROFILES));
+        statusEventBus.subscribeAll(runtime::onStatusEvent);
+
         // --- Startup recovery: re-queue orphaned spool files and incomplete videos ---
         // Phase 1: Scan the local spool directory for transcoded segments whose
         //          upload tasks were lost (crash between transcodeToSpool and upsertPending).
@@ -164,8 +170,6 @@ public class ProcessingServiceApplication {
         );
         uploadExecutorRef = uploadExecutor;
 
-        transcodeTaskBus.subscribe(ev -> runtime.submitTranscodeTask(ev, taskExecutor, storageClient, workersByThread, PROFILES));
-        statusEventBus.subscribeAll(runtime::onStatusEvent);
 
         LOGGER.info("Processing service ready — waiting for transcode tasks...");
 
