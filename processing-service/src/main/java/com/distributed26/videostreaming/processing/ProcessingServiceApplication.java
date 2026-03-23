@@ -89,7 +89,12 @@ public class ProcessingServiceApplication {
 
         // Executor threads run one transcode task at a time. The executor's internal queue
         // is now the local buffer between RabbitMQ intake and FFmpeg execution.
-        int poolSize = Integer.parseInt(getEnvOrDotenv(dotenv, "WORKER_POOL_SIZE", "4"));
+        // Default: 3/4 of available processors (leaves headroom for uploaders, GC, OS).
+        int availableCpus = Runtime.getRuntime().availableProcessors();
+        int dynamicDefault = Math.max(1, (availableCpus * 3) / 4);
+        int poolSize = Integer.parseInt(getEnvOrDotenv(dotenv, "WORKER_POOL_SIZE", String.valueOf(dynamicDefault)));
+        LOGGER.info("Detected {} available CPU(s); transcoding worker pool size = {} (default would be {})",
+                availableCpus, poolSize, dynamicDefault);
         TranscodedSegmentStatusRepository transcodeStatusRepository = createTranscodeStatusRepository();
         VideoProcessingRepository videoProcessingRepository = createVideoProcessingRepository();
         ProcessingUploadTaskRepository processingUploadTaskRepository = createProcessingUploadTaskRepository();
