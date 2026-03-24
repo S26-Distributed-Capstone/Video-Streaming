@@ -32,7 +32,7 @@ public class TranscodingTask extends Task {
      * Number of threads each FFmpeg process may use.
      * Defaults to 2 so that multiple concurrent workers don't fight over all CPU cores.
      * Override with the THREADS_PER_WORKER env var.
-     * Rule of thumb: WORKER_POOL_SIZE = floor(CPU_cores / THREADS_PER_WORKER).
+     * The default worker pool size is 3/4 of available CPUs (see ProcessingServiceApplication).
      */
     static final int FFMPEG_THREADS;
     static final String FFMPEG_PRESET;

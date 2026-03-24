@@ -219,6 +219,22 @@ public class ProcessingUploadTaskRepository {
         }
     }
 
+    public int countByState(String state) {
+        String sql = "SELECT COUNT(*) FROM processing_upload_task WHERE state = ?";
+        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, state);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return rs.getInt(1);
+                }
+                return 0;
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to count processing_upload_task by state", e);
+        }
+    }
+
     private void updateState(long id, String state) {
         String sql = """
             UPDATE processing_upload_task

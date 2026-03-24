@@ -57,6 +57,9 @@ services:
       RABBITMQ_STATUS_BINDING: upload.status.*
       RABBITMQ_TASK_QUEUE: ${RABBITMQ_TASK_QUEUE}
       RABBITMQ_TASK_BINDING: ${RABBITMQ_TASK_BINDING}
+      PROCESSING_SPOOL_ROOT: /app/processing-spool
+    volumes:
+      - processing_spool:/app/processing-spool
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8082/health || exit 1"]
       interval: 15s
@@ -162,7 +165,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./upload-service/docs/db/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U ${PG_USER}" ]
+      test: [ "CMD-SHELL", "pg_isready -U ${PG_USER} -d ${PG_DB}" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -197,3 +200,4 @@ volumes:
   rabbitmq_data:
   minio_data:
   postgres_data:
+  processing_spool:

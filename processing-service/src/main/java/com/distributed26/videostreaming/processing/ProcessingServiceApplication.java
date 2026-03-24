@@ -89,7 +89,12 @@ public class ProcessingServiceApplication {
 
         // Executor threads run one transcode task at a time. The executor's internal queue
         // is now the local buffer between RabbitMQ intake and FFmpeg execution.
-        int poolSize = Integer.parseInt(getEnvOrDotenv(dotenv, "WORKER_POOL_SIZE", "4"));
+        // Default: 3/4 of available processors (leaves headroom for uploaders, GC, OS).
+        int availableCpus = Runtime.getRuntime().availableProcessors();
+        int dynamicDefault = Math.max(1, (availableCpus * 3) / 4);
+        int poolSize = Integer.parseInt(getEnvOrDotenv(dotenv, "WORKER_POOL_SIZE", String.valueOf(dynamicDefault)));
+        LOGGER.info("Detected {} available CPU(s); transcoding worker pool size = {} (default would be {})",
+                availableCpus, poolSize, dynamicDefault);
         TranscodedSegmentStatusRepository transcodeStatusRepository = createTranscodeStatusRepository();
         VideoProcessingRepository videoProcessingRepository = createVideoProcessingRepository();
         ProcessingUploadTaskRepository processingUploadTaskRepository = createProcessingUploadTaskRepository();
@@ -132,6 +137,28 @@ public class ProcessingServiceApplication {
         if (resetUploads > 0) {
             LOGGER.info("Reset {} local upload task(s) from UPLOADING to PENDING during startup", resetUploads);
         }
+
+        // Register listeners BEFORE recovery so that any tasks published to RabbitMQ
+        // (by recovery or already sitting in the queue) are consumed by the listener
+        // instead of being ack'd into the void by the empty-listener fast path.
+        transcodeTaskBus.subscribe(ev -> runtime.submitTranscodeTask(ev, taskExecutor, storageClient, workersByThread, PROFILES));
+        statusEventBus.subscribeAll(runtime::onStatusEvent);
+
+        // --- Startup recovery: re-queue orphaned spool files and incomplete videos ---
+        // Phase 1: Scan the local spool directory for transcoded segments whose
+        //          upload tasks were lost (crash between transcodeToSpool and upsertPending).
+        //          This creates PENDING upload tasks so the upload workers pick them up.
+        // Phase 2: Re-publish transcode tasks for any segments that are neither DONE
+        //          nor have an open upload task (covers segments that need re-transcoding).
+        StartupRecoveryService startupRecovery = new StartupRecoveryService(PROFILES, runtime);
+        startupRecovery.recoverOrphanedSpoolFiles(storageClient, localUploadSpoolRoot);
+        startupRecovery.recoverIncompleteVideos(storageClient);
+
+        int pendingUploads = processingUploadTaskRepository.countByState("PENDING");
+        if (pendingUploads > 0) {
+            LOGGER.info("Upload queue has {} PENDING task(s) ready for upload workers", pendingUploads);
+        }
+
         int uploadWorkerCount = Integer.parseInt(getEnvOrDotenv(dotenv, "LOCAL_UPLOAD_WORKER_COUNT", "2"));
         long uploadPollMillis = Long.parseLong(getEnvOrDotenv(dotenv, "LOCAL_UPLOAD_POLL_MILLIS", "500"));
         long uploadClaimTimeoutMillis = Long.parseLong(getEnvOrDotenv(dotenv, "LOCAL_UPLOAD_CLAIM_TIMEOUT_MILLIS", "60000"));
@@ -143,9 +170,6 @@ public class ProcessingServiceApplication {
         );
         uploadExecutorRef = uploadExecutor;
 
-        transcodeTaskBus.subscribe(ev -> runtime.submitTranscodeTask(ev, taskExecutor, storageClient, workersByThread, PROFILES));
-        statusEventBus.subscribeAll(runtime::onStatusEvent);
-        new StartupRecoveryService(PROFILES, runtime).recoverIncompleteVideos(storageClient);
 
         LOGGER.info("Processing service ready — waiting for transcode tasks...");
 

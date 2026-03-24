@@ -41,6 +41,20 @@ This prevents videos from being stuck forever in `PROCESSING` after a container 
 1. Processing Service fails / dies mid-transcoding a segment - needs to be downloaded again from S3 and retranscoded. (Never acked from RabbitMQ)
 2. Processing Service fails / dies mid-uploading a segment - checks local DB for previously transcoded segments and uploads them with the local queue. Tried to sping up for ~10 seconds. If it can't spin it up, have another processing service instance pick it up using RabbitMQ ack timeout
 
+#### Mid-Upload Recovery Details
+
+When the processing service restarts after a mid-upload crash, the following recovery sequence runs:
+
+1. **Reset UPLOADING → PENDING**: Any `processing_upload_task` rows left in `UPLOADING` state are reset to `PENDING` so the upload workers will retry them.
+2. **Spool orphan scan** (`recoverOrphanedSpoolFiles`): The local spool directory (`/app/processing-spool`) is scanned for `.ts` files that were transcoded but never registered as upload tasks (crash between `transcodeToSpool()` and `upsertPending()`). For each orphaned file:
+   - If already in object storage → clean up spool file and mark DONE
+   - If an upload task already exists → skip
+   - Otherwise → create a PENDING upload task so the upload workers pick it up
+3. **Incomplete video recovery** (`recoverIncompleteVideos`): Videos still in `PROCESSING` status are inspected. Any segments that are neither `DONE` nor have an open upload task are re-queued via RabbitMQ for re-transcoding.
+4. **Upload workers start** and begin polling the `processing_upload_task` table for PENDING tasks, uploading them to object storage.
+
+The spool directory is backed by a Docker volume (`processing_spool`) so transcoded files survive container restarts.
+
 ### Streaming Service
 
 1. A manifest request hits a streaming-service instance that dies or drops the connection mid-request

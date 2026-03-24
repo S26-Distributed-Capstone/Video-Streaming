@@ -1,13 +1,14 @@
 package com.distributed26.videostreaming.processing.runtime;
 
-import com.distributed26.videostreaming.processing.AbrManifestService;
 import com.distributed26.videostreaming.processing.TranscodingProfile;
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
-import com.distributed26.videostreaming.shared.upload.TranscodeTaskBus;
 import com.distributed26.videostreaming.shared.upload.events.TranscodeSegmentState;
 import com.distributed26.videostreaming.shared.upload.events.TranscodeTaskEvent;
+import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -15,7 +16,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ExecutorService;
+import java.util.UUID;
+import java.util.stream.Stream;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -29,6 +31,150 @@ public final class StartupRecoveryService {
     public StartupRecoveryService(TranscodingProfile[] profiles, ProcessingRuntime runtime) {
         this.profiles = profiles;
         this.runtime = runtime;
+    }
+
+    /**
+     * Scans the local spool directory for transcoded segment files that were never
+     * registered as upload tasks in the database. This covers the crash window
+     * between {@code transcodeToSpool()} completing and {@code upsertPending()} being called.
+     *
+     * <p>For each orphaned spool file found:
+     * <ul>
+     *   <li>If the segment is already in object storage → delete the spool file and mark DONE</li>
+     *   <li>If an upload task already exists → skip (upload workers will handle it)</li>
+     *   <li>Otherwise → create a PENDING upload task so the upload workers pick it up</li>
+     * </ul>
+     *
+     * <p>Also cleans up stale {@code .part} files from incomplete writes.
+     *
+     * @param storageClient object storage client for checking existing uploads
+     * @param spoolRoot     root directory of the local spool (e.g. {@code /app/processing-spool})
+     */
+    public void recoverOrphanedSpoolFiles(ObjectStorageClient storageClient, Path spoolRoot) {
+        if (spoolRoot == null || !Files.isDirectory(spoolRoot)) {
+            LOGGER.info("Spool recovery skipped: spool root is not available (path={})", spoolRoot);
+            return;
+        }
+        if (runtime.processingUploadTaskRepository() == null) {
+            LOGGER.info("Spool recovery skipped: upload task repository is not configured");
+            return;
+        }
+
+        int recovered = 0;
+        int skippedExisting = 0;
+        int skippedDone = 0;
+        int cleanedPartFiles = 0;
+
+        try (Stream<Path> videoIdDirs = Files.list(spoolRoot)) {
+            for (Path videoIdDir : videoIdDirs.toList()) {
+                if (!Files.isDirectory(videoIdDir)) {
+                    continue;
+                }
+                String videoId = videoIdDir.getFileName().toString();
+
+                // Validate UUID format
+                try {
+                    UUID.fromString(videoId);
+                } catch (IllegalArgumentException e) {
+                    LOGGER.debug("Spool recovery: skipping non-UUID directory {}", videoIdDir);
+                    continue;
+                }
+
+                if (runtime.isVideoFailed(videoId)) {
+                    LOGGER.info("Spool recovery: cleaning up spool for failed videoId={}", videoId);
+                    deleteDirectoryRecursive(videoIdDir);
+                    continue;
+                }
+
+                try (Stream<Path> profileDirs = Files.list(videoIdDir)) {
+                    for (Path profileDir : profileDirs.toList()) {
+                        if (!Files.isDirectory(profileDir)) {
+                            continue;
+                        }
+                        String profileName = profileDir.getFileName().toString();
+                        TranscodingProfile profile = findProfile(profileName);
+                        if (profile == null) {
+                            LOGGER.warn("Spool recovery: unknown profile directory {}", profileDir);
+                            continue;
+                        }
+
+                        try (Stream<Path> files = Files.list(profileDir)) {
+                            for (Path file : files.toList()) {
+                                // Clean up incomplete .part files from interrupted writes
+                                if (file.toString().endsWith(".part")) {
+                                    try {
+                                        Files.deleteIfExists(file);
+                                        cleanedPartFiles++;
+                                    } catch (IOException e) {
+                                        LOGGER.warn("Spool recovery: failed to delete .part file {}", file, e);
+                                    }
+                                    continue;
+                                }
+
+                                if (!Files.isRegularFile(file) || !file.toString().endsWith(".ts")) {
+                                    continue;
+                                }
+
+                                String fileName = file.getFileName().toString();
+                                int segmentNumber = ProcessingRuntime.parseSegmentNumber(fileName);
+                                if (segmentNumber < 0) {
+                                    LOGGER.warn("Spool recovery: cannot parse segment number from {}", file);
+                                    continue;
+                                }
+
+                                // Skip if an upload task already exists (upload workers will handle it)
+                                if (runtime.processingUploadTaskRepository().hasOpenTask(videoId, profileName, segmentNumber)) {
+                                    skippedExisting++;
+                                    continue;
+                                }
+
+                                // If already in object storage, clean up and mark DONE
+                                String outputKey = videoId + "/processed/" + profileName + "/" + fileName;
+                                if (storageClient.fileExists(outputKey)) {
+                                    try {
+                                        Files.deleteIfExists(file);
+                                    } catch (IOException e) {
+                                        LOGGER.warn("Spool recovery: failed to delete already-uploaded spool file {}", file, e);
+                                    }
+                                    runtime.publishTranscodeState(videoId, profileName, segmentNumber,
+                                            TranscodeSegmentState.DONE, profiles);
+                                    skippedDone++;
+                                    continue;
+                                }
+
+                                // Create a PENDING upload task for this orphaned spool file
+                                String chunkKey = videoId + "/chunks/" + fileName;
+                                long sizeBytes = Files.size(file);
+                                double offsetSeconds = ProcessingRuntime.fallbackOffsetForSegment(segmentNumber);
+
+                                runtime.processingUploadTaskRepository().upsertPending(
+                                        videoId,
+                                        profileName,
+                                        segmentNumber,
+                                        chunkKey,
+                                        outputKey,
+                                        file.toAbsolutePath().toString(),
+                                        sizeBytes,
+                                        offsetSeconds
+                                );
+                                recovered++;
+                                LOGGER.info("Spool recovery: created upload task for orphaned file videoId={} profile={} segment={} path={}",
+                                        videoId, profileName, segmentNumber, file);
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (IOException e) {
+            LOGGER.warn("Spool recovery: error scanning spool directory", e);
+        }
+
+        if (recovered > 0 || skippedDone > 0 || cleanedPartFiles > 0) {
+            LOGGER.info("Spool recovery complete: recovered={} alreadyUploaded={} existingTasks={} partFilesCleaned={}",
+                    recovered, skippedDone, skippedExisting, cleanedPartFiles);
+        } else {
+            LOGGER.info("Spool recovery complete: no orphaned files found");
+        }
     }
 
     public void recoverIncompleteVideos(ObjectStorageClient storageClient) {
@@ -213,6 +359,33 @@ public final class StartupRecoveryService {
             return Double.parseDouble(matcher.group(1).trim());
         } catch (NumberFormatException e) {
             return 0d;
+        }
+    }
+
+    private TranscodingProfile findProfile(String profileName) {
+        if (profileName == null || profileName.isBlank()) {
+            return null;
+        }
+        for (TranscodingProfile profile : profiles) {
+            if (profile.getName().equalsIgnoreCase(profileName)) {
+                return profile;
+            }
+        }
+        return null;
+    }
+
+    private void deleteDirectoryRecursive(Path dir) {
+        try (Stream<Path> walk = Files.walk(dir)) {
+            walk.sorted(Comparator.reverseOrder())
+                    .forEach(path -> {
+                        try {
+                            Files.deleteIfExists(path);
+                        } catch (IOException e) {
+                            LOGGER.warn("Spool recovery: failed to delete {}", path, e);
+                        }
+                    });
+        } catch (IOException e) {
+            LOGGER.warn("Spool recovery: failed to recursively delete directory {}", dir, e);
         }
     }
 }

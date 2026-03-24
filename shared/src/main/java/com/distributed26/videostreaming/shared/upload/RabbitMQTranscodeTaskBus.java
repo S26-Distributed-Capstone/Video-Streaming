@@ -168,7 +168,8 @@ public class RabbitMQTranscodeTaskBus implements TranscodeTaskBus {
         if (poolSize != null && !poolSize.isBlank()) {
             return Math.max(1, Integer.parseInt(poolSize));
         }
-        return 4;
+        // Match the processing-service default: 3/4 of available CPUs
+        return Math.max(1, (Runtime.getRuntime().availableProcessors() * 3) / 4);
     }
 
     @Override
