@@ -204,6 +204,5 @@ docker stack rm video-external
 ## Related Documents
 
 - `docs/api.md`
-- `docs/api-contract.md`
 - `docs/architecture.md`
-- `docs/failure-handling.md`
+- `docs/challenges.md`

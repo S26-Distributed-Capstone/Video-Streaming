@@ -2,7 +2,7 @@
 
 This document defines the scope of the project, the use cases the system supports, and the failure and recovery behavior expected within that scope.
 
-For API details, see `docs/api.md` and `docs/api-contract.md`.
+For API details, see `docs/api.md` and `docs/api.md`.
 For installation and deployment steps, see `docs/installation.md`.
 For architecture and redundancy, see `docs/architecture.md`.
 For detailed failure and recovery behavior, see `docs/challenges.md`.

@@ -3,7 +3,7 @@
 This document defines the system architecture using C4-equivalent diagrams. It focuses on system boundaries, major containers, deployment structure, and where redundancy is used.
 
 For supported scenarios and delivery scope, see `docs/scope.md`.
-For failure modes, coordination risks, and recovery behavior, see `docs/failure-handling.md`.
+For failure modes, coordination risks, and recovery behavior, see `docs/challenges.md`.
 
 ## Architecture Summary
 
@@ -27,6 +27,10 @@ The architecture is captured in these diagram sources:
 
 - `docs/diagrams/architecture.drawio`
 - `docs/diagrams/processing-service.drawio`
+- `docs/diagrams/upload-service.drawio`
+- `docs/diagrams/streaming-service.drawio`
+- `docs/diagrams/status-service.drawio`
+
 
 ### Context Notes
 
@@ -114,7 +118,7 @@ The main mitigations are:
 - explicit failure detection in node-watcher
 
 See `docs/scope.md` for the supported scenarios these concerns apply to.
-See `docs/failure-handling.md` for the concrete recovery behaviors currently implemented.
+See `docs/challenges.md` for the concrete recovery behaviors currently implemented.
 
 ## Architectural Boundaries
 
