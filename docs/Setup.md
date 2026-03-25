@@ -71,6 +71,67 @@ docker compose down -v
 docker compose up -d --build
 ```
 
+## Run With External Shared Infrastructure
+
+Use this mode when you want the application services to connect to a Postgres, RabbitMQ, and MinIO instance that are outside the swarm stack. This is the easiest way to simulate "many machines connect to one shared database" on a single computer.
+
+### 1) Start infrastructure separately
+
+You can use plain Docker containers, Docker Compose, or services installed directly on your host. The important part is that these ports are reachable from the application containers:
+
+- PostgreSQL on `5432`
+- RabbitMQ on `5672`
+- MinIO on `9000`
+
+### 2) Point `.env` at the external endpoints
+
+For Docker Desktop on macOS, `host.docker.internal` is usually the easiest choice:
+
+```env
+PG_URL=jdbc:postgresql://host.docker.internal:5432/videostreaming
+PG_USER=postgres
+PG_PASSWORD=postgres
+PG_DB=videostreaming
+
+RABBITMQ_HOST=host.docker.internal
+RABBITMQ_PORT=5672
+
+MINIO_ENDPOINT=http://host.docker.internal:9000
+MINIO_PUBLIC_ENDPOINT=http://host.docker.internal:9000
+```
+
+If you want to mimic the real multi-machine setup more closely, replace `host.docker.internal` with your laptop's LAN IP instead.
+
+### 3) Apply the schema once
+
+```bash
+source .env
+psql -h localhost -U "$PG_USER" -d "$PG_DB" -f upload-service/docs/db/schema.sql
+```
+
+If your Postgres instance is not published on `localhost`, replace the host accordingly.
+
+### 4) Deploy only the application stack
+
+```bash
+./deploy_swarm_external.sh
+```
+
+This deploys:
+- `upload-service`
+- `status-service`
+- `processing-service`
+- `streaming-service`
+- `node-watcher`
+
+It does not deploy local `postgres`, `rabbitmq`, or `minio` services into the swarm.
+
+### 5) Stop the external-infra test stack
+
+```bash
+docker stack rm video-external
+```
+
 ## Run (Frontend + Upload Service)
 
 With Docker Compose running, open:

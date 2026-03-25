@@ -1,0 +1,325 @@
+version: '3.8'
+services:
+  upload-service:
+    image: video-streaming-app:latest
+    environment:
+        PG_URL: ${PG_URL}
+        PG_USER: ${PG_USER}
+        PG_PASSWORD: ${PG_PASSWORD}
+        MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+        MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+        MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+        MINIO_BUCKET_NAME: ${MINIO_BUCKET_NAME}
+        MINIO_REGION: ${MINIO_REGION}
+        RABBITMQ_HOST: ${RABBITMQ_HOST}
+        RABBITMQ_PORT: ${RABBITMQ_PORT}
+        RABBITMQ_USER: ${RABBITMQ_USER}
+        RABBITMQ_PASS: ${RABBITMQ_PASS}
+        RABBITMQ_VHOST: ${RABBITMQ_VHOST}
+        RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE}
+        RABBITMQ_STATUS_QUEUE: ${RABBITMQ_STATUS_QUEUE}
+        RABBITMQ_STATUS_BINDING: ${RABBITMQ_STATUS_BINDING}
+        RABBITMQ_TASK_QUEUE: ${RABBITMQ_TASK_QUEUE}
+        RABBITMQ_TASK_BINDING: ${RABBITMQ_TASK_BINDING}
+        SERVICE_MODE: upload
+        STATUS_PORT: ${STATUS_PORT}
+    command:
+      - /bin/sh
+      - -c
+      - |
+          python3 - <<'PY'
+          import os, socket, time
+          host = os.environ["RABBITMQ_HOST"]
+          port = int(os.environ["RABBITMQ_PORT"])
+          deadline = time.time() + 120
+          while time.time() < deadline:
+              try:
+                  with socket.create_connection((host, port), timeout=2):
+                      print("rabbitmq ready")
+                      break
+              except OSError:
+                  time.sleep(2)
+          else:
+              raise SystemExit("rabbitmq not reachable")
+          PY
+          python3 - <<'PY'
+          import os, socket, time
+          from urllib.parse import urlparse
+          jdbc_url = os.environ["PG_URL"]
+          parsed = urlparse(jdbc_url[5:] if jdbc_url.startswith("jdbc:") else jdbc_url)
+          host = parsed.hostname
+          port = parsed.port or 5432
+          deadline = time.time() + 120
+          while time.time() < deadline:
+              try:
+                  with socket.create_connection((host, port), timeout=2):
+                      print("postgres ready")
+                      break
+              except OSError:
+                  time.sleep(2)
+          else:
+              raise SystemExit("postgres not reachable")
+          PY
+          mvn -pl upload-service -DskipTests exec:java -Dexec.mainClass=com.distributed26.videostreaming.upload.upload.UploadServiceApplication
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=2)\" || exit 1"
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    ports:
+      - "8080:8080"
+    deploy:
+      replicas: 3
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+      update_config:
+        order: start-first
+      rollback_config:
+        order: start-first
+
+  status-service:
+    image: video-streaming-app:latest
+    environment:
+        PG_URL: ${PG_URL}
+        PG_USER: ${PG_USER}
+        PG_PASSWORD: ${PG_PASSWORD}
+        MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+        MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+        MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+        MINIO_BUCKET_NAME: ${MINIO_BUCKET_NAME}
+        MINIO_REGION: ${MINIO_REGION}
+        RABBITMQ_HOST: ${RABBITMQ_HOST}
+        RABBITMQ_PORT: ${RABBITMQ_PORT}
+        RABBITMQ_USER: ${RABBITMQ_USER}
+        RABBITMQ_PASS: ${RABBITMQ_PASS}
+        RABBITMQ_VHOST: ${RABBITMQ_VHOST}
+        RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE}
+        RABBITMQ_STATUS_QUEUE: ${RABBITMQ_STATUS_QUEUE}
+        RABBITMQ_STATUS_BINDING: ${RABBITMQ_STATUS_BINDING}
+        RABBITMQ_TASK_QUEUE: ${RABBITMQ_TASK_QUEUE}
+        RABBITMQ_TASK_BINDING: ${RABBITMQ_TASK_BINDING}
+        SERVICE_MODE: status
+        STATUS_PORT: ${STATUS_PORT}
+    command:
+      - /bin/sh
+      - -c
+      - |
+          python3 - <<'PY'
+          import os, socket, time
+          host = os.environ["RABBITMQ_HOST"]
+          port = int(os.environ["RABBITMQ_PORT"])
+          deadline = time.time() + 120
+          while time.time() < deadline:
+              try:
+                  with socket.create_connection((host, port), timeout=2):
+                      print("rabbitmq ready")
+                      break
+              except OSError:
+                  time.sleep(2)
+          else:
+              raise SystemExit("rabbitmq not reachable")
+          PY
+          python3 - <<'PY'
+          import os, socket, time
+          from urllib.parse import urlparse
+          jdbc_url = os.environ["PG_URL"]
+          parsed = urlparse(jdbc_url[5:] if jdbc_url.startswith("jdbc:") else jdbc_url)
+          host = parsed.hostname
+          port = parsed.port or 5432
+          deadline = time.time() + 120
+          while time.time() < deadline:
+              try:
+                  with socket.create_connection((host, port), timeout=2):
+                      print("postgres ready")
+                      break
+              except OSError:
+                  time.sleep(2)
+          else:
+              raise SystemExit("postgres not reachable")
+          PY
+          mvn -pl upload-service -DskipTests exec:java -Dexec.mainClass=com.distributed26.videostreaming.upload.upload.UploadServiceApplication
+    ports:
+      - "8081:8081"
+    deploy:
+      replicas: 3
+
+  streaming-service:
+    image: video-streaming-app:latest
+    environment:
+      PG_URL: ${PG_URL}
+      PG_USER: ${PG_USER}
+      PG_PASSWORD: ${PG_PASSWORD}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      MINIO_BUCKET_NAME: ${MINIO_BUCKET_NAME}
+      MINIO_REGION: ${MINIO_REGION}
+      STREAMING_PORT: ${STREAMING_PORT}
+    command:
+      - /bin/sh
+      - -c
+      - |
+          python3 - <<'PY'
+          import os, socket, time
+          from urllib.parse import urlparse
+          jdbc_url = os.environ["PG_URL"]
+          parsed = urlparse(jdbc_url[5:] if jdbc_url.startswith("jdbc:") else jdbc_url)
+          host = parsed.hostname
+          port = parsed.port or 5432
+          deadline = time.time() + 120
+          while time.time() < deadline:
+              try:
+                  with socket.create_connection((host, port), timeout=2):
+                      print("postgres ready")
+                      break
+              except OSError:
+                  time.sleep(2)
+          else:
+              raise SystemExit("postgres not reachable")
+          PY
+          python3 - <<'PY'
+          import os, socket, time
+          from urllib.parse import urlparse
+          endpoint = os.environ["MINIO_ENDPOINT"]
+          parsed = urlparse(endpoint)
+          host = parsed.hostname
+          port = parsed.port or (443 if parsed.scheme == "https" else 9000)
+          deadline = time.time() + 120
+          while time.time() < deadline:
+              try:
+                  with socket.create_connection((host, port), timeout=2):
+                      print("minio ready")
+                      break
+              except OSError:
+                  time.sleep(2)
+          else:
+              raise SystemExit("minio not reachable")
+          PY
+          mvn -pl streaming-service -DskipTests exec:java -Dexec.mainClass=com.distributed26.videostreaming.streaming.streaming.StreamingServiceApplication
+    ports:
+      - "8083:8083"
+    deploy:
+      replicas: 3
+
+  processing-service:
+    image: video-streaming-app:latest
+    environment:
+      PG_URL: ${PG_URL}
+      PG_USER: ${PG_USER}
+      PG_PASSWORD: ${PG_PASSWORD}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      MINIO_BUCKET_NAME: ${MINIO_BUCKET_NAME}
+      MINIO_REGION: ${MINIO_REGION}
+      RABBITMQ_HOST: ${RABBITMQ_HOST}
+      RABBITMQ_PORT: ${RABBITMQ_PORT}
+      RABBITMQ_USER: ${RABBITMQ_USER}
+      RABBITMQ_PASS: ${RABBITMQ_PASS}
+      RABBITMQ_VHOST: ${RABBITMQ_VHOST}
+      RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE}
+      RABBITMQ_STATUS_QUEUE: ${RABBITMQ_STATUS_QUEUE_PROCESSING}
+      RABBITMQ_STATUS_BINDING: ${RABBITMQ_STATUS_BINDING}
+      RABBITMQ_TASK_QUEUE: ${RABBITMQ_TASK_QUEUE}
+      RABBITMQ_TASK_BINDING: ${RABBITMQ_TASK_BINDING}
+      SERVICE_MODE: processing
+      PROCESSING_PORT: ${PROCESSING_PORT}
+    command:
+      - /bin/sh
+      - -c
+      - |
+          python3 - <<'PY'
+          import os, socket, time
+          host = os.environ["RABBITMQ_HOST"]
+          port = int(os.environ["RABBITMQ_PORT"])
+          deadline = time.time() + 120
+          while time.time() < deadline:
+              try:
+                  with socket.create_connection((host, port), timeout=2):
+                      print("rabbitmq ready")
+                      break
+              except OSError:
+                  time.sleep(2)
+          else:
+              raise SystemExit("rabbitmq not reachable")
+          PY
+          python3 - <<'PY'
+          import os, socket, time
+          from urllib.parse import urlparse
+          endpoint = os.environ["MINIO_ENDPOINT"]
+          parsed = urlparse(endpoint)
+          host = parsed.hostname
+          port = parsed.port or (443 if parsed.scheme == "https" else 9000)
+          deadline = time.time() + 120
+          while time.time() < deadline:
+              try:
+                  with socket.create_connection((host, port), timeout=2):
+                      print("minio ready")
+                      break
+              except OSError:
+                  time.sleep(2)
+          else:
+              raise SystemExit("minio not reachable")
+          PY
+          mvn -pl processing-service -DskipTests exec:java -Dexec.mainClass=com.distributed26.videostreaming.processing.ProcessingServiceApplication
+    ports:
+      - "8082:8082"
+    deploy:
+      replicas: 3
+
+  node-watcher:
+    image: video-streaming-app:latest
+    environment:
+      PG_USER: ${PG_USER}
+      PG_PASSWORD: ${PG_PASSWORD}
+      PG_DB: ${PG_DB}
+      PG_URL: ${PG_URL}
+      RABBITMQ_HOST: ${RABBITMQ_HOST}
+      RABBITMQ_PORT: ${RABBITMQ_PORT}
+      RABBITMQ_USER: ${RABBITMQ_USER}
+      RABBITMQ_PASS: ${RABBITMQ_PASS}
+      RABBITMQ_VHOST: ${RABBITMQ_VHOST}
+      RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE}
+      WATCH_CONTAINER_NAME_PREFIX: ${WATCH_CONTAINER_NAME_PREFIX}
+      FAILURE_REASON: ${FAILURE_REASON}
+      UPDATE_DB_STATUS: ${UPDATE_DB_STATUS}
+      PYTHONUNBUFFERED: ${PYTHONUNBUFFERED}
+      DEBUG_EVENTS: ${DEBUG_EVENTS}
+      DEDUP_WINDOW_SECONDS: ${DEDUP_WINDOW_SECONDS}
+    command:
+      - /bin/sh
+      - -c
+      - |
+          python3 - <<'PY'
+          import os, socket, time
+          host = os.environ["RABBITMQ_HOST"]
+          port = int(os.environ["RABBITMQ_PORT"])
+          deadline = time.time() + 120
+          while time.time() < deadline:
+              try:
+                  with socket.create_connection((host, port), timeout=2):
+                      print("rabbitmq ready")
+                      break
+              except OSError:
+                  time.sleep(2)
+          else:
+              raise SystemExit("rabbitmq not reachable")
+          PY
+          python3 /app/node-watcher/watcher.py
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    deploy:
+      mode: global
+
+networks:
+  default:
+    external: true
+    name: video_default
