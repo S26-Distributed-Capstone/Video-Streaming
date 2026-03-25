@@ -63,14 +63,9 @@ Services coordinate through **RabbitMQ** for event-driven processing and **MinIO
 
 **Storage as Source of Truth**: MinIO holds all video data (chunks, transcoded segments). Services are stateless and can restart without data loss.
 
-## Technology Stack
+## Technologies
 
-- **HTTP Framework**: Javalin (lightweight, no annotations)
-- **Message Broker**: RabbitMQ (event-driven coordination)
-- **Object Storage**: MinIO (S3-compatible)
-- **Video Processing**: FFmpeg (segmentation and transcoding)
-- **Language**: Java 17
-- **Build Tool**: Maven (multi-module project)
+The project’s technology choices, tradeoffs, and evaluated alternatives are documented in `docs/technologies.md`.
 
 ## System Guarantees
 
