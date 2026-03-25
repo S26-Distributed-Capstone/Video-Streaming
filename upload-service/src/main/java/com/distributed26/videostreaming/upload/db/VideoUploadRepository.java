@@ -10,6 +10,12 @@ import java.util.UUID;
 import java.util.Optional;
 
 public class VideoUploadRepository {
+    public enum FailedTransitionResult {
+        UPDATED,
+        NOT_FOUND,
+        NOT_PROCESSING
+    }
+
     private static final org.apache.logging.log4j.Logger logger =
         org.apache.logging.log4j.LogManager.getLogger(VideoUploadRepository.class);
     private final String jdbcUrl;
@@ -78,6 +84,46 @@ public class VideoUploadRepository {
             ps.executeUpdate();
         } catch (SQLException e) {
             throw new RuntimeException("Failed to update video_upload status", e);
+        }
+    }
+
+    public FailedTransitionResult markFailedIfProcessing(String videoId) {
+        String selectSql = "SELECT status FROM video_upload WHERE video_id = ? FOR UPDATE";
+        String updateSql = "UPDATE video_upload SET status = 'FAILED' WHERE video_id = ? AND status = 'PROCESSING'";
+        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password)) {
+            conn.setAutoCommit(false);
+            try {
+                String currentStatus;
+                try (PreparedStatement select = conn.prepareStatement(selectSql)) {
+                    select.setObject(1, UUID.fromString(videoId));
+                    try (ResultSet rs = select.executeQuery()) {
+                        if (!rs.next()) {
+                            conn.commit();
+                            return FailedTransitionResult.NOT_FOUND;
+                        }
+                        currentStatus = rs.getString("status");
+                    }
+                }
+
+                if (!"PROCESSING".equalsIgnoreCase(currentStatus)) {
+                    conn.commit();
+                    return FailedTransitionResult.NOT_PROCESSING;
+                }
+
+                try (PreparedStatement update = conn.prepareStatement(updateSql)) {
+                    update.setObject(1, UUID.fromString(videoId));
+                    int updated = update.executeUpdate();
+                    conn.commit();
+                    return updated > 0 ? FailedTransitionResult.UPDATED : FailedTransitionResult.NOT_PROCESSING;
+                }
+            } catch (SQLException e) {
+                conn.rollback();
+                throw e;
+            } finally {
+                conn.setAutoCommit(true);
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to transition video_upload to FAILED", e);
         }
     }
 

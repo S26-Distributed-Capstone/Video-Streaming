@@ -2,6 +2,7 @@ package com.distributed26.videostreaming.upload.upload;
 
 import com.distributed26.videostreaming.shared.upload.StatusEventBus;
 import com.distributed26.videostreaming.shared.upload.events.UploadFailedEvent;
+import com.distributed26.videostreaming.upload.db.VideoUploadRepository.FailedTransitionResult;
 import com.distributed26.videostreaming.upload.db.VideoUploadRepository;
 import io.javalin.http.Context;
 import java.util.UUID;
@@ -38,7 +39,16 @@ public final class TerminalFailureHandler {
             return;
         }
 
-        videoUploadRepository.updateStatus(videoId, "FAILED");
+        FailedTransitionResult result = videoUploadRepository.markFailedIfProcessing(videoId);
+        if (result == FailedTransitionResult.NOT_FOUND) {
+            ctx.status(404).result("Video not found");
+            return;
+        }
+        if (result == FailedTransitionResult.NOT_PROCESSING) {
+            ctx.status(409).result("Video is not in PROCESSING state");
+            return;
+        }
+
         if (statusEventBus != null) {
             statusEventBus.publish(new UploadFailedEvent(
                     videoId,
