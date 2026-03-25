@@ -25,9 +25,8 @@ This prevents videos from being stuck forever in `PROCESSING` after a container 
 
 ### Upload Service
 
-1. Upload Service dies before returning videoId to client - HTTP 501 error (Service Unavailable)
-2. Upload Service fails / dies while it's segmenting - retry the upload with same videoId, skipping previously uploaded segments. Try to spin up with same instance for ~10 seconds
-3. Upload Service dies after upload but during processing - don't tell client anything
+1. Upload Service dies before returning videoId to the client. If no healthy instance is available, the request fails with a service-unavailable error from the routing layer; otherwise, the request is routed to another healthy upload-service instance.
+2. Upload Service dies while segmenting the video - client immediately retries the upload with the same videoId, skipping previously uploaded segments. If retries exceed the client threshold, the upload is treated as failed.
 
 ### Status Service
 
@@ -47,5 +46,3 @@ This prevents videos from being stuck forever in `PROCESSING` after a container 
   - Recovery: client retries the manifest request, and Swarm should route it to another healthy replica
 2. All streaming-service instances are unavailable when the client tries to fetch the manifest
   - Recovery: client shows "stream unavailable" and retries a few times before giving up
-
-

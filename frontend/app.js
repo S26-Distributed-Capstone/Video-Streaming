@@ -35,18 +35,23 @@ const readyList = document.getElementById("readyList");
 
 let ws = null;
 let currentVideoId = null;
+let currentUploadFile = null;
+let currentUploadName = "";
 let totalSegments = null;
 let completedSegments = 0;
 let sourceSegmentsComplete = false;
 let processingComplete = false;
 let uploadInFlight = false;
+let uploadRetryCount = 0;
 let wsToken = 0;
 let progressRefreshTimerId = null;
 let wsReconnectTimerId = null;
+let uploadRetryTimerId = null;
 let currentWsUrl = null;
 let reconnectAttempts = 0;
 const maxReconnectAttempts = 6;
 const reconnectBaseDelayMs = 1000;
+const maxUploadRetryAttempts = 5;
 let hlsInstance = null;
 let selectedVideoId = null;
 let playbackAttemptToken = 0;
@@ -100,6 +105,10 @@ function clearWsReconnectTimer() {
   wsReconnectTimerId = clearTimer(wsReconnectTimerId);
 }
 
+function clearUploadRetryTimer() {
+  uploadRetryTimerId = clearTimer(uploadRetryTimerId);
+}
+
 function clearPlaybackRetryTimer() {
   playbackRetryTimerId = clearTimer(playbackRetryTimerId);
 }
@@ -107,6 +116,100 @@ function clearPlaybackRetryTimer() {
 function resetWsReconnectState() {
   clearWsReconnectTimer();
   reconnectAttempts = 0;
+}
+
+function disconnectWebSocket() {
+  const priorWs = ws;
+  wsToken += 1;
+  clearWsReconnectTimer();
+  clearUploadRetryTimer();
+  ws = null;
+  currentWsUrl = null;
+  if (priorWs) {
+    priorWs.close();
+  }
+}
+
+function resetUploadRetryState() {
+  clearUploadRetryTimer();
+  uploadRetryCount = 0;
+}
+
+function isUploadRetryableFailure(payload) {
+  if (!payload || payload.type !== "failed") {
+    return false;
+  }
+  const reason = String(payload.reason || "").toLowerCase();
+  return reason.includes("upload");
+}
+
+async function persistTerminalUploadFailure(videoId) {
+  if (!videoId) {
+    return;
+  }
+  const baseUrl = resolveBaseUrl();
+  const failUrl = `${baseUrl}/upload/${videoId}/fail`;
+  try {
+    const resp = await fetch(failUrl, { method: "POST" });
+    if (!resp.ok) {
+      appendLog(`Failed to persist terminal upload failure (${resp.status})`, "error");
+    }
+  } catch (err) {
+    appendLog("Failed to persist terminal upload failure.", "error");
+  }
+}
+
+async function exhaustUploadRetries(message) {
+  const failedVideoId = currentVideoId;
+  processingComplete = true;
+  resetWsReconnectState();
+  disconnectWebSocket();
+  uploadBtn.disabled = false;
+  uploadInFlight = false;
+  resetStateForNextUpload();
+  await persistTerminalUploadFailure(failedVideoId);
+  if (doneMessage) {
+    setDoneMessage(message || "Upload failed.", { success: false });
+  }
+}
+
+function triggerUploadRetry(reason) {
+  if (!currentVideoId || !currentUploadFile || !currentUploadName) {
+    void exhaustUploadRetries("Upload failed.");
+    return;
+  }
+  processingComplete = false;
+  resetWsReconnectState();
+  disconnectWebSocket();
+  uploadInFlight = false;
+  uploadBtn.disabled = true;
+  const videoId = currentVideoId;
+  const reasonSuffix = reason ? ` (${reason})` : "";
+
+  uploadRetryTimerId = scheduleRetry({
+    activeToken: videoId,
+    expectedToken: currentVideoId,
+    attempt: uploadRetryCount,
+    maxAttempts: maxUploadRetryAttempts,
+    baseDelayMs: reconnectBaseDelayMs,
+    timerId: uploadRetryTimerId,
+    clearTimerFn: clearUploadRetryTimer,
+    isCanceled: () => processingComplete || currentVideoId !== videoId,
+    onExhausted: () => {
+      appendLog(`Upload retry limit reached for videoId ${videoId}`, "error");
+      void exhaustUploadRetries("Upload failed.");
+    },
+    beforeSchedule: ({ attempt, maxAttempts, delayMs }) => {
+      uploadRetryCount = attempt;
+      appendLog(
+        `Upload interrupted${reasonSuffix}. Retrying ${attempt}/${maxAttempts} in ${Math.round(delayMs / 1000)}s with videoId ${videoId}`
+      );
+      setDoneMessage(`Upload interrupted. Retrying ${attempt}/${maxAttempts}...`, { success: false });
+    },
+    run: () => {
+      uploadFile({ preserveLog: true, isRetry: true });
+    }
+  });
 }
 
 function exponentialBackoffDelayMs(attempt, baseDelayMs = 1000) {
@@ -278,6 +381,7 @@ function tryFinalizeSuccess() {
     return;
   }
   processingComplete = true;
+  resetUploadRetryState();
   setDoneMessage("Upload, chunking, and transcoding complete.", { success: true });
   uploadBtn.disabled = false;
   uploadInFlight = false;
@@ -702,15 +806,11 @@ function connectWebSocket(wsUrl, videoId, { isReconnect = false } = {}) {
         return;
       }
       if (payload && payload.type === "failed") {
-        processingComplete = true;
-        resetWsReconnectState();
-        currentWsUrl = null;
-        uploadBtn.disabled = false;
-        uploadInFlight = false;
-        resetStateForNextUpload();
-        if (doneMessage) {
-          setDoneMessage("Upload failed.", { success: false });
+        if (isUploadRetryableFailure(payload)) {
+          triggerUploadRetry(payload.reason);
+          return;
         }
+        void exhaustUploadRetries("Upload failed.");
         return;
       }
       if (payload && payload.taskId) {
@@ -770,17 +870,24 @@ function uploadFile({ preserveLog, isRetry } = {}) {
     return;
   }
   console.log("[upload-ui] uploadFile", { isRetry, preserveLog });
-  const file = fileInput.files[0];
+  const file = isRetry ? currentUploadFile : fileInput.files[0];
   if (!file) {
     console.error("[upload-ui] uploadFile requires a selected file");
     appendLog("Select a video file before uploading.", "error");
     return;
   }
-  const videoName = videoNameInput ? videoNameInput.value.trim() : "";
+  const videoName = isRetry ? currentUploadName : (videoNameInput ? videoNameInput.value.trim() : "");
   if (!videoName) {
     console.error("[upload-ui] uploadFile requires videoName");
     appendLog("Enter a video name before uploading.", "error");
     return;
+  }
+
+  if (!isRetry) {
+    currentUploadFile = file;
+    currentUploadName = videoName;
+    currentVideoId = null;
+    resetUploadRetryState();
   }
 
   const baseUrl = resolveBaseUrl();
@@ -833,6 +940,10 @@ function uploadFile({ preserveLog, isRetry } = {}) {
 
     if (xhr.status !== 202) {
       appendLog(`Upload failed: ${xhr.status}`, "error");
+      if (isRetry && currentVideoId) {
+        triggerUploadRetry(`HTTP ${xhr.status}`);
+        return;
+      }
       if (doneMessage) {
         setDoneMessage("Upload failed.", { success: false });
       }
@@ -845,6 +956,10 @@ function uploadFile({ preserveLog, isRetry } = {}) {
     currentVideoId = payload.videoId || payload.video_id || payload.id;
     if (!currentVideoId) {
       appendLog("Upload response missing videoId", "error");
+      if (isRetry) {
+        triggerUploadRetry("missing videoId");
+        return;
+      }
       if (doneMessage) {
         setDoneMessage("Upload failed.", { success: false });
       }
@@ -880,6 +995,10 @@ function uploadFile({ preserveLog, isRetry } = {}) {
     uploadInFlight = false;
     uploadBtn.disabled = false;
     appendLog("Upload failed due to a network error.", "error");
+    if (isRetry && currentVideoId) {
+      triggerUploadRetry("network error");
+      return;
+    }
     resetStateForNextUpload();
     if (doneMessage) {
       setDoneMessage("Upload failed.", { success: false });

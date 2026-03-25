@@ -74,6 +74,12 @@ public class UploadServiceApplication {
                 containerId,
                 failedVideoRegistry
         );
+        TerminalFailureHandler terminalFailureHandler = new TerminalFailureHandler(
+                videoUploadRepository,
+                statusEventBus,
+                machineId,
+                containerId
+        );
 
         Javalin app = Javalin.create(config -> {
             config.jetty.multipartConfig.maxFileSize(10, SizeUnit.GB);
@@ -86,6 +92,7 @@ public class UploadServiceApplication {
 
         app.get("/health", ctx -> ctx.json(java.util.Map.of("status", "ok")));
         app.post("/upload", uploadHandler::upload);
+        app.post("/upload/{videoId}/fail", terminalFailureHandler::markFailed);
 
         app.events(event -> event.serverStopped(() -> {
             try {
