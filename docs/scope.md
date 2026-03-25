@@ -2,10 +2,10 @@
 
 This document defines the scope of the project, the use cases the system supports, and the failure and recovery behavior expected within that scope.
 
-For API details, see `docs/api.md` and `docs/api.md`.
-For installation and deployment steps, see `docs/installation.md`.
-For architecture and redundancy, see `docs/architecture.md`.
-For detailed failure and recovery behavior, see `docs/challenges.md`.
+For API details, see [docs/api.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/api.md) and [docs/api-contract.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/api-contract.md).
+For installation and deployment steps, see [docs/installation.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/installation.md).
+For architecture and redundancy, see [docs/architecture.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/architecture.md).
+For detailed failure and recovery behavior, see [docs/challenges.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/challenges.md).
 
 ## Deliverables
 
@@ -87,7 +87,7 @@ Expected result:
 
 ## Error Cases And Recovery In Scope
 
-The error scenarios in `docs/challenges.md` are explicitly in scope and are part of the expected delivered behavior.
+The error scenarios in [docs/challenges.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/challenges.md) are explicitly in scope and are part of the expected delivered behavior.
 
 
 ## Out Of Scope

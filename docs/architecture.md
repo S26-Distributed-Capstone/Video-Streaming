@@ -2,8 +2,8 @@
 
 This document defines the system architecture using C4-equivalent diagrams. It focuses on system boundaries, major containers, deployment structure, and where redundancy is used.
 
-For supported scenarios and delivery scope, see `docs/scope.md`.
-For failure modes, coordination risks, and recovery behavior, see `docs/challenges.md`.
+For supported scenarios and delivery scope, see [docs/scope.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/scope.md).
+For failure modes, coordination risks, and recovery behavior, see [docs/challenges.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/challenges.md).
 
 ## Architecture Summary
 
@@ -25,12 +25,11 @@ Shared infrastructure:
 
 The architecture is captured in these diagram sources:
 
-- `docs/diagrams/architecture.drawio`
-- `docs/diagrams/processing-service.drawio`
-- `docs/diagrams/upload-service.drawio`
-- `docs/diagrams/streaming-service.drawio`
-- `docs/diagrams/status-service.drawio`
-
+- [docs/diagrams/architecture.drawio](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/diagrams/architecture.drawio)
+- [docs/diagrams/processing-service.drawio](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/diagrams/processing-service.drawio)
+- [docs/diagrams/upload-service.drawio](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/diagrams/upload-service.drawio)
+- [docs/diagrams/streaming-service.drawio](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/diagrams/streaming-service.drawio)
+- [docs/diagrams/status-service.drawio](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/diagrams/status-service.drawio)
 
 ### Context Notes
 
@@ -57,7 +56,7 @@ The most distribution-sensitive part of the system is processing-service, becaus
 
 ## Deployment View
 
-The deployment model supports multiple replicas of stateless services while reusing shared infrastructure. The deployment relationships are shown in `docs/diagrams/architecture.drawio`.
+The deployment model supports multiple replicas of stateless services while reusing shared infrastructure. The deployment relationships are shown in [docs/diagrams/architecture.drawio](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/diagrams/architecture.drawio).
 
 ## Redundancy
 
@@ -117,8 +116,8 @@ The main mitigations are:
 - startup recovery and orphan cleanup in processing-service
 - explicit failure detection in node-watcher
 
-See `docs/scope.md` for the supported scenarios these concerns apply to.
-See `docs/challenges.md` for the concrete recovery behaviors currently implemented.
+See [docs/scope.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/scope.md) for the supported scenarios these concerns apply to.
+See [docs/challenges.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/challenges.md) for the concrete recovery behaviors currently implemented.
 
 ## Architectural Boundaries
 

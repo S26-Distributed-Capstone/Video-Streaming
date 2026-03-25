@@ -65,16 +65,16 @@ Services coordinate through **RabbitMQ** for event-driven processing and **MinIO
 
 ## Technologies
 
-The project’s technology choices, tradeoffs, and evaluated alternatives are documented in `docs/technologies.md`.
+The project’s technology choices, tradeoffs, and evaluated alternatives are documented in [docs/technologies.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/technologies.md).
 
 ## System Guarantees
 
-✅ **Upload Durability**: Video ID is only returned after chunks are written to MinIO  
-✅ **Processing Idempotency**: Re-processing the same video doesn't duplicate work  
-✅ **Streaming Correctness**: Only `READY` videos can be streamed; others return `409 Conflict`  
-✅ **State Visibility**: Clients can observe video lifecycle in real-time via WebSocket  
-✅ **Concurrent Safety**: Multiple uploads and streams don't corrupt shared state  
-✅ **Failure Recovery**: Services can restart and resume work without manual intervention  
+**Upload Durability**: Video ID is only returned after chunks are written to MinIO  
+**Processing Idempotency**: Re-processing the same video doesn't duplicate work  
+**Streaming Correctness**: Only `READY` videos can be streamed; others return `409 Conflict`  
+**State Visibility**: Clients can observe video lifecycle in real-time via WebSocket  
+**Concurrent Safety**: Multiple uploads and streams don't corrupt shared state  
+**Failure Recovery**: Services can restart and resume work without manual intervention  
 
 ## Non-Goals
 

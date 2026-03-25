@@ -2,7 +2,7 @@
 
 This document describes the system from a user's perspective: which APIs are available and which configuration settings must be supplied before use.
 
-Supported use cases and delivery scope are defined in `docs/scope.md`.
+Supported use cases and delivery scope are defined in [docs/scope.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/scope.md).
 
 ## Default Service Addresses
 
@@ -85,7 +85,7 @@ The following settings are expected to be configured by the user.
 
 ## Typical User Flow
 
-1. Install and start the system as described in `docs/installation.md`.
+1. Install and start the system as described in [docs/installation.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/installation.md).
 2. Open the upload UI at `http://localhost:8080`.
 3. Upload a video file and provide a display name.
 4. Watch progress updates through the status WebSocket.

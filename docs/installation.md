@@ -18,7 +18,7 @@ Make sure `ffmpeg` and `ffprobe` are available on your `PATH`.
 ## Step 1: Clone The Project
 
 ```bash
-git clone <your-repository-url>
+git clone https://github.com/S26-Distributed-Capstone/Video-Streaming.git
 cd Video-Streaming
 ```
 
@@ -107,7 +107,7 @@ Open these in your browser if needed:
 On first startup, the Postgres schema is auto-loaded from:
 
 ```text
-upload-service/docs/db/schema.sql
+https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/upload-service/docs/db/schema.sql
 ```
 
 If you need to reapply the schema manually:
@@ -197,12 +197,12 @@ docker stack rm video-external
 
 - If upload works but playback does not, check `MINIO_PUBLIC_ENDPOINT`.
 - If services start but cannot talk to each other, check `.env` hostnames and ports.
-- If Postgres schema errors appear, reapply `upload-service/docs/db/schema.sql`.
+- If Postgres schema errors appear, reapply [upload-service/docs/db/schema.sql](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/upload-service/docs/db/schema.sql).
 - If processing does not start, inspect `processing-service` logs and RabbitMQ connectivity.
 - If browser progress is missing, inspect `status-service` logs and the WebSocket connection.
 
 ## Related Documents
 
-- `docs/api.md`
-- `docs/architecture.md`
-- `docs/challenges.md`
+- [docs/api.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/api.md)
+- [docs/architecture.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/architecture.md)
+- [docs/challenges.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/challenges.md)
