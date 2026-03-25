@@ -58,10 +58,28 @@ services:
               raise SystemExit("postgres not reachable")
           PY
           mvn -pl upload-service -DskipTests exec:java -Dexec.mainClass=com.distributed26.videostreaming.upload.upload.UploadServiceApplication
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=2)\" || exit 1"
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     ports:
       - "8080:8080"
     deploy:
       replicas: 3
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+      update_config:
+        order: start-first
+      rollback_config:
+        order: start-first
 
   status-service:
     image: video-streaming-app:latest

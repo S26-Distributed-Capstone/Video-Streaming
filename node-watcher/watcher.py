@@ -242,9 +242,15 @@ def process_pending_failures(store, stop_event):
                     )
                     continue
                 rabbit_conn, channel, exchange = connect_rabbitmq()
-                if update_db:
+                should_mark_failed = update_db and service_name != "upload"
+                if should_mark_failed:
                     mark_failed(db_conn, video_id)
                     print(f"node-watcher: marked FAILED video_id={video_id}", flush=True)
+                elif update_db and service_name == "upload":
+                    print(
+                        f"node-watcher: upload failure remains retryable video_id={video_id}; skipping FAILED status update",
+                        flush=True,
+                    )
                 print(f"node-watcher: publishing failed for video_id={video_id}", flush=True)
                 publish_failed(channel, exchange, video_id, payload["reason"], machine_id, payload["container_id"])
             except Exception as exc:

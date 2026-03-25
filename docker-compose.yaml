@@ -61,7 +61,11 @@ services:
     volumes:
       - processing_spool:/app/processing-spool
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8082/health || exit 1"]
+      test:
+        [
+          "CMD-SHELL",
+          "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8082/health', timeout=2)\" || exit 1"
+        ]
       interval: 15s
       timeout: 5s
       retries: 3
