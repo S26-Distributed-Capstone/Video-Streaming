@@ -16,6 +16,8 @@ public final class UploadInitializationService {
 
     private final ObjectStorageClient storageClient;
     private final VideoUploadRepository videoUploadRepository;
+    private final StorageRetryExecutor storageRetryExecutor;
+    private final StorageStateTracker storageStateTracker;
     private final String machineId;
     private final String containerId;
     private final int segmentDuration;
@@ -23,19 +25,22 @@ public final class UploadInitializationService {
     public UploadInitializationService(
             ObjectStorageClient storageClient,
             VideoUploadRepository videoUploadRepository,
+            StorageRetryExecutor storageRetryExecutor,
+            StorageStateTracker storageStateTracker,
             String machineId,
             String containerId,
             int segmentDuration
     ) {
         this.storageClient = storageClient;
         this.videoUploadRepository = videoUploadRepository;
+        this.storageRetryExecutor = storageRetryExecutor;
+        this.storageStateTracker = storageStateTracker;
         this.machineId = machineId;
         this.containerId = containerId;
         this.segmentDuration = segmentDuration;
     }
 
-    public void initialize(UploadRequest request, Path inputPath) {
-        storeVideoMetadata(request.videoId(), request.videoName());
+    public void initializeUploadRecord(UploadRequest request, Path inputPath) {
         if (videoUploadRepository != null) {
             int totalSegments = 0;
             try {
@@ -62,6 +67,40 @@ public final class UploadInitializationService {
                 logger.warn("Failed to estimate total segments for video: {}", request.videoId(), e);
             }
         }
+    }
+
+    public void ensureVideoMetadataStored(String videoId, String videoName) {
+        storageRetryExecutor.run(
+                "store metadata for videoId=" + videoId,
+                new StorageRetryExecutor.RetryObserver() {
+                    private boolean waiting;
+
+                    @Override
+                    public void onRetrying(int attempt, RuntimeException failure, long nextDelayMillis) {
+                        if (!waiting) {
+                            waiting = true;
+                            storageStateTracker.beginStorageWait(videoId, failure.getMessage());
+                        }
+                    }
+
+                    @Override
+                    public void onSucceeded(int attempts) {
+                        if (waiting) {
+                            waiting = false;
+                            storageStateTracker.endStorageWait(videoId);
+                        }
+                    }
+
+                    @Override
+                    public void onCancelled(Exception failure) {
+                        if (waiting) {
+                            waiting = false;
+                            storageStateTracker.endStorageWait(videoId);
+                        }
+                    }
+                },
+                () -> storeVideoMetadata(videoId, videoName)
+        );
     }
 
     public void deleteVideoMetadata(String videoId) {

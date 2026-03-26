@@ -8,6 +8,7 @@ import com.distributed26.videostreaming.shared.upload.events.TranscodeSegmentSta
 import com.distributed26.videostreaming.shared.upload.events.UploadFailedEvent;
 import com.distributed26.videostreaming.shared.upload.events.UploadMetaEvent;
 import com.distributed26.videostreaming.shared.upload.events.UploadProgressEvent;
+import com.distributed26.videostreaming.shared.upload.events.UploadStorageStatusEvent;
 import com.distributed26.videostreaming.upload.db.SegmentUploadRepository;
 import com.distributed26.videostreaming.upload.db.TranscodedSegmentStatusRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -160,6 +161,9 @@ public class UploadStatusWebSocket {
         }
         if (event instanceof UploadMetaEvent) {
             return "meta";
+        }
+        if (event instanceof UploadStorageStatusEvent) {
+            return "storage_status";
         }
         if (event instanceof TranscodeProgressEvent) {
             return "transcode_progress";

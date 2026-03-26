@@ -9,6 +9,9 @@ import com.distributed26.videostreaming.shared.storage.S3StorageClient;
 import com.distributed26.videostreaming.shared.upload.StatusEventBus;
 import com.distributed26.videostreaming.shared.upload.TranscodeTaskBus;
 import com.distributed26.videostreaming.shared.upload.events.UploadFailedEvent;
+import com.distributed26.videostreaming.upload.processing.StorageRetryExecutor;
+import com.distributed26.videostreaming.upload.processing.StorageStateTracker;
+import com.distributed26.videostreaming.upload.processing.UploadProcessingConfig;
 import com.distributed26.videostreaming.upload.db.SegmentUploadRepository;
 import com.distributed26.videostreaming.upload.db.TranscodedSegmentStatusRepository;
 import com.distributed26.videostreaming.upload.db.VideoUploadRepository;
@@ -18,6 +21,8 @@ import io.javalin.http.staticfiles.Location;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Properties;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -49,15 +54,15 @@ public class UploadServiceApplication {
         ensureLogsDirectory();
         StorageConfig storageConfig = loadStorageConfig();
         ObjectStorageClient storageClient = new S3StorageClient(storageConfig);
-
-        // Ensure the bucket exists before starting the application
-        storageClient.ensureBucketExists();
+        UploadProcessingConfig processingConfig =
+                UploadProcessingConfig.fromDotenv(io.github.cdimascio.dotenv.Dotenv.configure().directory("./").ignoreIfMissing().load());
 
         VideoUploadRepository videoUploadRepository = createVideoUploadRepository();
         SegmentUploadRepository segmentUploadRepository = createSegmentUploadRepository();
         String machineId = resolveMachineId();
         String containerId = resolveContainerId();
         FailedVideoRegistry failedVideoRegistry = new FailedVideoRegistry();
+        StorageStateTracker storageStateTracker = new StorageStateTracker(videoUploadRepository, statusEventBus);
         statusEventBus.subscribeAll(event -> {
             if (event instanceof UploadFailedEvent failed) {
                 failedVideoRegistry.markFailed(failed.getJobId());
@@ -72,7 +77,9 @@ public class UploadServiceApplication {
                 segmentUploadRepository,
                 machineId,
                 containerId,
-                failedVideoRegistry
+                failedVideoRegistry,
+                storageStateTracker,
+                processingConfig
         );
         TerminalFailureHandler terminalFailureHandler = new TerminalFailureHandler(
                 videoUploadRepository,
@@ -80,6 +87,47 @@ public class UploadServiceApplication {
                 machineId,
                 containerId
         );
+
+        StorageRetryExecutor startupRetryExecutor = new StorageRetryExecutor(
+                processingConfig.storageRetryInitialDelayMillis(),
+                processingConfig.storageRetryMaxDelayMillis()
+        );
+        ExecutorService storageStartupExecutor = Executors.newSingleThreadExecutor(r -> {
+            Thread thread = new Thread(r, "upload-storage-startup");
+            thread.setDaemon(true);
+            return thread;
+        });
+        storageStartupExecutor.submit(() -> startupRetryExecutor.run(
+                "ensure upload bucket exists",
+                new StorageRetryExecutor.RetryObserver() {
+                    private boolean waiting;
+
+                    @Override
+                    public void onRetrying(int attempt, RuntimeException failure, long nextDelayMillis) {
+                        if (!waiting) {
+                            waiting = true;
+                            storageStateTracker.beginStorageWait(null, failure.getMessage());
+                        }
+                    }
+
+                    @Override
+                    public void onSucceeded(int attempts) {
+                        if (waiting) {
+                            waiting = false;
+                            storageStateTracker.endStorageWait(null);
+                        }
+                    }
+
+                    @Override
+                    public void onCancelled(Exception failure) {
+                        if (waiting) {
+                            waiting = false;
+                            storageStateTracker.endStorageWait(null);
+                        }
+                    }
+                },
+                storageClient::ensureBucketExists
+        ));
 
         Javalin app = Javalin.create(config -> {
             config.jetty.multipartConfig.maxFileSize(10, SizeUnit.GB);
@@ -90,7 +138,17 @@ public class UploadServiceApplication {
             });
         });
 
-        app.get("/health", ctx -> ctx.json(java.util.Map.of("status", "ok")));
+        app.get("/health", ctx -> ctx.json(java.util.Map.of(
+                "status", "ok",
+                "storageReady", storageStateTracker.isServiceReady()
+        )));
+        app.get("/ready", ctx -> {
+            if (!storageStateTracker.isServiceReady()) {
+                ctx.status(503).json(java.util.Map.of("status", "waiting_for_storage", "storageReady", false));
+                return;
+            }
+            ctx.json(java.util.Map.of("status", "ready", "storageReady", true));
+        });
         app.post("/upload", uploadHandler::upload);
         app.post("/upload/{videoId}/fail", terminalFailureHandler::markFailed);
 
@@ -105,6 +163,7 @@ public class UploadServiceApplication {
             } catch (Exception e) {
                 logger.warn("Error closing storage client on shutdown", e);
             }
+            storageStartupExecutor.shutdownNow();
         }));
 
 		return app;

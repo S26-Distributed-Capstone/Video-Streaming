@@ -36,6 +36,7 @@ public final class VideoSegmentationWorkflow {
     private final String machineId;
     private final String containerId;
     private final FailedVideoRegistry failedVideoRegistry;
+    private final StorageStateTracker storageStateTracker;
 
     public VideoSegmentationWorkflow(
             UploadInitializationService initializationService,
@@ -47,7 +48,8 @@ public final class VideoSegmentationWorkflow {
             long pollingIntervalMillis,
             String machineId,
             String containerId,
-            FailedVideoRegistry failedVideoRegistry
+            FailedVideoRegistry failedVideoRegistry,
+            StorageStateTracker storageStateTracker
     ) {
         this.initializationService = initializationService;
         this.uploadCoordinator = uploadCoordinator;
@@ -59,9 +61,11 @@ public final class VideoSegmentationWorkflow {
         this.machineId = machineId;
         this.containerId = containerId;
         this.failedVideoRegistry = failedVideoRegistry;
+        this.storageStateTracker = storageStateTracker;
     }
 
-    public void processVideo(String videoId, Path inputPath, long startTime) {
+    public void processVideo(UploadRequest request, Path inputPath, long startTime) {
+        String videoId = request.videoId();
         Path tempOutput = null;
         Map<Path, SegmentUploadCoordinator.PendingUpload> inFlightUploads = new ConcurrentHashMap<>();
         boolean cancelInFlightUploads = false;
@@ -69,6 +73,7 @@ public final class VideoSegmentationWorkflow {
 
         try {
             ensureVideoActive(videoId);
+            initializationService.ensureVideoMetadataStored(request.videoId(), request.videoName());
             tempOutput = Files.createTempDirectory("hls-" + videoId);
             Path tempOutputFinal = tempOutput;
 
@@ -91,10 +96,23 @@ public final class VideoSegmentationWorkflow {
             long loopStartTime = System.currentTimeMillis();
             long lastSegmentTime = System.currentTimeMillis();
             long currentPollingInterval = pollingIntervalMillis;
+            long storageWaitAccumulatedMillis = 0L;
+            long storageWaitStartedAt = -1L;
 
             while (!ffmpegFuture.isDone()) {
                 ensureVideoActive(videoId);
-                if (System.currentTimeMillis() - loopStartTime > processingTimeoutMillis) {
+                long now = System.currentTimeMillis();
+                boolean waitingOnStorage = storageStateTracker.isVideoWaiting(videoId);
+                if (waitingOnStorage) {
+                    if (storageWaitStartedAt < 0L) {
+                        storageWaitStartedAt = now;
+                    }
+                } else if (storageWaitStartedAt >= 0L) {
+                    storageWaitAccumulatedMillis += now - storageWaitStartedAt;
+                    storageWaitStartedAt = -1L;
+                }
+
+                if (now - loopStartTime - storageWaitAccumulatedMillis > processingTimeoutMillis) {
                     logger.error("Video processing timed out for video: {}", videoId);
                     ffmpegFuture.cancel(true);
                     throw new RuntimeException("Processing timed out after " + processingTimeoutMillis + "ms");
@@ -156,6 +174,20 @@ public final class VideoSegmentationWorkflow {
                     uploadedFiles.size(),
                     duration
             );
+            if (videoUploadRepository != null) {
+                videoUploadRepository.updateStatus(videoId, "COMPLETED");
+            }
+        } catch (java.util.concurrent.CancellationException e) {
+            cancelInFlightUploads = true;
+            if (ffmpegFuture != null) {
+                ffmpegFuture.cancel(true);
+            }
+            if (failedVideoRegistry != null && failedVideoRegistry.isFailed(videoId)) {
+                logger.info("Upload processing cancelled after terminal failure videoId={}", videoId);
+                initializationService.deleteVideoMetadata(videoId);
+            } else {
+                logger.info("Upload processing cancelled videoId={}", videoId, e);
+            }
         } catch (Exception e) {
             cancelInFlightUploads = true;
             if (ffmpegFuture != null) {
@@ -181,7 +213,7 @@ public final class VideoSegmentationWorkflow {
 
     private void ensureVideoActive(String videoId) {
         if (failedVideoRegistry != null && failedVideoRegistry.isFailed(videoId)) {
-            throw new RuntimeException("Video already marked FAILED for videoId=" + videoId);
+            throw new java.util.concurrent.CancellationException("Video already marked FAILED for videoId=" + videoId);
         }
     }
 

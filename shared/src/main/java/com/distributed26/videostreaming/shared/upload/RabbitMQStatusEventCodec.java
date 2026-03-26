@@ -5,6 +5,7 @@ import com.distributed26.videostreaming.shared.upload.events.TranscodeProgressEv
 import com.distributed26.videostreaming.shared.upload.events.TranscodeSegmentState;
 import com.distributed26.videostreaming.shared.upload.events.UploadFailedEvent;
 import com.distributed26.videostreaming.shared.upload.events.UploadMetaEvent;
+import com.distributed26.videostreaming.shared.upload.events.UploadStorageStatusEvent;
 import com.fasterxml.jackson.databind.JsonNode;
 
 final class RabbitMQStatusEventCodec {
@@ -22,6 +23,11 @@ final class RabbitMQStatusEventCodec {
         }
         if ("meta".equals(type) && node.has("totalSegments")) {
             return new UploadMetaEvent(jobId, node.path("totalSegments").asInt());
+        }
+        if ("storage_status".equals(type)) {
+            String state = node.path("state").asText("");
+            String reason = node.path("reason").asText(null);
+            return new UploadStorageStatusEvent(jobId, state, reason);
         }
         if ("transcode_progress".equals(type)) {
             String profile = node.path("profile").asText("");
@@ -47,6 +53,9 @@ final class RabbitMQStatusEventCodec {
         }
         if (event instanceof UploadMetaEvent) {
             return "meta";
+        }
+        if (event instanceof UploadStorageStatusEvent) {
+            return "storage_status";
         }
         if (event instanceof TranscodeProgressEvent) {
             return "transcode_progress";

@@ -9,7 +9,9 @@ public record UploadProcessingConfig(
         long pollingIntervalMillis,
         int ffmpegPoolSize,
         int uploadPoolSize,
-        int maxInFlightSegmentUploads
+        int maxInFlightSegmentUploads,
+        long storageRetryInitialDelayMillis,
+        long storageRetryMaxDelayMillis
 ) {
     public static UploadProcessingConfig fromDotenv(Dotenv dotenv) {
         int uploadPoolSize = envInt(
@@ -24,7 +26,9 @@ public record UploadProcessingConfig(
                 envLong(dotenv, "POLLING_INTERVAL_MILLIS", 1000L),
                 envInt(dotenv, "FFMPEG_THREAD_POOL_SIZE", Runtime.getRuntime().availableProcessors()),
                 uploadPoolSize,
-                envInt(dotenv, "MAX_IN_FLIGHT_SEGMENT_UPLOADS", uploadPoolSize * 2)
+                envInt(dotenv, "MAX_IN_FLIGHT_SEGMENT_UPLOADS", uploadPoolSize * 2),
+                envLong(dotenv, "STORAGE_RETRY_INITIAL_DELAY_MILLIS", 500L),
+                envLong(dotenv, "STORAGE_RETRY_MAX_DELAY_MILLIS", 30000L)
         );
     }
 

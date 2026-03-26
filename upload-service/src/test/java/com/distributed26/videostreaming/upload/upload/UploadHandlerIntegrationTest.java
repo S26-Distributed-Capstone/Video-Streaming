@@ -212,25 +212,14 @@ public class UploadHandlerIntegrationTest {
     }
 
     @Test
-    @DisplayName("Should properly cleanup temp files even on failure")
-    void shouldCleanupTempFilesOnFailure() throws Exception {
-        // Make storage always fail
+    @DisplayName("Should accept upload while metadata upload keeps retrying when storage is unavailable")
+    void shouldAcceptUploadWhenStorageIsUnavailable() throws Exception {
         doThrow(new RuntimeException("Storage unavailable"))
             .when(mockStorageClient).uploadFile(anyString(), any(InputStream.class), anyLong());
 
         UploadHandler handler = new UploadHandler(mockStorageClient, new TestStatusEventBus(), new TestTranscodeTaskBus());
         Javalin app = Javalin.create();
         app.post("/upload", handler::upload);
-
-        Path tempDir = Path.of(System.getProperty("java.io.tmpdir"));
-
-        // Count temp files before test
-        long uploadFilesBefore;
-        try (var stream = Files.list(tempDir)) {
-            uploadFilesBefore = stream
-                .filter(p -> p.getFileName().toString().startsWith("upload-"))
-                .count();
-        }
 
         JavalinTest.test(app, (server, client) -> {
             byte[] videoBytes = Files.readAllBytes(testVideoFile);
@@ -248,25 +237,18 @@ public class UploadHandlerIntegrationTest {
 
             try (var response = client.request("/upload", builder ->
                 builder.post(requestBody))) {
-                assertEquals(500, response.code());
+                assertEquals(202, response.code());
             }
         });
 
-        // Wait for processing and cleanup
-        final long beforeCount = uploadFilesBefore;
-        await().atMost(Duration.ofSeconds(20))
-            .pollInterval(Duration.ofSeconds(1))
-            .ignoreExceptions()
-            .until(() -> {
-                // Check that temp files are cleaned up (allow for concurrent test runs)
-                try (var stream = Files.list(tempDir)) {
-                    long uploadFilesAfter = stream
-                        .filter(p -> p.getFileName().toString().startsWith("upload-"))
-                        .count();
-                    // Files should not accumulate significantly
-                    return uploadFilesAfter <= beforeCount + 2;
-                }
-            });
+        await().atMost(Duration.ofSeconds(5))
+            .pollInterval(Duration.ofMillis(100))
+            .untilAsserted(() ->
+                verify(mockStorageClient, atLeast(2))
+                    .uploadFile(anyString(), any(InputStream.class), anyLong())
+            );
+
+        handler.close();
     }
 
     @Test
