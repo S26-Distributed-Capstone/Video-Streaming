@@ -16,7 +16,8 @@ import org.apache.logging.log4j.Logger;
  * MinIO may be down for an extended period and the service should resume
  * automatically once connectivity is restored.
  *
- * <p>Back-off parameters are configurable via environment variables:
+ * <p>Back-off parameters are configurable via {@code .env} / environment variables
+ * (resolved by the caller and passed to the constructor):
  * <ul>
  *   <li>{@code STORAGE_RETRY_INITIAL_DELAY_MS} — first delay (default 500 ms)</li>
  *   <li>{@code STORAGE_RETRY_MAX_DELAY_MS} — ceiling delay (default 30 000 ms)</li>
@@ -31,11 +32,13 @@ public class ResilientStorageClient implements ObjectStorageClient {
     private final long maxDelayMs;
     private final int maxAttempts; // 0 = unlimited
 
+    /** Default retry parameters — caller should use the 4-arg constructor for custom config. */
+    public static final long DEFAULT_INITIAL_DELAY_MS = 500L;
+    public static final long DEFAULT_MAX_DELAY_MS = 30_000L;
+    public static final int DEFAULT_MAX_ATTEMPTS = 0;
+
     public ResilientStorageClient(ObjectStorageClient delegate) {
-        this(delegate,
-             parseLongEnv("STORAGE_RETRY_INITIAL_DELAY_MS", 500L),
-             parseLongEnv("STORAGE_RETRY_MAX_DELAY_MS", 30_000L),
-             parseIntEnv("STORAGE_RETRY_MAX_ATTEMPTS", 0));
+        this(delegate, DEFAULT_INITIAL_DELAY_MS, DEFAULT_MAX_DELAY_MS, DEFAULT_MAX_ATTEMPTS);
     }
 
     public ResilientStorageClient(ObjectStorageClient delegate, long initialDelayMs, long maxDelayMs, int maxAttempts) {
@@ -145,19 +148,4 @@ public class ResilientStorageClient implements ObjectStorageClient {
         }
         return new RuntimeException(message, cause);
     }
-
-    // --- Env parsing helpers ---
-
-    private static long parseLongEnv(String key, long defaultValue) {
-        String raw = System.getenv(key);
-        if (raw == null || raw.isBlank()) return defaultValue;
-        try { return Long.parseLong(raw.trim()); } catch (NumberFormatException e) { return defaultValue; }
-    }
-
-    private static int parseIntEnv(String key, int defaultValue) {
-        String raw = System.getenv(key);
-        if (raw == null || raw.isBlank()) return defaultValue;
-        try { return Integer.parseInt(raw.trim()); } catch (NumberFormatException e) { return defaultValue; }
-    }
 }
-

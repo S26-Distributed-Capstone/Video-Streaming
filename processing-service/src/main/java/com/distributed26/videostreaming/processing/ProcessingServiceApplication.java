@@ -73,9 +73,22 @@ public class ProcessingServiceApplication {
                 getEnvOrDotenv(dotenv, "MINIO_BUCKET_NAME", "uploads"),
                 getEnvOrDotenv(dotenv, "MINIO_REGION",      "us-east-1")
         );
-        ObjectStorageClient storageClient = new ResilientStorageClient(new S3StorageClient(storageConfig));
+        long storageRetryInitialMs = Long.parseLong(getEnvOrDotenv(dotenv, "STORAGE_RETRY_INITIAL_DELAY_MS",
+                String.valueOf(ResilientStorageClient.DEFAULT_INITIAL_DELAY_MS)));
+        long storageRetryMaxMs = Long.parseLong(getEnvOrDotenv(dotenv, "STORAGE_RETRY_MAX_DELAY_MS",
+                String.valueOf(ResilientStorageClient.DEFAULT_MAX_DELAY_MS)));
+        int storageRetryMaxAttempts = Integer.parseInt(getEnvOrDotenv(dotenv, "STORAGE_RETRY_MAX_ATTEMPTS",
+                String.valueOf(ResilientStorageClient.DEFAULT_MAX_ATTEMPTS)));
+        ObjectStorageClient storageClient = new ResilientStorageClient(
+                new S3StorageClient(storageConfig),
+                storageRetryInitialMs,
+                storageRetryMaxMs,
+                storageRetryMaxAttempts
+        );
         storageClient.ensureBucketExists();
-        LOGGER.info("Storage ready — bucket={}", storageConfig.getDefaultBucketName());
+        LOGGER.info("Storage ready — bucket={} (retry: initialDelay={}ms maxDelay={}ms maxAttempts={})",
+                storageConfig.getDefaultBucketName(), storageRetryInitialMs, storageRetryMaxMs,
+                storageRetryMaxAttempts == 0 ? "unlimited" : storageRetryMaxAttempts);
 
         StatusEventBus statusEventBus = RabbitMQStatusEventBus.fromEnv();
         TranscodeTaskBus transcodeTaskBus = RabbitMQTranscodeTaskBus.fromEnv();

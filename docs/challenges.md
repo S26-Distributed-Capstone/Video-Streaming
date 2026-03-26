@@ -66,6 +66,24 @@ The spool directory is backed by a Docker volume (`processing_spool`) so transco
 2. All streaming-service instances are unavailable when the client tries to fetch the manifest
   - Recovery: client shows "stream unavailable" and retries a few times before giving up
 
+### MinIO / Object Storage Outage
+
+When MinIO becomes unreachable, the processing service continues transcoding any source chunks it already has and spools results locally for upload once MinIO recovers.
+
+1. **`ResilientStorageClient` wrapper** — All MinIO interactions in the processing service go through `ResilientStorageClient` (`shared` module), which wraps every S3 operation with retry + exponential backoff (500 ms initial → doubles each attempt → caps at 30 s). By default retries are unlimited; the loop only stops when the operation succeeds or the container shuts down (thread interrupted). Tunable via env vars:
+   - `STORAGE_RETRY_INITIAL_DELAY_MS` (default 500)
+   - `STORAGE_RETRY_MAX_DELAY_MS` (default 30 000)
+   - `STORAGE_RETRY_MAX_ATTEMPTS` (default 0 = unlimited)
+
+2. **`fileExists` checks degrade gracefully** — Before transcoding, the service checks if the output already exists in MinIO (idempotency optimization). If MinIO is unreachable, the check returns `false` and transcoding proceeds anyway since all MinIO writes are idempotent. This `safeFileExists` pattern is applied in:
+   - `TranscodingTask.execute()` and `transcodeToSpool()`
+   - `LocalSpoolUploadWorkerPool.uploadSpoolTask()`
+   - `StartupRecoveryService.recoverOrphanedSpoolFiles()`
+
+3. **Source chunk downloads** — If the source chunk cannot be downloaded from MinIO, the download retries with exponential backoff (configurable via `DOWNLOAD_MAX_ATTEMPTS`, default 5). Failed downloads produce readable error messages that surface the root cause (e.g. "Connection refused") rather than generic wrapper exceptions.
+
+4. **Local spool upload workers** — When an upload to MinIO fails, the upload task is reset to `PENDING` and retried on the next poll cycle. The spool directory is backed by a Docker volume (`processing_spool`), so transcoded files survive container restarts and will be uploaded once MinIO returns.
+
 For the broader user workflow that reaches playback after successful upload and processing, see:
 
 - [docs/diagrams/bpmn-end-to-end-workflow.bpmn](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/diagrams/bpmn-end-to-end-workflow.bpmn)
