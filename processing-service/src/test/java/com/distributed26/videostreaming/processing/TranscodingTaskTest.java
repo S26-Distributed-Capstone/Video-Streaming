@@ -89,6 +89,63 @@ class TranscodingTaskTest {
         verify(storageClient, never()).uploadFile(anyString(), any(), anyLong());
     }
 
+    // ── MinIO resilience — fileExists failure falls through to transcode ─────
+
+    @Test
+    void execute_proceedsWhenFileExistsThrows() {
+        when(storageClient.fileExists(anyString()))
+                .thenThrow(new RuntimeException("Connection refused"));
+        // downloadFile will also fail — we just verify it attempted to proceed past fileExists
+        when(storageClient.downloadFile(anyString()))
+                .thenThrow(new RuntimeException("Connection refused"));
+
+        TranscodingTask task = new TranscodingTask("t1", "vid1",
+                "vid1/chunks/seg0.ts", TranscodingProfile.LOW);
+
+        // Should not throw the fileExists error; should attempt download (which we let fail)
+        assertThrows(Exception.class, () -> task.execute(storageClient));
+        // Verify it got past fileExists and tried to download the source chunk
+        verify(storageClient, atLeastOnce()).downloadFile(anyString());
+    }
+
+    @Test
+    void transcodeToSpool_proceedsWhenFileExistsThrows() throws Exception {
+        when(storageClient.fileExists(anyString()))
+                .thenThrow(new RuntimeException("Connection refused"));
+        when(storageClient.downloadFile(anyString()))
+                .thenThrow(new RuntimeException("Connection refused"));
+
+        TranscodingTask task = new TranscodingTask("t1", "vid1",
+                "vid1/chunks/seg0.ts", TranscodingProfile.LOW);
+        java.nio.file.Path spoolRoot = java.nio.file.Files.createTempDirectory("spool-test");
+        try {
+            assertThrows(Exception.class, () -> task.transcodeToSpool(storageClient, spoolRoot));
+            // Key: it got past fileExists and tried to download
+            verify(storageClient, atLeastOnce()).downloadFile(anyString());
+        } finally {
+            try (var walk = java.nio.file.Files.walk(spoolRoot)) {
+                walk.sorted(java.util.Comparator.reverseOrder())
+                        .forEach(p -> { try { java.nio.file.Files.deleteIfExists(p); } catch (Exception ignored) {} });
+            }
+        }
+    }
+
+    @Test
+    void transcodeToSpool_returnsNullWhenFileExistsReturnsTrue() throws Exception {
+        when(storageClient.fileExists(anyString())).thenReturn(true);
+
+        TranscodingTask task = new TranscodingTask("t1", "vid1",
+                "vid1/chunks/seg0.ts", TranscodingProfile.LOW);
+        java.nio.file.Path spoolRoot = java.nio.file.Files.createTempDirectory("spool-test");
+        try {
+            TranscodingTask.CompletedTranscode result = task.transcodeToSpool(storageClient, spoolRoot);
+            assertNull(result, "Should return null when output already exists in object storage");
+            verify(storageClient, never()).downloadFile(anyString());
+        } finally {
+            java.nio.file.Files.deleteIfExists(spoolRoot);
+        }
+    }
+
     // ── Status transitions ─────────────────────────────────────────────────────
 
     @Test

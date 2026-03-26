@@ -113,7 +113,7 @@ public class TranscodingTask extends Task {
      * after transcoding completes and right before upload begins.
      */
     public void execute(ObjectStorageClient storageClient, Runnable beforeUpload) throws IOException {
-        if (storageClient.fileExists(outputKey)) {
+        if (safeFileExists(storageClient, outputKey)) {
             LOGGER.info("Output already exists, skipping: {}", outputKey);
             return;
         }
@@ -140,7 +140,7 @@ public class TranscodingTask extends Task {
     }
 
     public CompletedTranscode transcodeToSpool(ObjectStorageClient storageClient, Path spoolRoot) throws IOException {
-        if (storageClient.fileExists(outputKey)) {
+        if (safeFileExists(storageClient, outputKey)) {
             LOGGER.info("Output already exists in object storage, skipping local spool: {}", outputKey);
             return null;
         }
@@ -232,6 +232,22 @@ public class TranscodingTask extends Task {
         return CHUNK_DURATION_SECONDS;
     }
 
+    /**
+     * Checks whether a file exists in object storage, returning {@code false}
+     * (rather than crashing) when MinIO is unreachable. Because all MinIO writes
+     * are idempotent, the safe default is to proceed with transcoding when the
+     * existence check cannot be completed.
+     */
+    private static boolean safeFileExists(ObjectStorageClient storageClient, String key) {
+        try {
+            return storageClient.fileExists(key);
+        } catch (Exception e) {
+            LOGGER.warn("Unable to check if output already exists in object storage (key={}). " +
+                    "Proceeding with transcoding since writes are idempotent: {}", key, e.toString());
+            return false;
+        }
+    }
+
     private void downloadChunkWithRetry(ObjectStorageClient storageClient, Path inputTemp) throws IOException {
         IOException lastIo = null;
         RuntimeException lastRuntime = null;
@@ -250,7 +266,8 @@ public class TranscodingTask extends Task {
                 if (attempt == attempts) {
                     break;
                 }
-                LOGGER.warn("Download attempt {}/{} failed for chunk={} (io): {}", attempt, attempts, chunkKey, e.toString());
+                LOGGER.warn("Source chunk download failed (attempt {}/{}) chunk={}: {}",
+                        attempt, attempts, chunkKey, describeDownloadError(e));
                 sleepBeforeRetry(delayMillis);
                 delayMillis = Math.min(Math.max(1L, DOWNLOAD_RETRY_MAX_DELAY_MILLIS), delayMillis * 2);
             } catch (RuntimeException e) {
@@ -258,19 +275,42 @@ public class TranscodingTask extends Task {
                 if (attempt == attempts) {
                     break;
                 }
-                LOGGER.warn("Download attempt {}/{} failed for chunk={} (runtime): {}", attempt, attempts, chunkKey, e.toString());
+                LOGGER.warn("Source chunk download failed (attempt {}/{}) chunk={}: {}",
+                        attempt, attempts, chunkKey, describeDownloadError(e));
                 sleepBeforeRetry(delayMillis);
                 delayMillis = Math.min(Math.max(1L, DOWNLOAD_RETRY_MAX_DELAY_MILLIS), delayMillis * 2);
             }
         }
 
-        if (lastIo != null) {
-            throw new IOException("Failed to download chunk after retries: " + chunkKey, lastIo);
+        String detail = lastIo != null ? describeDownloadError(lastIo)
+                : lastRuntime != null ? describeDownloadError(lastRuntime)
+                : "unknown error";
+        throw new IOException(
+                "Failed to download source chunk from MinIO after " + attempts + " attempt(s): chunk=" + chunkKey
+                        + " — " + detail,
+                lastIo != null ? lastIo : lastRuntime);
+    }
+
+    /**
+     * Produces a concise, human-readable description of a download failure cause.
+     * Unwraps common wrapper exceptions so the log message shows the root issue
+     * (e.g. "Connection refused" rather than a stack of IllegalStateExceptions).
+     */
+    private static String describeDownloadError(Exception e) {
+        Throwable root = e;
+        while (root.getCause() != null && root.getCause() != root) {
+            root = root.getCause();
         }
-        if (lastRuntime != null) {
-            throw new IOException("Failed to download chunk after retries: " + chunkKey, lastRuntime);
+        String rootMsg = root.getMessage();
+        if (rootMsg == null || rootMsg.isBlank()) {
+            rootMsg = root.getClass().getSimpleName();
         }
-        throw new IOException("Failed to download chunk after retries: " + chunkKey);
+        // If the root is different from the original, include both for context
+        if (root != e) {
+            return e.getClass().getSimpleName() + ": " + rootMsg
+                    + " (caused by " + root.getClass().getSimpleName() + ")";
+        }
+        return e.getClass().getSimpleName() + ": " + rootMsg;
     }
 
     private static void sleepBeforeRetry(long delayMillis) throws IOException {

@@ -13,6 +13,7 @@ import com.distributed26.videostreaming.shared.jobs.WorkerStatus;
 import com.distributed26.videostreaming.shared.upload.RabbitMQStatusEventBus;
 import com.distributed26.videostreaming.shared.upload.RabbitMQTranscodeTaskBus;
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
+import com.distributed26.videostreaming.shared.storage.ResilientStorageClient;
 import com.distributed26.videostreaming.shared.storage.S3StorageClient;
 import com.distributed26.videostreaming.shared.upload.StatusEventBus;
 import com.distributed26.videostreaming.shared.upload.TranscodeTaskBus;
@@ -72,7 +73,7 @@ public class ProcessingServiceApplication {
                 getEnvOrDotenv(dotenv, "MINIO_BUCKET_NAME", "uploads"),
                 getEnvOrDotenv(dotenv, "MINIO_REGION",      "us-east-1")
         );
-        ObjectStorageClient storageClient = new S3StorageClient(storageConfig);
+        ObjectStorageClient storageClient = new ResilientStorageClient(new S3StorageClient(storageConfig));
         storageClient.ensureBucketExists();
         LOGGER.info("Storage ready — bucket={}", storageConfig.getDefaultBucketName());
 
