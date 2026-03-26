@@ -114,6 +114,10 @@ public class ResilientStorageClient implements ObjectStorageClient {
         long delay = initialDelayMs;
         int attempt = 0;
         while (true) {
+            if (Thread.currentThread().isInterrupted()) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException("Interrupted before " + operationName + " attempt " + (attempt + 1));
+            }
             attempt++;
             try {
                 return operation.get();
@@ -132,6 +136,10 @@ public class ResilientStorageClient implements ObjectStorageClient {
                         delay,
                         e.toString());
                 sleep(delay);
+                if (Thread.currentThread().isInterrupted()) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException("Interrupted after sleep during " + operationName + " (attempt " + attempt + ")");
+                }
                 delay = Math.min(maxDelayMs, delay * 2);
             }
         }
