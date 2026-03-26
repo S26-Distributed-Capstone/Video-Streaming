@@ -143,6 +143,13 @@ function isUploadRetryableFailure(payload) {
   return reason.includes("upload");
 }
 
+function shouldIgnoreUploadRetryableFailure(payload) {
+  if (!isUploadRetryableFailure(payload)) {
+    return false;
+  }
+  return Boolean(sourceSegmentsComplete && totalSegments && completedSegments >= totalSegments);
+}
+
 async function persistTerminalUploadFailure(videoId) {
   if (!videoId) {
     return;
@@ -807,6 +814,11 @@ function connectWebSocket(wsUrl, videoId, { isReconnect = false } = {}) {
       }
       if (payload && payload.type === "failed") {
         if (isUploadRetryableFailure(payload)) {
+          if (shouldIgnoreUploadRetryableFailure(payload)) {
+            appendLog("Upload-service interruption detected after source upload completed. Continuing to monitor transcoding.");
+            scheduleProgressRefresh();
+            return;
+          }
           triggerUploadRetry(payload.reason);
           return;
         }
