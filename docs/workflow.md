@@ -42,6 +42,7 @@ This workflow covers:
 - segments are transcoded into output profiles
 - upload handoff state is persisted
 - processed outputs are uploaded to object storage
+- once source chunks are persisted, downstream transcoding is treated as server-side work rather than a new client upload responsibility
 
 Workflow diagram:
 
