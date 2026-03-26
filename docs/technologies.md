@@ -65,6 +65,17 @@ Why they were not chosen:
 
 - AWS S3 would work well in production-like environments, but MinIO is easier for local development and course demonstration
 
+### AWS SDK for Java v2
+
+Chosen because:
+
+- MinIO is S3-compatible, so the standard AWS S3 SDK (`software.amazon.awssdk:s3`) provides a well-tested client with no MinIO-specific libraries needed
+- the SDK includes both `S3Client` for server-side operations and `S3Presigner` for generating presigned URLs without making network calls
+- path-style access is natively supported, which is required for MinIO in Docker
+- using the standard SDK means the storage layer can be retargeted to real AWS S3 with only a config change
+
+The `S3StorageClient` class in the `shared` module builds both an `S3Client` (pointed at the internal MinIO endpoint) and an `S3Presigner` (pointed at the public endpoint) from a single `StorageConfig`. All services consume the `ObjectStorageClient` interface, keeping the S3 dependency confined to one implementation class.
+
 ## Relational Database
 
 ### PostgreSQL

@@ -65,9 +65,16 @@ public class ResilientStorageClient implements ObjectStorageClient {
         retryVoid("deleteFile(" + key + ")", () -> delegate.deleteFile(key));
     }
 
+    /**
+     * No retry — {@code fileExists} is only ever used as an optimistic
+     * idempotency check ("does the output already exist?"). Every caller
+     * already handles failure gracefully via {@code safeFileExists} (returns
+     * {@code false} on error so transcoding proceeds). Retrying here would
+     * just block the worker thread for no reason when MinIO is down.
+     */
     @Override
     public boolean fileExists(String key) {
-        return retry("fileExists(" + key + ")", () -> delegate.fileExists(key));
+        return delegate.fileExists(key);
     }
 
     @Override

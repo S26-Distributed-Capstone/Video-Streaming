@@ -79,14 +79,14 @@ public class S3StorageClient implements ObjectStorageClient {
             s3Client.putObject(request, RequestBody.fromInputStream(data, size));
             LOGGER.info("Uploaded object '{}' to bucket '{}'", key, bucketName);
         } catch (RuntimeException ex) {
-            LOGGER.error("Failed to upload object '{}' to bucket '{}'", key, bucketName, ex);
+            LOGGER.debug("Failed to upload object '{}' to bucket '{}'", key, bucketName, ex);
             throw new IllegalStateException("Failed to upload object: " + key, ex);
         }
     }
 
     @Override
     public InputStream downloadFile(String key) {
-        LOGGER.info("Downloading object '{}' from bucket '{}'", key, bucketName);
+        LOGGER.debug("Downloading object '{}' from bucket '{}'", key, bucketName);
         try {
             GetObjectRequest request = GetObjectRequest.builder()
                     .bucket(bucketName)
@@ -97,7 +97,7 @@ public class S3StorageClient implements ObjectStorageClient {
             LOGGER.warn("Object '{}' not found in bucket '{}'", key, bucketName);
             throw ex;
         } catch (RuntimeException ex) {
-            LOGGER.error("Failed to download object '{}' from bucket '{}'", key, bucketName, ex);
+            LOGGER.debug("Failed to download object '{}' from bucket '{}'", key, bucketName, ex);
             throw new IllegalStateException("Failed to download object: " + key, ex);
         }
     }
@@ -113,14 +113,14 @@ public class S3StorageClient implements ObjectStorageClient {
             s3Client.deleteObject(request);
             LOGGER.info("Deleted object '{}' from bucket '{}'", key, bucketName);
         } catch (RuntimeException ex) {
-            LOGGER.error("Failed to delete object '{}' from bucket '{}'", key, bucketName, ex);
+            LOGGER.debug("Failed to delete object '{}' from bucket '{}'", key, bucketName, ex);
             throw new IllegalStateException("Failed to delete object: " + key, ex);
         }
     }
 
     @Override
     public boolean fileExists(String key) {
-        LOGGER.info("Checking existence of object '{}' in bucket '{}'", key, bucketName);
+        LOGGER.debug("Checking existence of object '{}' in bucket '{}'", key, bucketName);
         try {
             HeadObjectRequest request = HeadObjectRequest.builder()
                     .bucket(bucketName)
@@ -134,10 +134,10 @@ public class S3StorageClient implements ObjectStorageClient {
             if (ex.statusCode() == 404) {
                 return false;
             }
-            LOGGER.error("Failed to check existence of object '{}' in bucket '{}'", key, bucketName, ex);
+            LOGGER.debug("Failed to check existence of object '{}' in bucket '{}'", key, bucketName, ex);
             throw new IllegalStateException("Failed to check object existence: " + key, ex);
         } catch (RuntimeException ex) {
-            LOGGER.error("Failed to check existence of object '{}' in bucket '{}'", key, bucketName, ex);
+            LOGGER.debug("Failed to check existence of object '{}' in bucket '{}'", key, bucketName, ex);
             throw new IllegalStateException("Failed to check object existence: " + key, ex);
         }
     }
@@ -163,7 +163,7 @@ public class S3StorageClient implements ObjectStorageClient {
             LOGGER.info("Listed {} object(s) in bucket '{}' with prefix '{}'", keys.size(), bucketName, prefix);
             return keys;
         } catch (RuntimeException ex) {
-            LOGGER.error("Failed to list objects in bucket '{}' with prefix '{}'", bucketName, prefix, ex);
+            LOGGER.debug("Failed to list objects in bucket '{}' with prefix '{}'", bucketName, prefix, ex);
             throw new IllegalStateException("Failed to list objects with prefix: " + prefix, ex);
         }
     }

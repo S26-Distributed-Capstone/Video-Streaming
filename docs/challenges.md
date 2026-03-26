@@ -84,6 +84,20 @@ When MinIO becomes unreachable, the processing service continues transcoding any
 
 4. **Local spool upload workers** — When an upload to MinIO fails, the upload task is reset to `PENDING` and retried on the next poll cycle. The spool directory is backed by a Docker volume (`processing_spool`), so transcoded files survive container restarts and will be uploaded once MinIO returns.
 
+5. **Concise logging** — `S3StorageClient` logs all errors at `DEBUG` level only, so the verbose AWS SDK stack traces do not appear at default log levels. User-facing messages are owned by the callers:
+   - `ResilientStorageClient` logs each retry attempt at `WARN` with `e.toString()` (one line)
+   - `safeFileExists` logs the graceful fall-through at `WARN` with a short explanation
+   - `downloadChunkWithRetry` unwraps exception chains to surface the root cause (e.g. "Connection refused") without a full stack trace
+
+### Presigned URL Resolution In Docker
+
+Presigned URLs must be reachable by the browser, not just by services inside the Docker network. The `S3StorageClient` solves this by using two separate endpoints:
+
+- The `S3Client` (server-side operations) connects to `MINIO_ENDPOINT` (e.g. `http://minio:9000`), which resolves inside the Docker network.
+- The `S3Presigner` (presigned URL generation) uses `MINIO_PUBLIC_ENDPOINT` (e.g. `http://localhost:9000`), which resolves from the host machine.
+
+If `MINIO_PUBLIC_ENDPOINT` is misconfigured or points to the internal hostname, presigned URLs will contain `minio:9000` in the host portion, causing browser requests to fail with DNS resolution errors. This is the most common cause of "upload works but playback does not" in local development. Both endpoints must use path-style access (`pathStyleAccessEnabled(true)`) because MinIO does not support virtual-hosted-style bucket addressing.
+
 For the broader user workflow that reaches playback after successful upload and processing, see:
 
 - [docs/diagrams/bpmn-end-to-end-workflow.bpmn](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/diagrams/bpmn-end-to-end-workflow.bpmn)

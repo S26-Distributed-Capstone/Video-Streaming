@@ -43,6 +43,18 @@ This workflow covers:
 - upload handoff state is persisted
 - processed outputs are uploaded to object storage
 
+#### MinIO Failure Resilience
+
+When MinIO becomes unreachable during processing, the service degrades gracefully instead of stopping:
+
+- **Transcoding continues** — source chunks already downloaded are transcoded and spooled locally. The `fileExists` idempotency check falls through safely (`safeFileExists` returns `false` on error) so workers are never blocked waiting for MinIO.
+- **Downloads retry with backoff** — source chunk downloads use configurable retry + exponential backoff. Failed downloads surface a concise root-cause message (e.g. "Connection refused") rather than full stack traces.
+- **Uploads retry on next poll** — the `LocalSpoolUploadWorkerPool` resets failed upload tasks to `PENDING`; the spool directory is Docker-volume-backed, so transcoded files survive restarts and are uploaded once MinIO recovers.
+- **All other S3 operations** are wrapped by `ResilientStorageClient` with unlimited retry + exponential backoff (500 ms → 30 s cap, configurable via `STORAGE_RETRY_*` env vars).
+- **Logging** — `S3StorageClient` logs at `DEBUG` level only; callers (`ResilientStorageClient`, `safeFileExists`, `downloadChunkWithRetry`) produce concise `WARN`-level messages with `e.toString()` so default logs stay readable.
+
+For full details on failure handling see [docs/challenges.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/challenges.md#minio--object-storage-outage).
+
 Workflow diagram:
 
 - [docs/diagrams/processing-service.drawio](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/diagrams/processing-service.drawio)
@@ -56,6 +68,13 @@ This workflow covers:
 - streaming-service validates readiness
 - manifests are returned
 - the browser fetches segments through presigned object-storage URLs
+
+Presigned URL flow:
+
+- streaming-service reads the variant `playlist.m3u8` from MinIO via the internal endpoint (`S3Client`)
+- for each `.ts` segment entry, it calls `generatePresignedUrl()` on the `S3Presigner`, which uses the public endpoint (`MINIO_PUBLIC_ENDPOINT`)
+- the rewritten playlist (with presigned URLs) is returned to the browser
+- the browser fetches segment bytes directly from MinIO — media data does not pass through streaming-service
 
 Workflow diagram:
 

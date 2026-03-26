@@ -60,19 +60,14 @@ class ResilientStorageClientTest {
     // --- Retry behavior ---
 
     @Test
-    void fileExists_retriesOnFailureThenSucceeds() {
-        AtomicInteger callCount = new AtomicInteger();
-        when(delegate.fileExists("key")).thenAnswer(invocation -> {
-            if (callCount.incrementAndGet() < 3) {
-                throw new RuntimeException("Connection refused");
-            }
-            return true;
-        });
+    void fileExists_doesNotRetry_passesThrough() {
+        when(delegate.fileExists("key")).thenThrow(new RuntimeException("Connection refused"));
 
         ResilientStorageClient client = new ResilientStorageClient(delegate, 1, 10, 5);
 
-        assertTrue(client.fileExists("key"));
-        assertEquals(3, callCount.get());
+        assertThrows(RuntimeException.class, () -> client.fileExists("key"));
+        // Called exactly once — no retry
+        verify(delegate, times(1)).fileExists("key");
     }
 
     @Test
@@ -111,16 +106,6 @@ class ResilientStorageClientTest {
 
     // --- Exhausted retries ---
 
-    @Test
-    void fileExists_throwsAfterMaxAttempts() {
-        when(delegate.fileExists("key")).thenThrow(new RuntimeException("Connection refused"));
-
-        ResilientStorageClient client = new ResilientStorageClient(delegate, 1, 10, 3);
-
-        RuntimeException ex = assertThrows(RuntimeException.class, () -> client.fileExists("key"));
-        assertTrue(ex.getMessage().contains("failed after 3 attempt(s)"));
-        verify(delegate, times(3)).fileExists("key");
-    }
 
     @Test
     void downloadFile_throwsAfterMaxAttempts() {
@@ -137,14 +122,14 @@ class ResilientStorageClientTest {
 
     @Test
     void retry_respectsInterruptFlag() {
-        when(delegate.fileExists("key")).thenAnswer(invocation -> {
+        when(delegate.downloadFile("key")).thenAnswer(invocation -> {
             Thread.currentThread().interrupt();
             throw new RuntimeException("Connection refused");
         });
 
         ResilientStorageClient client = new ResilientStorageClient(delegate, 1, 10, 0);
 
-        assertThrows(RuntimeException.class, () -> client.fileExists("key"));
+        assertThrows(RuntimeException.class, () -> client.downloadFile("key"));
         assertTrue(Thread.interrupted(), "Interrupt flag should be preserved");
     }
 
@@ -162,16 +147,16 @@ class ResilientStorageClientTest {
     @Test
     void unlimitedRetries_eventuallySucceeds() {
         AtomicInteger callCount = new AtomicInteger();
-        when(delegate.fileExists("key")).thenAnswer(invocation -> {
+        when(delegate.listFiles("prefix/")).thenAnswer(invocation -> {
             if (callCount.incrementAndGet() < 5) {
                 throw new RuntimeException("Connection refused");
             }
-            return false;
+            return List.of("a");
         });
 
         ResilientStorageClient client = new ResilientStorageClient(delegate, 1, 5, 0);
 
-        assertFalse(client.fileExists("key"));
+        assertEquals(List.of("a"), client.listFiles("prefix/"));
         assertEquals(5, callCount.get());
     }
 
