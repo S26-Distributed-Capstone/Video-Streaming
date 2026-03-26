@@ -1,0 +1,276 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:open-bpmn="http://open-bpmn.org/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="Definitions_ProcessingRecovery" targetNamespace="http://distributed26.com/bpmn">
+  <bpmn:process id="Process_ProcessingRecovery" isExecutable="false" name="Processing Failure and Recovery" processType="Public">
+    <bpmn:documentation id="documentation_JzZ0Lg"/>
+    <bpmn:extensionElements>
+      <open-bpmn:auto-align/>
+    </bpmn:extensionElements>
+    <bpmn:startEvent id="Start_TaskArrives" name="Transcode task available">
+      <bpmn:documentation id="documentation_urmsIw"/>
+      <bpmn:outgoing>PF_1</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:task id="Task_ClaimTask" name="Claim task and persist state">
+      <bpmn:documentation id="documentation_0RU0yQ"/>
+      <bpmn:incoming>PF_1</bpmn:incoming>
+      <bpmn:outgoing>PF_2</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_TranscodeToSpool" name="Transcode segment to local spool">
+      <bpmn:documentation id="documentation_IbKDTg"/>
+      <bpmn:incoming>PF_2</bpmn:incoming>
+      <bpmn:outgoing>PF_3</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:boundaryEvent attachedToRef="Task_TranscodeToSpool" id="Boundary_TranscodeCrash" name="Crash mid-transcode">
+      <bpmn:documentation id="documentation_y8CAYw"/>
+      <bpmn:errorEventDefinition/>
+      <bpmn:outgoing>PF_F1</bpmn:outgoing>
+    </bpmn:boundaryEvent>
+    <bpmn:task id="Task_CreateUploadTask" name="Create local upload task">
+      <bpmn:documentation id="documentation_s54WMA"/>
+      <bpmn:incoming>PF_3</bpmn:incoming>
+      <bpmn:outgoing>PF_4</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_UploadOutput" name="Upload processed output to MinIO / S3">
+      <bpmn:documentation id="documentation_P8y7uQ"/>
+      <bpmn:incoming>PF_4</bpmn:incoming>
+      <bpmn:outgoing>PF_5</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:boundaryEvent attachedToRef="Task_UploadOutput" id="Boundary_UploadCrash" name="Crash mid-upload">
+      <bpmn:documentation id="documentation_FZAzHg"/>
+      <bpmn:errorEventDefinition/>
+      <bpmn:outgoing>PF_F2</bpmn:outgoing>
+    </bpmn:boundaryEvent>
+    <bpmn:task id="Task_MarkDone" name="Persist DONE state">
+      <bpmn:documentation id="documentation_JcucoA"/>
+      <bpmn:incoming>PF_5</bpmn:incoming>
+      <bpmn:outgoing>PF_6</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:endEvent id="End_Processed" name="Segment completed">
+      <bpmn:documentation id="documentation_cQ1HGw"/>
+      <bpmn:incoming>PF_6</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:task id="Task_Redeliver" name="RabbitMQ redelivers task">
+      <bpmn:documentation id="documentation_wzQwxA"/>
+      <bpmn:incoming>PF_F1</bpmn:incoming>
+      <bpmn:outgoing>PF_R1</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_StartupRecovery" name="Run startup recovery">
+      <bpmn:documentation id="documentation_EOS0hQ"/>
+      <bpmn:incoming>PF_F2</bpmn:incoming>
+      <bpmn:outgoing>PF_R2</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_ResetUploads" name="Reset UPLOADING to PENDING">
+      <bpmn:documentation id="documentation_LDEWGA"/>
+      <bpmn:incoming>PF_R2</bpmn:incoming>
+      <bpmn:outgoing>PF_R3</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_ScanSpool" name="Scan orphaned spool files">
+      <bpmn:documentation id="documentation_OQZhgg"/>
+      <bpmn:incoming>PF_R3</bpmn:incoming>
+      <bpmn:outgoing>PF_R4</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_RequeueMissing" name="Requeue incomplete segments">
+      <bpmn:documentation id="documentation_wjrtRA"/>
+      <bpmn:incoming>PF_R4</bpmn:incoming>
+      <bpmn:outgoing>PF_R5</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:exclusiveGateway id="Gateway_RecoveredOutput" name="Recovered output available?">
+      <bpmn:documentation id="documentation_25bjGg"/>
+      <bpmn:incoming>PF_R5</bpmn:incoming>
+      <bpmn:outgoing>PF_R6</bpmn:outgoing>
+      <bpmn:outgoing>PF_R7</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:task id="Task_ResumeUpload" name="Resume upload worker flow">
+      <bpmn:documentation id="documentation_jzooeA"/>
+      <bpmn:incoming>PF_R6</bpmn:incoming>
+      <bpmn:outgoing>PF_R8</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:sequenceFlow id="PF_1" sourceRef="Start_TaskArrives" targetRef="Task_ClaimTask">
+      <bpmn:documentation id="documentation_wdDAJA"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="PF_2" sourceRef="Task_ClaimTask" targetRef="Task_TranscodeToSpool">
+      <bpmn:documentation id="documentation_paCvyA"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="PF_3" sourceRef="Task_TranscodeToSpool" targetRef="Task_CreateUploadTask">
+      <bpmn:documentation id="documentation_Doee1w"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="PF_4" sourceRef="Task_CreateUploadTask" targetRef="Task_UploadOutput">
+      <bpmn:documentation id="documentation_UiYevg"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="PF_5" sourceRef="Task_UploadOutput" targetRef="Task_MarkDone">
+      <bpmn:documentation id="documentation_e9BoMw"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="PF_6" sourceRef="Task_MarkDone" targetRef="End_Processed">
+      <bpmn:documentation id="documentation_pNRD9g"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="PF_F1" sourceRef="Boundary_TranscodeCrash" targetRef="Task_Redeliver">
+      <bpmn:documentation id="documentation_WtR3FA"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="PF_R1" sourceRef="Task_Redeliver" targetRef="Task_ClaimTask">
+      <bpmn:documentation id="documentation_It6xZA"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="PF_F2" sourceRef="Boundary_UploadCrash" targetRef="Task_StartupRecovery">
+      <bpmn:documentation id="documentation_UFHgAA"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="PF_R2" sourceRef="Task_StartupRecovery" targetRef="Task_ResetUploads">
+      <bpmn:documentation id="documentation_V1ZH8Q"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="PF_R3" sourceRef="Task_ResetUploads" targetRef="Task_ScanSpool">
+      <bpmn:documentation id="documentation_xlW0Zw"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="PF_R4" sourceRef="Task_ScanSpool" targetRef="Task_RequeueMissing">
+      <bpmn:documentation id="documentation_0dDk8g"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="PF_R5" sourceRef="Task_RequeueMissing" targetRef="Gateway_RecoveredOutput">
+      <bpmn:documentation id="documentation_nFBXNg"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="PF_R6" name="yes" sourceRef="Gateway_RecoveredOutput" targetRef="Task_ResumeUpload">
+      <bpmn:documentation id="documentation_w4f5Kw"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="PF_R7" name="no" sourceRef="Gateway_RecoveredOutput" targetRef="Task_ClaimTask">
+      <bpmn:documentation id="documentation_YBcO4w"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="PF_R8" sourceRef="Task_ResumeUpload" targetRef="Task_MarkDone">
+      <bpmn:documentation id="documentation_VLFhoA"/>
+    </bpmn:sequenceFlow>
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_ProcessingRecovery">
+    <bpmndi:BPMNPlane bpmnElement="Process_ProcessingRecovery" id="BPMNPlane_ProcessingRecovery">
+      <bpmndi:BPMNShape bpmnElement="Start_TaskArrives" id="Shape_Start_TaskArrives">
+        <dc:Bounds height="36" width="36" x="80" y="162"/>
+        <bpmndi:BPMNLabel id="BPMNLabel_VuPaTg">
+          <dc:Bounds height="20.0" width="100.0" x="48.0" y="201.0"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_ClaimTask" id="Shape_Task_ClaimTask">
+        <dc:Bounds height="80" width="150" x="160" y="140"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_TranscodeToSpool" id="Shape_Task_TranscodeToSpool">
+        <dc:Bounds height="80" width="170" x="370" y="140"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Boundary_TranscodeCrash" id="Shape_Boundary_TranscodeCrash">
+        <dc:Bounds height="36" width="36" x="522" y="202"/>
+        <bpmndi:BPMNLabel id="BPMNLabel_6azMpg">
+          <dc:Bounds height="20.0" width="100.0" x="490.0" y="241.0"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_CreateUploadTask" id="Shape_Task_CreateUploadTask">
+        <dc:Bounds height="80" width="150" x="590" y="140"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_UploadOutput" id="Shape_Task_UploadOutput">
+        <dc:Bounds height="80" width="190" x="800" y="140"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Boundary_UploadCrash" id="Shape_Boundary_UploadCrash">
+        <dc:Bounds height="36.0" width="36.0" x="957.0" y="188.0"/>
+        <bpmndi:BPMNLabel id="BPMNLabel_JHC0sw">
+          <dc:Bounds height="20.0" width="100.0" x="925.0" y="227.0"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_MarkDone" id="Shape_Task_MarkDone">
+        <dc:Bounds height="80" width="140" x="1040" y="140"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="End_Processed" id="Shape_End_Processed">
+        <dc:Bounds height="36" width="36" x="1220" y="162"/>
+        <bpmndi:BPMNLabel id="BPMNLabel_hX0JHw">
+          <dc:Bounds height="20.0" width="100.0" x="1188.0" y="201.0"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_Redeliver" id="Shape_Task_Redeliver">
+        <dc:Bounds height="80" width="170" x="370" y="300"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_StartupRecovery" id="Shape_Task_StartupRecovery">
+        <dc:Bounds height="80" width="170" x="800" y="300"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_ResetUploads" id="Shape_Task_ResetUploads">
+        <dc:Bounds height="80" width="170" x="1030" y="300"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_ScanSpool" id="Shape_Task_ScanSpool">
+        <dc:Bounds height="80" width="170" x="1260" y="300"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_RequeueMissing" id="Shape_Task_RequeueMissing">
+        <dc:Bounds height="80" width="170" x="1490" y="300"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Gateway_RecoveredOutput" id="Shape_Gateway_RecoveredOutput" isMarkerVisible="true">
+        <dc:Bounds height="50" width="50" x="1715" y="315"/>
+        <bpmndi:BPMNLabel id="BPMNLabel_EX3oBA">
+          <dc:Bounds height="20.0" width="100.0" x="1690.0" y="368.0"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_ResumeUpload" id="Shape_Task_ResumeUpload">
+        <dc:Bounds height="80" width="170" x="1810" y="300"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge bpmnElement="PF_1" id="Edge_PF_1">
+        <di:waypoint x="116.0" y="180.0"/>
+        <di:waypoint x="160.0" y="180.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="PF_2" id="Edge_PF_2">
+        <di:waypoint x="310.0" y="180.0"/>
+        <di:waypoint x="370.0" y="180.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="PF_3" id="Edge_PF_3">
+        <di:waypoint x="540.0" y="180.0"/>
+        <di:waypoint x="590.0" y="180.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="PF_4" id="Edge_PF_4">
+        <di:waypoint x="740.0" y="180.0"/>
+        <di:waypoint x="800.0" y="180.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="PF_5" id="Edge_PF_5">
+        <di:waypoint x="990.0" y="180.0"/>
+        <di:waypoint x="1040.0" y="180.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="PF_6" id="Edge_PF_6">
+        <di:waypoint x="1180.0" y="180.0"/>
+        <di:waypoint x="1220.0" y="180.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="PF_F1" id="Edge_PF_F1">
+        <di:waypoint x="540.0" y="238.0"/>
+        <di:waypoint x="540.0" y="269.0"/>
+        <di:waypoint x="455.0" y="269.0"/>
+        <di:waypoint x="455.0" y="300.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="PF_R1" id="Edge_PF_R1">
+        <di:waypoint x="455.0" y="300.0"/>
+        <di:waypoint x="455.0" y="260.0"/>
+        <di:waypoint x="235.0" y="260.0"/>
+        <di:waypoint x="235.0" y="220.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="PF_F2" id="Edge_PF_F2">
+        <di:waypoint x="957.0" y="206.0"/>
+        <di:waypoint x="885.0" y="206.0"/>
+        <di:waypoint x="885.0" y="300.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="PF_R2" id="Edge_PF_R2">
+        <di:waypoint x="970.0" y="340.0"/>
+        <di:waypoint x="1030.0" y="340.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="PF_R3" id="Edge_PF_R3">
+        <di:waypoint x="1200.0" y="340.0"/>
+        <di:waypoint x="1260.0" y="340.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="PF_R4" id="Edge_PF_R4">
+        <di:waypoint x="1430.0" y="340.0"/>
+        <di:waypoint x="1490.0" y="340.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="PF_R5" id="Edge_PF_R5">
+        <di:waypoint x="1660.0" y="340.0"/>
+        <di:waypoint x="1715.0" y="340.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="PF_R6" id="Edge_PF_R6">
+        <di:waypoint x="1765.0" y="340.0"/>
+        <di:waypoint x="1810.0" y="340.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="PF_R7" id="Edge_PF_R7">
+        <di:waypoint x="1740.0" y="315.0"/>
+        <di:waypoint x="1740.0" y="100.0"/>
+        <di:waypoint x="235.0" y="100.0"/>
+        <di:waypoint x="235.0" y="140.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="PF_R8" id="Edge_PF_R8">
+        <di:waypoint x="1895.0" y="300.0"/>
+        <di:waypoint x="1895.0" y="260.0"/>
+        <di:waypoint x="1110.0" y="260.0"/>
+        <di:waypoint x="1110.0" y="220.0"/>
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

@@ -1,0 +1,200 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:open-bpmn="http://open-bpmn.org/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="Definitions_StatusReconnect" targetNamespace="http://distributed26.com/bpmn">
+  <bpmn:process id="Process_StatusReconnect" isExecutable="false" name="Status Snapshot, Live Updates, and Reconnect" processType="Public">
+    <bpmn:documentation id="documentation_zqxC0w"/>
+    <bpmn:extensionElements>
+      <open-bpmn:auto-align/>
+    </bpmn:extensionElements>
+    <bpmn:startEvent id="Start_OpenStatus" name="Client opens status channel">
+      <bpmn:documentation id="documentation_b0eY6A"/>
+      <bpmn:outgoing>SR_1</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:task id="Task_BindJob" name="Bind WebSocket or status request to videoId">
+      <bpmn:documentation id="documentation_QOsT8w"/>
+      <bpmn:incoming>SR_1</bpmn:incoming>
+      <bpmn:outgoing>SR_2</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:parallelGateway id="Gateway_SnapshotAndSubscribe" name="Load snapshot and subscribe">
+      <bpmn:documentation id="documentation_O1J90A"/>
+      <bpmn:incoming>SR_2</bpmn:incoming>
+      <bpmn:outgoing>SR_3</bpmn:outgoing>
+      <bpmn:outgoing>SR_4</bpmn:outgoing>
+    </bpmn:parallelGateway>
+    <bpmn:task id="Task_LoadSnapshot" name="Query Postgres snapshot">
+      <bpmn:documentation id="documentation_AWZpOQ"/>
+      <bpmn:incoming>SR_3</bpmn:incoming>
+      <bpmn:outgoing>SR_5</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_SubscribeEvents" name="Subscribe to RabbitMQ status events">
+      <bpmn:documentation id="documentation_Uzq8NQ"/>
+      <bpmn:incoming>SR_4</bpmn:incoming>
+      <bpmn:outgoing>SR_6</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:parallelGateway id="Gateway_ReadyToStream" name="Snapshot and subscription ready">
+      <bpmn:documentation id="documentation_KogONA"/>
+      <bpmn:incoming>SR_5</bpmn:incoming>
+      <bpmn:incoming>SR_6</bpmn:incoming>
+      <bpmn:outgoing>SR_7</bpmn:outgoing>
+    </bpmn:parallelGateway>
+    <bpmn:task id="Task_SendSnapshot" name="Send initial snapshot">
+      <bpmn:documentation id="documentation_pFrjeQ"/>
+      <bpmn:incoming>SR_7</bpmn:incoming>
+      <bpmn:outgoing>SR_8</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_PushLiveUpdates" name="Push live upload / transcode updates">
+      <bpmn:documentation id="documentation_0bx6fw"/>
+      <bpmn:incoming>SR_8</bpmn:incoming>
+      <bpmn:outgoing>SR_9</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:boundaryEvent attachedToRef="Task_PushLiveUpdates" id="Boundary_StatusDisconnect" name="Status service disconnect">
+      <bpmn:documentation id="documentation_NbL3bA"/>
+      <bpmn:errorEventDefinition/>
+      <bpmn:outgoing>SR_F1</bpmn:outgoing>
+    </bpmn:boundaryEvent>
+    <bpmn:task id="Task_Reconnect" name="Client reconnects to healthy status instance">
+      <bpmn:documentation id="documentation_p0Ntxw"/>
+      <bpmn:incoming>SR_F1</bpmn:incoming>
+      <bpmn:outgoing>SR_R1</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:endEvent id="End_StatusClosed" name="Client closes status channel">
+      <bpmn:documentation id="documentation_GSzy9w"/>
+      <bpmn:incoming>SR_9</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="SR_1" sourceRef="Start_OpenStatus" targetRef="Task_BindJob">
+      <bpmn:documentation id="documentation_6vCMNA"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="SR_2" sourceRef="Task_BindJob" targetRef="Gateway_SnapshotAndSubscribe">
+      <bpmn:documentation id="documentation_wON4Ww"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="SR_3" sourceRef="Gateway_SnapshotAndSubscribe" targetRef="Task_LoadSnapshot">
+      <bpmn:documentation id="documentation_zpnPvw"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="SR_4" sourceRef="Gateway_SnapshotAndSubscribe" targetRef="Task_SubscribeEvents">
+      <bpmn:documentation id="documentation_iBNDeA"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="SR_5" sourceRef="Task_LoadSnapshot" targetRef="Gateway_ReadyToStream">
+      <bpmn:documentation id="documentation_XxVNJg"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="SR_6" sourceRef="Task_SubscribeEvents" targetRef="Gateway_ReadyToStream">
+      <bpmn:documentation id="documentation_09l0Iw"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="SR_7" sourceRef="Gateway_ReadyToStream" targetRef="Task_SendSnapshot">
+      <bpmn:documentation id="documentation_xwri9A"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="SR_8" sourceRef="Task_SendSnapshot" targetRef="Task_PushLiveUpdates">
+      <bpmn:documentation id="documentation_LHSXEw"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="SR_9" sourceRef="Task_PushLiveUpdates" targetRef="End_StatusClosed">
+      <bpmn:documentation id="documentation_SHrPfA"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="SR_F1" sourceRef="Boundary_StatusDisconnect" targetRef="Task_Reconnect">
+      <bpmn:documentation id="documentation_4nq5LQ"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="SR_R1" sourceRef="Task_Reconnect" targetRef="Task_BindJob">
+      <bpmn:documentation id="documentation_p03Gpw"/>
+    </bpmn:sequenceFlow>
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_StatusReconnect">
+    <bpmndi:BPMNPlane bpmnElement="Process_StatusReconnect" id="BPMNPlane_StatusReconnect">
+      <bpmndi:BPMNShape bpmnElement="Start_OpenStatus" id="Shape_Start_OpenStatus">
+        <dc:Bounds height="36" width="36" x="80" y="182"/>
+        <bpmndi:BPMNLabel id="BPMNLabel_km9SNg">
+          <dc:Bounds height="20.0" width="100.0" x="48.0" y="221.0"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_BindJob" id="Shape_Task_BindJob">
+        <dc:Bounds height="80" width="190" x="160" y="160"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Gateway_SnapshotAndSubscribe" id="Shape_Gateway_SnapshotAndSubscribe" isMarkerVisible="true">
+        <dc:Bounds height="50" width="50" x="405" y="175"/>
+        <bpmndi:BPMNLabel id="BPMNLabel_sKl6Uw">
+          <dc:Bounds height="20.0" width="100.0" x="380.0" y="228.0"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_LoadSnapshot" id="Shape_Task_LoadSnapshot">
+        <dc:Bounds height="80" width="170" x="520" y="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_SubscribeEvents" id="Shape_Task_SubscribeEvents">
+        <dc:Bounds height="80" width="170" x="520" y="260"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Gateway_ReadyToStream" id="Shape_Gateway_ReadyToStream" isMarkerVisible="true">
+        <dc:Bounds height="50" width="50" x="755" y="175"/>
+        <bpmndi:BPMNLabel id="BPMNLabel_QBnVyg">
+          <dc:Bounds height="20.0" width="100.0" x="730.0" y="228.0"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_SendSnapshot" id="Shape_Task_SendSnapshot">
+        <dc:Bounds height="80" width="150" x="860" y="160"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_PushLiveUpdates" id="Shape_Task_PushLiveUpdates">
+        <dc:Bounds height="80" width="180" x="1070" y="160"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Boundary_StatusDisconnect" id="Shape_Boundary_StatusDisconnect">
+        <dc:Bounds height="36" width="36" x="1232" y="222"/>
+        <bpmndi:BPMNLabel id="BPMNLabel_qI0rrg">
+          <dc:Bounds height="20.0" width="100.0" x="1200.0" y="261.0"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_Reconnect" id="Shape_Task_Reconnect">
+        <dc:Bounds height="80" width="180" x="1070" y="320"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="End_StatusClosed" id="Shape_End_StatusClosed">
+        <dc:Bounds height="36" width="36" x="1310" y="182"/>
+        <bpmndi:BPMNLabel id="BPMNLabel_C00W3g">
+          <dc:Bounds height="20.0" width="100.0" x="1278.0" y="221.0"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge bpmnElement="SR_1" id="Edge_SR_1">
+        <di:waypoint x="116.0" y="200.0"/>
+        <di:waypoint x="160.0" y="200.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="SR_2" id="Edge_SR_2">
+        <di:waypoint x="350.0" y="200.0"/>
+        <di:waypoint x="405.0" y="200.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="SR_3" id="Edge_SR_3">
+        <di:waypoint x="430.0" y="175.0"/>
+        <di:waypoint x="430.0" y="120.0"/>
+        <di:waypoint x="520.0" y="120.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="SR_4" id="Edge_SR_4">
+        <di:waypoint x="430.0" y="225.0"/>
+        <di:waypoint x="430.0" y="300.0"/>
+        <di:waypoint x="520.0" y="300.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="SR_5" id="Edge_SR_5">
+        <di:waypoint x="690.0" y="120.0"/>
+        <di:waypoint x="780.0" y="120.0"/>
+        <di:waypoint x="780.0" y="175.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="SR_6" id="Edge_SR_6">
+        <di:waypoint x="690.0" y="300.0"/>
+        <di:waypoint x="780.0" y="300.0"/>
+        <di:waypoint x="780.0" y="225.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="SR_7" id="Edge_SR_7">
+        <di:waypoint x="805.0" y="200.0"/>
+        <di:waypoint x="860.0" y="200.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="SR_8" id="Edge_SR_8">
+        <di:waypoint x="1010.0" y="200.0"/>
+        <di:waypoint x="1070.0" y="200.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="SR_9" id="Edge_SR_9">
+        <di:waypoint x="1250.0" y="200.0"/>
+        <di:waypoint x="1310.0" y="200.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="SR_F1" id="Edge_SR_F1">
+        <di:waypoint x="1250.0" y="258.0"/>
+        <di:waypoint x="1250.0" y="289.0"/>
+        <di:waypoint x="1160.0" y="289.0"/>
+        <di:waypoint x="1160.0" y="320.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="SR_R1" id="Edge_SR_R1">
+        <di:waypoint x="1070.0" y="360.0"/>
+        <di:waypoint x="255.0" y="360.0"/>
+        <di:waypoint x="255.0" y="240.0"/>
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>
