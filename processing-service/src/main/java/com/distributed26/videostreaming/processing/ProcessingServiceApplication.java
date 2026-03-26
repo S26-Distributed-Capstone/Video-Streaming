@@ -79,13 +79,21 @@ public class ProcessingServiceApplication {
                 String.valueOf(ResilientStorageClient.DEFAULT_MAX_DELAY_MS)));
         int storageRetryMaxAttempts = Integer.parseInt(getEnvOrDotenv(dotenv, "STORAGE_RETRY_MAX_ATTEMPTS",
                 String.valueOf(ResilientStorageClient.DEFAULT_MAX_ATTEMPTS)));
+        S3StorageClient rawStorageClient = new S3StorageClient(storageConfig);
+        try {
+            rawStorageClient.ensureBucketExists();
+            LOGGER.info("Bucket '{}' verified", storageConfig.getDefaultBucketName());
+        } catch (Exception e) {
+            LOGGER.warn("Could not verify bucket '{}' at startup (MinIO may be unavailable). " +
+                    "Continuing — bucket will be checked on first successful S3 operation: {}",
+                    storageConfig.getDefaultBucketName(), e.toString());
+        }
         ObjectStorageClient storageClient = new ResilientStorageClient(
-                new S3StorageClient(storageConfig),
+                rawStorageClient,
                 storageRetryInitialMs,
                 storageRetryMaxMs,
                 storageRetryMaxAttempts
         );
-        storageClient.ensureBucketExists();
         LOGGER.info("Storage ready — bucket={} (retry: initialDelay={}ms maxDelay={}ms maxAttempts={})",
                 storageConfig.getDefaultBucketName(), storageRetryInitialMs, storageRetryMaxMs,
                 storageRetryMaxAttempts == 0 ? "unlimited" : storageRetryMaxAttempts);
