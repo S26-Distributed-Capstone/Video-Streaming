@@ -1,0 +1,308 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:open-bpmn="http://open-bpmn.org/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="Definitions_EndToEnd" targetNamespace="http://distributed26.com/bpmn">
+  <bpmn:process id="Process_EndToEnd" isExecutable="false" name="End-to-End Upload to Playback" processType="Public">
+    <bpmn:documentation id="documentation_S4T3SA"/>
+    <bpmn:extensionElements>
+      <open-bpmn:auto-align/>
+    </bpmn:extensionElements>
+    <bpmn:startEvent id="Start_Upload" name="User starts upload">
+      <bpmn:documentation id="documentation_DB9acQ"/>
+      <bpmn:outgoing>Flow_1</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:task id="Task_ReceiveUpload" name="Receive upload request">
+      <bpmn:documentation id="documentation_5yKNEg"/>
+      <bpmn:incoming>Flow_1</bpmn:incoming>
+      <bpmn:outgoing>Flow_2</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_InitUpload" name="Initialize upload state">
+      <bpmn:documentation id="documentation_zfy0XQ"/>
+      <bpmn:incoming>Flow_2</bpmn:incoming>
+      <bpmn:outgoing>Flow_3</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:boundaryEvent attachedToRef="Task_InitUpload" id="Boundary_InitFailed" name="Initialization failed">
+      <bpmn:documentation id="documentation_PJxb8Q"/>
+      <bpmn:errorEventDefinition/>
+      <bpmn:outgoing>Flow_F1</bpmn:outgoing>
+    </bpmn:boundaryEvent>
+    <bpmn:task id="Task_SegmentVideo" name="Segment source video">
+      <bpmn:documentation id="documentation_uUCcvg"/>
+      <bpmn:incoming>Flow_3</bpmn:incoming>
+      <bpmn:outgoing>Flow_4</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:boundaryEvent attachedToRef="Task_SegmentVideo" id="Boundary_SegmentFailed" name="Segmentation failed">
+      <bpmn:documentation id="documentation_I0bAFQ"/>
+      <bpmn:errorEventDefinition/>
+      <bpmn:outgoing>Flow_F2</bpmn:outgoing>
+    </bpmn:boundaryEvent>
+    <bpmn:task id="Task_UploadChunks" name="Upload source chunks to MinIO / S3">
+      <bpmn:documentation id="documentation_UhATIQ"/>
+      <bpmn:incoming>Flow_4</bpmn:incoming>
+      <bpmn:outgoing>Flow_5</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_PublishTasks" name="Publish status events and transcode tasks">
+      <bpmn:documentation id="documentation_G0fKEQ"/>
+      <bpmn:incoming>Flow_5</bpmn:incoming>
+      <bpmn:outgoing>Flow_6</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_ProcessSegments" name="Transcode segments">
+      <bpmn:documentation id="documentation_fwo0QA"/>
+      <bpmn:incoming>Flow_6</bpmn:incoming>
+      <bpmn:outgoing>Flow_7</bpmn:outgoing>
+      <bpmn:incoming>Flow_R2</bpmn:incoming>
+    </bpmn:task>
+    <bpmn:boundaryEvent attachedToRef="Task_ProcessSegments" id="Boundary_ProcessingFailed" name="Processing interrupted">
+      <bpmn:documentation id="documentation_Plz2XQ"/>
+      <bpmn:errorEventDefinition/>
+      <bpmn:outgoing>Flow_F3</bpmn:outgoing>
+    </bpmn:boundaryEvent>
+    <bpmn:task id="Task_RecoverProcessing" name="Run processing recovery">
+      <bpmn:documentation id="documentation_bJIyUA"/>
+      <bpmn:incoming>Flow_F3</bpmn:incoming>
+      <bpmn:outgoing>Flow_R1</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:exclusiveGateway id="Gateway_Recovered" name="Recovery succeeded?">
+      <bpmn:documentation id="documentation_VuUJCg"/>
+      <bpmn:incoming>Flow_R1</bpmn:incoming>
+      <bpmn:outgoing>Flow_R2</bpmn:outgoing>
+      <bpmn:outgoing>Flow_R3</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:task id="Task_GenerateManifests" name="Generate manifests">
+      <bpmn:documentation id="documentation_03H1QA"/>
+      <bpmn:incoming>Flow_7</bpmn:incoming>
+      <bpmn:outgoing>Flow_8</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_RequestPlayback" name="Request playback manifest">
+      <bpmn:documentation id="documentation_2dbpoQ"/>
+      <bpmn:incoming>Flow_8</bpmn:incoming>
+      <bpmn:outgoing>Flow_9</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_ValidateReady" name="Validate readiness and read manifest">
+      <bpmn:documentation id="documentation_fZ0XNA"/>
+      <bpmn:incoming>Flow_9</bpmn:incoming>
+      <bpmn:outgoing>Flow_10</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:endEvent id="End_PlaybackReady" name="Playback starts">
+      <bpmn:documentation id="documentation_0L1efg"/>
+      <bpmn:incoming>Flow_10</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:task id="Task_MarkFailed" name="Mark video FAILED">
+      <bpmn:documentation id="documentation_6bUGMg"/>
+      <bpmn:incoming>Flow_F1</bpmn:incoming>
+      <bpmn:incoming>Flow_F2</bpmn:incoming>
+      <bpmn:incoming>Flow_R3</bpmn:incoming>
+      <bpmn:outgoing>Flow_F4</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:endEvent id="End_Failed" name="Workflow failed">
+      <bpmn:documentation id="documentation_F4XQUA"/>
+      <bpmn:incoming>Flow_F4</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_1" sourceRef="Start_Upload" targetRef="Task_ReceiveUpload">
+      <bpmn:documentation id="documentation_ReDYyA"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_2" sourceRef="Task_ReceiveUpload" targetRef="Task_InitUpload">
+      <bpmn:documentation id="documentation_t3pLGg"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_3" sourceRef="Task_InitUpload" targetRef="Task_SegmentVideo">
+      <bpmn:documentation id="documentation_Z1qNmQ"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_4" sourceRef="Task_SegmentVideo" targetRef="Task_UploadChunks">
+      <bpmn:documentation id="documentation_uoA0ig"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_5" sourceRef="Task_UploadChunks" targetRef="Task_PublishTasks">
+      <bpmn:documentation id="documentation_Cu83vw"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_6" sourceRef="Task_PublishTasks" targetRef="Task_ProcessSegments">
+      <bpmn:documentation id="documentation_0OlkEQ"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_7" sourceRef="Task_ProcessSegments" targetRef="Task_GenerateManifests">
+      <bpmn:documentation id="documentation_LUQ86Q"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_8" sourceRef="Task_GenerateManifests" targetRef="Task_RequestPlayback">
+      <bpmn:documentation id="documentation_Ao56sg"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_9" sourceRef="Task_RequestPlayback" targetRef="Task_ValidateReady">
+      <bpmn:documentation id="documentation_d6T0Xw"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_10" sourceRef="Task_ValidateReady" targetRef="End_PlaybackReady">
+      <bpmn:documentation id="documentation_CG0UFQ"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_F1" sourceRef="Boundary_InitFailed" targetRef="Task_MarkFailed">
+      <bpmn:documentation id="documentation_hc79Rg"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_F2" sourceRef="Boundary_SegmentFailed" targetRef="Task_MarkFailed">
+      <bpmn:documentation id="documentation_SsmkTQ"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_F3" sourceRef="Boundary_ProcessingFailed" targetRef="Task_RecoverProcessing">
+      <bpmn:documentation id="documentation_eoHSkA"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_R1" sourceRef="Task_RecoverProcessing" targetRef="Gateway_Recovered">
+      <bpmn:documentation id="documentation_AVIDkg"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_R2" name="yes" sourceRef="Gateway_Recovered" targetRef="Task_ProcessSegments">
+      <bpmn:documentation id="documentation_i0GZqQ"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_R3" name="no" sourceRef="Gateway_Recovered" targetRef="Task_MarkFailed">
+      <bpmn:documentation id="documentation_KcTFwA"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_F4" sourceRef="Task_MarkFailed" targetRef="End_Failed">
+      <bpmn:documentation id="documentation_VuoHnw"/>
+    </bpmn:sequenceFlow>
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_EndToEnd">
+    <bpmndi:BPMNPlane bpmnElement="Process_EndToEnd" id="BPMNPlane_EndToEnd">
+      <bpmndi:BPMNShape bpmnElement="Start_Upload" id="Shape_Start_Upload">
+        <dc:Bounds height="36" width="36" x="80" y="142"/>
+        <bpmndi:BPMNLabel id="BPMNLabel_Pm3Urg">
+          <dc:Bounds height="20.0" width="100.0" x="48.0" y="181.0"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_ReceiveUpload" id="Shape_Task_ReceiveUpload">
+        <dc:Bounds height="80" width="140" x="160" y="120"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_InitUpload" id="Shape_Task_InitUpload">
+        <dc:Bounds height="80" width="140" x="350" y="120"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Boundary_InitFailed" id="Shape_Boundary_InitFailed">
+        <dc:Bounds height="36.0" width="36.0" x="472.0" y="182.0"/>
+        <bpmndi:BPMNLabel id="BPMNLabel_8eYtUA">
+          <dc:Bounds height="20.0" width="100.0" x="440.0" y="221.0"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_SegmentVideo" id="Shape_Task_SegmentVideo">
+        <dc:Bounds height="80" width="140" x="540" y="120"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Boundary_SegmentFailed" id="Shape_Boundary_SegmentFailed">
+        <dc:Bounds height="36" width="36" x="662" y="182"/>
+        <bpmndi:BPMNLabel id="BPMNLabel_Du4Wig">
+          <dc:Bounds height="20.0" width="100.0" x="630.0" y="221.0"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_UploadChunks" id="Shape_Task_UploadChunks">
+        <dc:Bounds height="80" width="170" x="730" y="120"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_PublishTasks" id="Shape_Task_PublishTasks">
+        <dc:Bounds height="80" width="180" x="950" y="120"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_ProcessSegments" id="Shape_Task_ProcessSegments">
+        <dc:Bounds height="80" width="150" x="1180" y="120"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Boundary_ProcessingFailed" id="Shape_Boundary_ProcessingFailed">
+        <dc:Bounds height="36.0" width="36.0" x="1165.0" y="180.0"/>
+        <bpmndi:BPMNLabel id="BPMNLabel_CrP9sg">
+          <dc:Bounds height="20.0" width="100.0" x="1133.0" y="219.0"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_RecoverProcessing" id="Shape_Task_RecoverProcessing">
+        <dc:Bounds height="80" width="150" x="1180" y="280"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Gateway_Recovered" id="Shape_Gateway_Recovered" isMarkerVisible="true">
+        <dc:Bounds height="50" width="50" x="1380" y="295"/>
+        <bpmndi:BPMNLabel id="BPMNLabel_e1fJGg">
+          <dc:Bounds height="20.0" width="100.0" x="1355.0" y="348.0"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_GenerateManifests" id="Shape_Task_GenerateManifests">
+        <dc:Bounds height="80" width="150" x="1450" y="120"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_RequestPlayback" id="Shape_Task_RequestPlayback">
+        <dc:Bounds height="80" width="150" x="1650" y="120"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_ValidateReady" id="Shape_Task_ValidateReady">
+        <dc:Bounds height="80" width="170" x="1850" y="120"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="End_PlaybackReady" id="Shape_End_PlaybackReady">
+        <dc:Bounds height="36" width="36" x="2060" y="142"/>
+        <bpmndi:BPMNLabel id="BPMNLabel_r2fBaA">
+          <dc:Bounds height="20.0" width="100.0" x="2028.0" y="181.0"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_MarkFailed" id="Shape_Task_MarkFailed">
+        <dc:Bounds height="80" width="140" x="760" y="300"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="End_Failed" id="Shape_End_Failed">
+        <dc:Bounds height="36" width="36" x="950" y="322"/>
+        <bpmndi:BPMNLabel id="BPMNLabel_RLtUnw">
+          <dc:Bounds height="20.0" width="100.0" x="918.0" y="361.0"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge bpmnElement="Flow_1" id="Edge_Flow_1">
+        <di:waypoint x="116.0" y="160.0"/>
+        <di:waypoint x="160.0" y="160.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_2" id="Edge_Flow_2">
+        <di:waypoint x="300.0" y="160.0"/>
+        <di:waypoint x="350.0" y="160.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_3" id="Edge_Flow_3">
+        <di:waypoint x="490.0" y="160.0"/>
+        <di:waypoint x="540.0" y="160.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_4" id="Edge_Flow_4">
+        <di:waypoint x="680.0" y="160.0"/>
+        <di:waypoint x="730.0" y="160.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_5" id="Edge_Flow_5">
+        <di:waypoint x="900.0" y="160.0"/>
+        <di:waypoint x="950.0" y="160.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_6" id="Edge_Flow_6">
+        <di:waypoint x="1130.0" y="160.0"/>
+        <di:waypoint x="1180.0" y="160.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_7" id="Edge_Flow_7">
+        <di:waypoint x="1330.0" y="160.0"/>
+        <di:waypoint x="1450.0" y="160.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_8" id="Edge_Flow_8">
+        <di:waypoint x="1600.0" y="160.0"/>
+        <di:waypoint x="1650.0" y="160.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_9" id="Edge_Flow_9">
+        <di:waypoint x="1800.0" y="160.0"/>
+        <di:waypoint x="1850.0" y="160.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_10" id="Edge_Flow_10">
+        <di:waypoint x="2020.0" y="160.0"/>
+        <di:waypoint x="2060.0" y="160.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_F1" id="Edge_Flow_F1">
+        <di:waypoint x="490.0" y="218.0"/>
+        <di:waypoint x="490.0" y="340.0"/>
+        <di:waypoint x="760.0" y="340.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_F2" id="Edge_Flow_F2">
+        <di:waypoint x="680.0" y="218.0"/>
+        <di:waypoint x="680.0" y="340.0"/>
+        <di:waypoint x="760.0" y="340.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_F3" id="Edge_Flow_F3">
+        <di:waypoint x="1183.0" y="216.0"/>
+        <di:waypoint x="1183.0" y="248.0"/>
+        <di:waypoint x="1255.0" y="248.0"/>
+        <di:waypoint x="1255.0" y="280.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_R1" id="Edge_Flow_R1">
+        <di:waypoint x="1330.0" y="320.0"/>
+        <di:waypoint x="1380.0" y="320.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_R2" id="Edge_Flow_R2" targetElement="Shape_Task_ProcessSegments">
+        <di:waypoint x="1430.0" y="320.0"/>
+        <di:waypoint x="1439.0" y="320.0"/>
+        <di:waypoint x="1439.0" y="264.0"/>
+        <di:waypoint x="1355.0" y="264.0"/>
+        <di:waypoint x="1355.0" y="192.0"/>
+        <di:waypoint x="1330.0" y="192.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_R3" id="Edge_Flow_R3">
+        <di:waypoint x="1405.0" y="345.0"/>
+        <di:waypoint x="1405.0" y="420.0"/>
+        <di:waypoint x="830.0" y="420.0"/>
+        <di:waypoint x="830.0" y="380.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_F4" id="Edge_Flow_F4">
+        <di:waypoint x="900.0" y="340.0"/>
+        <di:waypoint x="950.0" y="340.0"/>
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

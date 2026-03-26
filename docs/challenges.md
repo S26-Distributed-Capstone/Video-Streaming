@@ -5,6 +5,11 @@ This project has two main failure-handling paths:
 - `node-watcher` detects upload or processing containers that die while a video is still in progress.
 - `processing-service` performs startup recovery for videos that were left incomplete after a restart.
 
+Related BPMN workflow diagrams:
+
+- [docs/diagrams/bpmn-processing-failure-recovery.bpmn](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/diagrams/bpmn-processing-failure-recovery.bpmn)
+- [docs/diagrams/bpmn-status-reconnect-workflow.bpmn](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/diagrams/bpmn-status-reconnect-workflow.bpmn)
+
 ## Node Watcher
 
 `node-watcher` listens for Docker container events for the upload and processing services.
@@ -60,3 +65,7 @@ The spool directory is backed by a Docker volume (`processing_spool`) so transco
   - Recovery: client retries the manifest request, and Swarm should route it to another healthy replica
 2. All streaming-service instances are unavailable when the client tries to fetch the manifest
   - Recovery: client shows "stream unavailable" and retries a few times before giving up
+
+For the broader user workflow that reaches playback after successful upload and processing, see:
+
+- [docs/diagrams/bpmn-end-to-end-workflow.bpmn](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/diagrams/bpmn-end-to-end-workflow.bpmn)
