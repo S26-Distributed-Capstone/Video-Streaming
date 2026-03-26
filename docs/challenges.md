@@ -19,7 +19,7 @@ If a watched container dies:
 1. It finds videos still associated with that container.
 2. It waits briefly to see whether the service has recovered.
 3. If recovery does not happen, it:
-   - marks the video `FAILED` in Postgres
+   - marks the video `FAILED` in Postgres when the failure is treated as terminal
    - publishes a `failed` status event to RabbitMQ
 
 That `failed` event is then forwarded to the browser by `status-service`.
@@ -31,7 +31,8 @@ This prevents videos from being stuck forever in `PROCESSING` after a container 
 ### Upload Service
 
 1. Upload Service dies before returning videoId to the client. If no healthy instance is available, the request fails with a service-unavailable error from the routing layer; otherwise, the request is routed to another healthy upload-service instance.
-2. Upload Service dies while segmenting the video - client immediately retries the upload with the same videoId, skipping previously uploaded segments. If retries exceed the client threshold, the upload is treated as failed.
+2. Upload Service dies before source chunk upload is complete - client retries the upload with the same videoId, skipping previously uploaded segments. If retries exceed the client threshold, the upload is treated as failed.
+3. Upload Service dies after source chunks are already uploaded and the system is in downstream transcoding / processing - client should continue monitoring status and should not restart the upload just because the upload-service instance died.
 
 ### Status Service
 
