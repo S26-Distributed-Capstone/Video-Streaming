@@ -73,6 +73,8 @@ The following settings are expected to be configured by the user.
 - `FFMPEG_PRESET`: FFmpeg encoding preset
 - `CHUNK_DURATION_SECONDS`: upload chunk duration
 - `MACHINE_ID`: identifier recorded in DB and failure events
+- `STORAGE_RETRY_INITIAL_DELAY_MILLIS`: initial upload-service backoff delay when MinIO is unavailable
+- `STORAGE_RETRY_MAX_DELAY_MILLIS`: maximum upload-service backoff delay when MinIO is unavailable
 
 ### Failure Detection
 
@@ -99,6 +101,11 @@ The following settings are expected to be configured by the user.
 
 Uploads a video and starts segmentation plus downstream processing.
 
+Behavior notes:
+- the upload is accepted after the source file is spooled locally
+- if MinIO is unavailable, the upload-service retries storage operations in the background instead of immediately failing the upload
+- the initial response includes client-facing storage retry state so the UI can display when MinIO is being retried
+
 Request:
 - Method: `POST`
 - Content type: `multipart/form-data`
@@ -113,13 +120,16 @@ Success response:
 ```json
 {
   "videoId": "123e4567-e89b-12d3-a456-426614174000",
-  "uploadStatusUrl": "ws://localhost:8081/upload-status?jobId=123e4567-e89b-12d3-a456-426614174000"
+  "uploadStatusUrl": "ws://localhost:8081/upload-status?jobId=123e4567-e89b-12d3-a456-426614174000",
+  "status": "WAITING_FOR_STORAGE",
+  "retryingMinioConnection": true,
+  "statusMessage": "Retrying MinIO connection"
 }
 ```
 
 Possible errors:
 - `400 Bad Request`: missing file or name
-- `500 Internal Server Error`: upload, storage, or initialization failure
+- `500 Internal Server Error`: local upload initialization failure before the upload can be accepted
 
 Example:
 
@@ -143,8 +153,20 @@ Event types:
 - `progress`: snapshot of uploaded source segments
 - `task`: live upload chunk progress
 - `meta`: total segment count for the upload
+- `storage_status`: source upload is waiting for MinIO or has resumed after storage recovery
 - `transcode_progress`: per-profile transcode state changes
 - `failed`: terminal failure notification
+
+Representative `storage_status` event:
+
+```json
+{
+  "jobId": "123e4567-e89b-12d3-a456-426614174000",
+  "state": "WAITING",
+  "reason": "Failed to upload object: 123e4567-e89b-12d3-a456-426614174000/chunks/output0.ts",
+  "type": "storage_status"
+}
+```
 
 Representative `transcode_progress` event:
 
@@ -171,7 +193,9 @@ Success response:
 {
   "videoId": "123e4567-e89b-12d3-a456-426614174000",
   "videoName": "Demo Video",
-  "status": "PROCESSING",
+  "status": "WAITING_FOR_STORAGE",
+  "retryingMinioConnection": true,
+  "statusMessage": "Retrying MinIO connection",
   "totalSegments": 12,
   "machineId": "node-a",
   "containerId": "abc123",
@@ -187,6 +211,33 @@ Success response:
 Possible errors:
 - `404 Not Found`: unknown video ID
 - `500 Internal Server Error`: upload info store unavailable
+
+Status values relevant to storage outages:
+- `PROCESSING`: upload is actively segmenting and/or uploading to MinIO
+- `WAITING_FOR_STORAGE`: upload is accepted, but source metadata or chunk upload is waiting for MinIO to recover
+- `COMPLETED`: upload, chunk upload, and downstream handoff completed successfully
+- `FAILED`: terminal failure not covered by storage retry
+
+### `GET /health`
+
+Upload-service liveness endpoint.
+
+Representative response:
+
+```json
+{
+  "status": "ok",
+  "storageReady": false
+}
+```
+
+### `GET /ready`
+
+Upload-service readiness endpoint.
+
+Behavior:
+- returns `200 OK` when MinIO is reachable and the upload-service is ready to persist objects
+- returns `503 Service Unavailable` while MinIO is unavailable and the upload-service is retrying storage readiness
 
 ## 3. Streaming API
 

@@ -39,6 +39,8 @@ public final class SegmentUploadCoordinator {
     private final TranscodeTaskBus transcodeTaskBus;
     private final SegmentUploadRepository segmentUploadRepository;
     private final FailedVideoRegistry failedVideoRegistry;
+    private final StorageRetryExecutor storageRetryExecutor;
+    private final StorageStateTracker storageStateTracker;
     private final ExecutorService segmentUploadExecutor;
     private final int maxInFlightSegmentUploads;
     private final int segmentDuration;
@@ -49,6 +51,8 @@ public final class SegmentUploadCoordinator {
             TranscodeTaskBus transcodeTaskBus,
             SegmentUploadRepository segmentUploadRepository,
             FailedVideoRegistry failedVideoRegistry,
+            StorageRetryExecutor storageRetryExecutor,
+            StorageStateTracker storageStateTracker,
             ExecutorService segmentUploadExecutor,
             int maxInFlightSegmentUploads,
             int segmentDuration
@@ -58,6 +62,8 @@ public final class SegmentUploadCoordinator {
         this.transcodeTaskBus = transcodeTaskBus;
         this.segmentUploadRepository = segmentUploadRepository;
         this.failedVideoRegistry = failedVideoRegistry;
+        this.storageRetryExecutor = storageRetryExecutor;
+        this.storageStateTracker = storageStateTracker;
         this.segmentUploadExecutor = segmentUploadExecutor;
         this.maxInFlightSegmentUploads = maxInFlightSegmentUploads;
         this.segmentDuration = segmentDuration;
@@ -97,18 +103,51 @@ public final class SegmentUploadCoordinator {
             String fileName = path.getFileName().toString();
             String objectKey = videoId + "/chunks/" + fileName;
             long size = Files.size(path);
-            logger.info("Uploading segment: {} ({} bytes)", objectKey, size);
+            storageRetryExecutor.run(
+                    "upload object " + objectKey,
+                    new StorageRetryExecutor.RetryObserver() {
+                        private boolean waiting;
 
-            try (InputStream is = new FileInputStream(path.toFile())) {
-                storageClient.uploadFile(objectKey, is, size);
-                if (fileName.endsWith(".ts")) {
-                    OptionalInt segmentNumber = extractSegmentNumber(fileName);
-                    publishTranscodeTasks(videoId, objectKey, segmentNumber, outputTsOffsetSeconds);
-                    statusEventBus.publish(new JobEvent(videoId, objectKey));
-                    recordUploadedSegment(videoId, fileName, segmentNumber);
-                }
-                logger.info("Finished uploading segment: {}", objectKey);
+                        @Override
+                        public void onRetrying(int attempt, RuntimeException failure, long nextDelayMillis) {
+                            if (!waiting) {
+                                waiting = true;
+                                storageStateTracker.beginStorageWait(videoId, failure.getMessage());
+                            }
+                        }
+
+                        @Override
+                        public void onSucceeded(int attempts) {
+                            if (waiting) {
+                                waiting = false;
+                                storageStateTracker.endStorageWait(videoId);
+                            }
+                        }
+
+                        @Override
+                        public void onCancelled(Exception failure) {
+                            if (waiting) {
+                                waiting = false;
+                                storageStateTracker.endStorageWait(videoId);
+                            }
+                        }
+                    },
+                    () -> {
+                        ensureVideoActive(videoId);
+                        logger.info("Uploading segment: {} ({} bytes)", objectKey, size);
+                        try (InputStream is = new FileInputStream(path.toFile())) {
+                            storageClient.uploadFile(objectKey, is, size);
+                        }
+                    }
+            );
+
+            if (fileName.endsWith(".ts")) {
+                OptionalInt segmentNumber = extractSegmentNumber(fileName);
+                publishTranscodeTasks(videoId, objectKey, segmentNumber, outputTsOffsetSeconds);
+                statusEventBus.publish(new JobEvent(videoId, objectKey));
+                recordUploadedSegment(videoId, fileName, segmentNumber);
             }
+            logger.info("Finished uploading segment: {}", objectKey);
         } catch (IOException e) {
             throw new RuntimeException("Failed to upload segment: " + path, e);
         }
@@ -372,7 +411,7 @@ public final class SegmentUploadCoordinator {
 
     private void ensureVideoActive(String videoId) {
         if (failedVideoRegistry != null && failedVideoRegistry.isFailed(videoId)) {
-            throw new RuntimeException("Upload already marked FAILED for videoId=" + videoId);
+            throw new java.util.concurrent.CancellationException("Upload already marked FAILED for videoId=" + videoId);
         }
     }
 

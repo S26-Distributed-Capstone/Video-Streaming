@@ -10,6 +10,8 @@ import com.distributed26.videostreaming.upload.processing.UploadProcessingConfig
 import com.distributed26.videostreaming.upload.processing.UploadRequest;
 import com.distributed26.videostreaming.upload.processing.UploadRequestParser;
 import com.distributed26.videostreaming.upload.processing.VideoSegmentationWorkflow;
+import com.distributed26.videostreaming.upload.processing.StorageRetryExecutor;
+import com.distributed26.videostreaming.upload.processing.StorageStateTracker;
 import com.distributed26.videostreaming.upload.db.SegmentUploadRepository;
 import com.distributed26.videostreaming.upload.db.VideoUploadRepository;
 import io.github.cdimascio.dotenv.Dotenv;
@@ -38,9 +40,10 @@ public class UploadHandler implements AutoCloseable {
     private final ExecutorService ffmpegExecutor;
     private final ExecutorService segmentUploadExecutor;
     private final FailedVideoRegistry failedVideoRegistry;
+    private final StorageStateTracker storageStateTracker;
 
     public UploadHandler(ObjectStorageClient storageClient, StatusEventBus statusEventBus, TranscodeTaskBus transcodeTaskBus) {
-        this(storageClient, statusEventBus, transcodeTaskBus, null, null, null, null, new FailedVideoRegistry());
+        this(storageClient, statusEventBus, transcodeTaskBus, null, null, null, null, new FailedVideoRegistry(), null);
     }
 
     public UploadHandler(
@@ -51,7 +54,8 @@ public class UploadHandler implements AutoCloseable {
             SegmentUploadRepository segmentUploadRepository,
             String machineId,
             String containerId,
-            FailedVideoRegistry failedVideoRegistry
+            FailedVideoRegistry failedVideoRegistry,
+            StorageStateTracker storageStateTracker
     ) {
         this(
                 storageClient,
@@ -62,6 +66,7 @@ public class UploadHandler implements AutoCloseable {
                 machineId,
                 containerId,
                 failedVideoRegistry,
+                storageStateTracker,
                 UploadProcessingConfig.fromDotenv(Dotenv.configure().directory("./").ignoreIfMissing().load())
         );
     }
@@ -83,7 +88,8 @@ public class UploadHandler implements AutoCloseable {
                 segmentUploadRepository,
                 machineId,
                 containerId,
-                new FailedVideoRegistry()
+                new FailedVideoRegistry(),
+                null
         );
     }
 
@@ -96,6 +102,7 @@ public class UploadHandler implements AutoCloseable {
             String machineId,
             String containerId,
             FailedVideoRegistry failedVideoRegistry,
+            StorageStateTracker storageStateTracker,
             UploadProcessingConfig config
     ) {
         Objects.requireNonNull(storageClient, "storageClient is null");
@@ -108,6 +115,9 @@ public class UploadHandler implements AutoCloseable {
         this.ffmpegExecutor = Executors.newFixedThreadPool(config.ffmpegPoolSize());
         this.segmentUploadExecutor = Executors.newFixedThreadPool(config.uploadPoolSize());
         this.failedVideoRegistry = failedVideoRegistry;
+        this.storageStateTracker = storageStateTracker != null
+                ? storageStateTracker
+                : new StorageStateTracker(videoUploadRepository, statusEventBus);
 
         logger.info("CHUNK_DURATION_SECONDS resolved to {}", config.segmentDuration());
         logger.info("Initialized FFmpeg executor with pool size: {}", config.ffmpegPoolSize());
@@ -116,9 +126,15 @@ public class UploadHandler implements AutoCloseable {
         logger.info("Initialized max in-flight segment uploads: {}", config.maxInFlightSegmentUploads());
 
         this.requestParser = new UploadRequestParser(config.maxVideoNameLength());
+        StorageRetryExecutor storageRetryExecutor = new StorageRetryExecutor(
+                config.storageRetryInitialDelayMillis(),
+                config.storageRetryMaxDelayMillis()
+        );
         this.initializationService = new UploadInitializationService(
                 storageClient,
                 videoUploadRepository,
+                storageRetryExecutor,
+                this.storageStateTracker,
                 machineId,
                 containerId,
                 config.segmentDuration()
@@ -129,6 +145,8 @@ public class UploadHandler implements AutoCloseable {
                 transcodeTaskBus,
                 segmentUploadRepository,
                 failedVideoRegistry,
+                storageRetryExecutor,
+                this.storageStateTracker,
                 this.segmentUploadExecutor,
                 config.maxInFlightSegmentUploads(),
                 config.segmentDuration()
@@ -143,7 +161,8 @@ public class UploadHandler implements AutoCloseable {
                 config.pollingIntervalMillis(),
                 machineId,
                 containerId,
-                failedVideoRegistry
+                failedVideoRegistry,
+                this.storageStateTracker
         );
     }
 
@@ -173,25 +192,32 @@ public class UploadHandler implements AutoCloseable {
         }
 
         try {
-            initializationService.initialize(request, inputPath);
+            initializationService.initializeUploadRecord(request, inputPath);
         } catch (RuntimeException e) {
             logger.error("Failed to initialize upload for videoId={}", request.videoId(), e);
             try {
                 Files.deleteIfExists(inputPath);
             } catch (IOException ignored) {
             }
-            ctx.status(500).result("Failed to store video metadata");
+            ctx.status(500).result("Failed to initialize upload");
             return;
         }
 
         failedVideoRegistry.clear(request.videoId());
+        String initialStatus = storageStateTracker.isServiceReady() ? "PROCESSING" : "WAITING_FOR_STORAGE";
 
         CompletableFuture.runAsync(
-                () -> workflow.processVideo(request.videoId(), inputPath, startTime),
+                () -> workflow.processVideo(request, inputPath, startTime),
                 supervisionExecutor
         );
 
-        ctx.status(202).json(new UploadResponse(request.videoId(), request.uploadStatusUrl()));
+        ctx.status(202).json(new UploadResponse(
+                request.videoId(),
+                request.uploadStatusUrl(),
+                initialStatus,
+                UploadStatusPresenter.isRetryingMinioConnection(initialStatus),
+                UploadStatusPresenter.statusMessage(initialStatus)
+        ));
     }
 
     private Path saveUploadedFile(UploadedFile uploadedFile, String videoId) throws IOException {
@@ -202,7 +228,13 @@ public class UploadHandler implements AutoCloseable {
         return inputPath;
     }
 
-    private record UploadResponse(String videoId, String uploadStatusUrl) {
+    private record UploadResponse(
+            String videoId,
+            String uploadStatusUrl,
+            String status,
+            boolean retryingMinioConnection,
+            String statusMessage
+    ) {
     }
 
     @Override

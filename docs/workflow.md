@@ -15,6 +15,7 @@ This workflow covers:
 - upload-service segments the source video
 - source chunks are persisted
 - a `videoId` is returned
+- if MinIO is unavailable, upload-service waits and retries storage instead of immediately failing the upload
 
 Workflow diagram:
 
@@ -28,6 +29,7 @@ This workflow covers:
 - client connects to the status path
 - status-service sends a DB-backed snapshot
 - live upload and transcode progress events are streamed to the client
+- when MinIO is unavailable, the client can observe a non-terminal storage-waiting state rather than a terminal failure
 
 Workflow diagram:
 

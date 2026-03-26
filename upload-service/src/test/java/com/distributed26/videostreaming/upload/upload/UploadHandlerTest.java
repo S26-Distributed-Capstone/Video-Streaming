@@ -7,6 +7,8 @@ import static org.mockito.Mockito.*;
 
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
 import com.distributed26.videostreaming.upload.processing.SegmentUploadCoordinator;
+import com.distributed26.videostreaming.upload.processing.StorageStateTracker;
+import com.distributed26.videostreaming.upload.processing.UploadProcessingConfig;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.javalin.Javalin;
@@ -116,6 +118,9 @@ public class UploadHandlerTest {
                     assertNotNull(body);
                     assertTrue(body.contains("\"videoId\""), "Response should contain videoId");
                     assertTrue(body.contains("\"uploadStatusUrl\""), "Response should contain uploadStatusUrl");
+                    assertTrue(body.contains("\"status\""), "Response should contain status");
+                    assertTrue(body.contains("\"retryingMinioConnection\""), "Response should contain retryingMinioConnection");
+                    assertTrue(body.contains("\"statusMessage\""), "Response should contain statusMessage");
                 }
             });
         }
@@ -181,6 +186,10 @@ public class UploadHandlerTest {
                     try (var response = client.request("/upload", builder ->
                         builder.post(requestBody))) {
                         assertEquals(202, response.code());
+                        String body = response.body().string();
+                        assertTrue(body.contains("\"retryingMinioConnection\":true"));
+                        assertTrue(body.contains("\"status\":\"WAITING_FOR_STORAGE\""));
+                        assertTrue(body.contains("\"statusMessage\":\"Retrying MinIO connection\""));
                     }
                 });
 
@@ -201,35 +210,54 @@ public class UploadHandlerTest {
         }
 
         @Test
-        @DisplayName("Should handle storage client upload failure gracefully")
+        @DisplayName("Should accept upload and retry metadata when storage is unavailable")
         void shouldHandleStorageUploadFailure() throws Exception {
-            // Simulate storage failure
             doThrow(new RuntimeException("Storage unavailable"))
                 .when(mockStorageClient).uploadFile(anyString(), any(InputStream.class), anyLong());
 
-            UploadHandler handler = new UploadHandler(mockStorageClient, new TestStatusEventBus(), new TestTranscodeTaskBus());
+            UploadHandler handler = new UploadHandler(
+                mockStorageClient,
+                new TestStatusEventBus(),
+                new TestTranscodeTaskBus(),
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                testConfig(10L, 20L)
+            );
             Javalin app = Javalin.create();
             app.post("/upload", handler::upload);
 
-            JavalinTest.test(app, (server, client) -> {
-                RequestBody fileBody = RequestBody.create(
-                    "test content".getBytes(),
-                    MediaType.parse("video/mp4")
-                );
+            try {
+                JavalinTest.test(app, (server, client) -> {
+                    RequestBody fileBody = RequestBody.create(
+                        "test content".getBytes(),
+                        MediaType.parse("video/mp4")
+                    );
 
-                MultipartBody requestBody = new MultipartBody.Builder()
-                    .setType(MultipartBody.FORM)
-                    .addFormDataPart("file", "test-video.mp4", fileBody)
-                    .addFormDataPart("name", "Test Video")
-                    .build();
+                    MultipartBody requestBody = new MultipartBody.Builder()
+                        .setType(MultipartBody.FORM)
+                        .addFormDataPart("file", "test-video.mp4", fileBody)
+                        .addFormDataPart("name", "Test Video")
+                        .build();
 
-                try (var response = client.request("/upload", builder ->
-                    builder.post(requestBody))) {
-                    assertEquals(500, response.code());
-                }
-            });
+                    try (var response = client.request("/upload", builder ->
+                        builder.post(requestBody))) {
+                        assertEquals(202, response.code());
+                    }
+                });
 
-            Thread.sleep(1000);
+                await().atMost(Duration.ofSeconds(1))
+                    .pollInterval(Duration.ofMillis(25))
+                    .untilAsserted(() ->
+                        verify(mockStorageClient, atLeast(2))
+                            .uploadFile(anyString(), any(InputStream.class), anyLong())
+                    );
+            } finally {
+                handler.close();
+            }
         }
     }
 
@@ -253,6 +281,8 @@ public class UploadHandlerTest {
                 new TestTranscodeTaskBus(),
                 fakeRepo,
                 null,
+                new com.distributed26.videostreaming.upload.processing.StorageRetryExecutor(10L, 20L),
+                new StorageStateTracker(null, new TestStatusEventBus()),
                 uploadExecutor,
                 2,
                 10
@@ -297,6 +327,8 @@ public class UploadHandlerTest {
                 new FailingTranscodeTaskBus(),
                 fakeRepo,
                 null,
+                new com.distributed26.videostreaming.upload.processing.StorageRetryExecutor(10L, 20L),
+                new StorageStateTracker(null, new TestStatusEventBus()),
                 uploadExecutor,
                 2,
                 10
@@ -332,6 +364,20 @@ public class UploadHandlerTest {
         } catch (Exception e) {
             return false;
         }
+    }
+
+    private static UploadProcessingConfig testConfig(long storageRetryInitialDelayMillis, long storageRetryMaxDelayMillis) {
+        return new UploadProcessingConfig(
+            200,
+            10,
+            60_000L,
+            100L,
+            1,
+            1,
+            1,
+            storageRetryInitialDelayMillis,
+            storageRetryMaxDelayMillis
+        );
     }
 
     @Nested

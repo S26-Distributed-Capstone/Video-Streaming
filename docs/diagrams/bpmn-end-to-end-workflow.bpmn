@@ -37,11 +37,23 @@
     <bpmn:task id="Task_UploadChunks" name="Upload source chunks to MinIO / S3">
       <bpmn:documentation id="documentation_UhATIQ"/>
       <bpmn:incoming>Flow_4</bpmn:incoming>
-      <bpmn:outgoing>Flow_5</bpmn:outgoing>
+      <bpmn:incoming>Flow_M3</bpmn:incoming>
+      <bpmn:outgoing>Flow_M1</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:exclusiveGateway id="Gateway_MinioAvailable" name="MinIO available?">
+      <bpmn:documentation id="documentation_minio_wait"/>
+      <bpmn:incoming>Flow_M1</bpmn:incoming>
+      <bpmn:outgoing>Flow_M2</bpmn:outgoing>
+      <bpmn:outgoing>Flow_M4</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:task id="Task_WaitRetryMinio" name="Wait and retry MinIO connection">
+      <bpmn:documentation id="documentation_minio_retry"/>
+      <bpmn:incoming>Flow_M4</bpmn:incoming>
+      <bpmn:outgoing>Flow_M3</bpmn:outgoing>
     </bpmn:task>
     <bpmn:task id="Task_PublishTasks" name="Publish status events and transcode tasks">
       <bpmn:documentation id="documentation_G0fKEQ"/>
-      <bpmn:incoming>Flow_5</bpmn:incoming>
+      <bpmn:incoming>Flow_M2</bpmn:incoming>
       <bpmn:outgoing>Flow_6</bpmn:outgoing>
     </bpmn:task>
     <bpmn:task id="Task_ProcessSegments" name="Transcode segments">
@@ -108,8 +120,17 @@
     <bpmn:sequenceFlow id="Flow_4" sourceRef="Task_SegmentVideo" targetRef="Task_UploadChunks">
       <bpmn:documentation id="documentation_uoA0ig"/>
     </bpmn:sequenceFlow>
-    <bpmn:sequenceFlow id="Flow_5" sourceRef="Task_UploadChunks" targetRef="Task_PublishTasks">
-      <bpmn:documentation id="documentation_Cu83vw"/>
+    <bpmn:sequenceFlow id="Flow_M1" sourceRef="Task_UploadChunks" targetRef="Gateway_MinioAvailable">
+      <bpmn:documentation id="documentation_minio_check"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_M2" name="yes" sourceRef="Gateway_MinioAvailable" targetRef="Task_PublishTasks">
+      <bpmn:documentation id="documentation_minio_resume"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_M4" name="no" sourceRef="Gateway_MinioAvailable" targetRef="Task_WaitRetryMinio">
+      <bpmn:documentation id="documentation_minio_pause"/>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_M3" sourceRef="Task_WaitRetryMinio" targetRef="Task_UploadChunks">
+      <bpmn:documentation id="documentation_minio_retry_loop"/>
     </bpmn:sequenceFlow>
     <bpmn:sequenceFlow id="Flow_6" sourceRef="Task_PublishTasks" targetRef="Task_ProcessSegments">
       <bpmn:documentation id="documentation_0OlkEQ"/>
@@ -180,6 +201,15 @@
       <bpmndi:BPMNShape bpmnElement="Task_UploadChunks" id="Shape_Task_UploadChunks">
         <dc:Bounds height="80" width="170" x="730" y="120"/>
       </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Gateway_MinioAvailable" id="Shape_Gateway_MinioAvailable" isMarkerVisible="true">
+        <dc:Bounds height="50.0" width="50.0" x="790.0" y="-12.0"/>
+        <bpmndi:BPMNLabel id="BPMNLabel_Gateway_MinioAvailable">
+          <dc:Bounds height="20.0" width="100.0" x="765.0" y="41.0"/>
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_WaitRetryMinio" id="Shape_Task_WaitRetryMinio">
+        <dc:Bounds height="80" width="170" x="905" y="250"/>
+      </bpmndi:BPMNShape>
       <bpmndi:BPMNShape bpmnElement="Task_PublishTasks" id="Shape_Task_PublishTasks">
         <dc:Bounds height="80" width="180" x="950" y="120"/>
       </bpmndi:BPMNShape>
@@ -217,7 +247,7 @@
         </bpmndi:BPMNLabel>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape bpmnElement="Task_MarkFailed" id="Shape_Task_MarkFailed">
-        <dc:Bounds height="80" width="140" x="760" y="300"/>
+        <dc:Bounds height="80.0" width="140.0" x="610.0" y="366.0"/>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape bpmnElement="End_Failed" id="Shape_End_Failed">
         <dc:Bounds height="36" width="36" x="950" y="322"/>
@@ -241,9 +271,26 @@
         <di:waypoint x="680.0" y="160.0"/>
         <di:waypoint x="730.0" y="160.0"/>
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge bpmnElement="Flow_5" id="Edge_Flow_5">
-        <di:waypoint x="900.0" y="160.0"/>
-        <di:waypoint x="950.0" y="160.0"/>
+      <bpmndi:BPMNEdge bpmnElement="Flow_M1" id="Edge_Flow_M1">
+        <di:waypoint x="815.0" y="120.0"/>
+        <di:waypoint x="815.0" y="38.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_M2" id="Edge_Flow_M2">
+        <di:waypoint x="815.0" y="38.0"/>
+        <di:waypoint x="815.0" y="101.0"/>
+        <di:waypoint x="1040.0" y="101.0"/>
+        <di:waypoint x="1040.0" y="120.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_M4" id="Edge_Flow_M4">
+        <di:waypoint x="823.0" y="30.0"/>
+        <di:waypoint x="990.0" y="30.0"/>
+        <di:waypoint x="990.0" y="250.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_M3" id="Edge_Flow_M3">
+        <di:waypoint x="905.0" y="290.0"/>
+        <di:waypoint x="700.0" y="290.0"/>
+        <di:waypoint x="700.0" y="160.0"/>
+        <di:waypoint x="730.0" y="160.0"/>
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge bpmnElement="Flow_6" id="Edge_Flow_6">
         <di:waypoint x="1130.0" y="160.0"/>
@@ -267,13 +314,12 @@
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge bpmnElement="Flow_F1" id="Edge_Flow_F1">
         <di:waypoint x="490.0" y="218.0"/>
-        <di:waypoint x="490.0" y="340.0"/>
-        <di:waypoint x="760.0" y="340.0"/>
+        <di:waypoint x="490.0" y="406.0"/>
+        <di:waypoint x="610.0" y="406.0"/>
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge bpmnElement="Flow_F2" id="Edge_Flow_F2">
         <di:waypoint x="680.0" y="218.0"/>
-        <di:waypoint x="680.0" y="340.0"/>
-        <di:waypoint x="760.0" y="340.0"/>
+        <di:waypoint x="680.0" y="366.0"/>
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge bpmnElement="Flow_F3" id="Edge_Flow_F3">
         <di:waypoint x="1183.0" y="216.0"/>
@@ -295,12 +341,13 @@
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge bpmnElement="Flow_R3" id="Edge_Flow_R3">
         <di:waypoint x="1405.0" y="345.0"/>
-        <di:waypoint x="1405.0" y="420.0"/>
-        <di:waypoint x="830.0" y="420.0"/>
-        <di:waypoint x="830.0" y="380.0"/>
+        <di:waypoint x="1405.0" y="406.0"/>
+        <di:waypoint x="750.0" y="406.0"/>
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge bpmnElement="Flow_F4" id="Edge_Flow_F4">
-        <di:waypoint x="900.0" y="340.0"/>
+        <di:waypoint x="750.0" y="406.0"/>
+        <di:waypoint x="850.0" y="406.0"/>
+        <di:waypoint x="850.0" y="340.0"/>
         <di:waypoint x="950.0" y="340.0"/>
       </bpmndi:BPMNEdge>
     </bpmndi:BPMNPlane>

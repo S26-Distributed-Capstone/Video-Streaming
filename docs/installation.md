@@ -92,6 +92,7 @@ You can also verify the main endpoints:
 
 ```bash
 curl http://localhost:8080/health
+curl http://localhost:8080/ready
 curl http://localhost:8082/health
 curl http://localhost:8083/stream/ready
 ```
@@ -196,6 +197,8 @@ docker stack rm video-external
 ## Troubleshooting
 
 - If upload works but playback does not, check `MINIO_PUBLIC_ENDPOINT`.
+- If uploads are accepted but appear paused, check whether the UI or `/upload-info/{videoId}` shows `Retrying MinIO connection`. This means the upload-service is waiting for MinIO and will resume automatically when storage recovers.
+- If `http://localhost:8080/ready` returns `503`, the upload-service is running but MinIO is not currently reachable.
 - If services start but cannot talk to each other, check `.env` hostnames and ports.
 - If Postgres schema errors appear, reapply [upload-service/docs/db/schema.sql](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/upload-service/docs/db/schema.sql).
 - If processing does not start, inspect `processing-service` logs and RabbitMQ connectivity.

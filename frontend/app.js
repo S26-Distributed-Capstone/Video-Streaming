@@ -49,6 +49,7 @@ let wsReconnectTimerId = null;
 let uploadRetryTimerId = null;
 let currentWsUrl = null;
 let reconnectAttempts = 0;
+let retryingMinioConnection = false;
 const maxReconnectAttempts = 6;
 const reconnectBaseDelayMs = 1000;
 const maxUploadRetryAttempts = 5;
@@ -269,6 +270,7 @@ function resetStateForNextUpload() {
   completedSegments = 0;
   sourceSegmentsComplete = false;
   processingComplete = false;
+  retryingMinioConnection = false;
   clearProgressRefreshTimer();
   resetWsReconnectState();
   currentWsUrl = null;
@@ -329,6 +331,11 @@ function applyUploadInfoSnapshot(payload) {
     return;
   }
 
+  updateStorageRetryUi({
+    retrying: payload.retryingMinioConnection,
+    message: payload.statusMessage
+  });
+
   if (typeof payload.totalSegments === "number" && payload.totalSegments >= 0) {
     totalSegments = payload.totalSegments;
   }
@@ -388,6 +395,7 @@ function tryFinalizeSuccess() {
     return;
   }
   processingComplete = true;
+  updateStorageRetryUi({ retrying: false });
   resetUploadRetryState();
   setDoneMessage("Upload, chunking, and transcoding complete.", { success: true });
   uploadBtn.disabled = false;
@@ -409,6 +417,31 @@ function appendLog(message, tone = "") {
   }
   logEl.appendChild(line);
   logEl.scrollTop = logEl.scrollHeight;
+}
+
+function updateStorageRetryUi({ retrying, message } = {}) {
+  if (typeof retrying !== "boolean") {
+    return;
+  }
+  const nextMessage = message || "Retrying MinIO connection";
+  if (retrying === retryingMinioConnection) {
+    if (retrying && doneMessage && !processingComplete) {
+      setDoneMessage(nextMessage, { success: false });
+    }
+    return;
+  }
+  retryingMinioConnection = retrying;
+  if (retrying) {
+    appendLog(nextMessage);
+    if (!processingComplete) {
+      setDoneMessage(nextMessage, { success: false });
+    }
+    return;
+  }
+  appendLog("MinIO connection restored");
+  if (!processingComplete) {
+    setDoneMessage("Upload complete.", { success: true, hidden: true });
+  }
 }
 
 function setDoneMessage(text, { success = false, hidden = false } = {}) {
@@ -812,6 +845,14 @@ function connectWebSocket(wsUrl, videoId, { isReconnect = false } = {}) {
         scheduleProgressRefresh();
         return;
       }
+      if (payload && payload.type === "storage_status") {
+        updateStorageRetryUi({
+          retrying: payload.state === "WAITING",
+          message: payload.state === "WAITING" ? "Retrying MinIO connection" : ""
+        });
+        scheduleProgressRefresh();
+        return;
+      }
       if (payload && payload.type === "failed") {
         if (isUploadRetryableFailure(payload)) {
           if (shouldIgnoreUploadRetryableFailure(payload)) {
@@ -984,6 +1025,11 @@ function uploadFile({ preserveLog, isRetry } = {}) {
     if (doneMessage) {
       setDoneMessage("Upload complete.", { success: true, hidden: true });
     }
+
+    updateStorageRetryUi({
+      retrying: Boolean(payload.retryingMinioConnection),
+      message: payload.statusMessage
+    });
 
     if (processingBlock) {
       processingBlock.classList.remove("hidden");
