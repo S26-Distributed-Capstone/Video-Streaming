@@ -1,0 +1,81 @@
+<mxfile host="65bd71144e">
+    <diagram id="status-service-flow" name="Status Service">
+        <mxGraphModel dx="499" dy="532" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="900" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="serviceBox" value="" style="rounded=0;whiteSpace=wrap;html=1;strokeWidth=2;" parent="1" vertex="1">
+                    <mxGeometry x="460" y="140" width="510" height="300" as="geometry"/>
+                </mxCell>
+                <mxCell id="client" value="Client" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="220" y="310" width="140" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="runtime" value="Status API +&#xa;WebSocket" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="480" y="305" width="160" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="snapshot" value="Progress Snapshot" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="480" y="170" width="180" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="events" value="Event Forwarder" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="770" y="300" width="180" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="postgres" value="Postgres" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="505" y="10" width="130" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="rabbit" value="RabbitMQ&#xa;status events" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="790" y="10" width="140" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="e1" style="edgeStyle=none;html=1;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="client" target="runtime" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e1label" value="Connect /&amp;nbsp;&lt;div&gt;Request Status&lt;/div&gt;" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" parent="e1" vertex="1" connectable="0">
+                    <mxGeometry x="0.15" y="2" relative="1" as="geometry">
+                        <mxPoint x="-19" y="2" as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="e2" value="Load Snapshot" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" source="runtime" target="snapshot" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e3" value="Subscribe Job&lt;div&gt;Events&lt;/div&gt;" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" source="runtime" target="events" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e4" value="Read Upload /&#xa;Transcode State" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" source="snapshot" target="postgres" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e5" value="Consume Status Events" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" source="rabbit" target="events" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e6" style="edgeStyle=none;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="snapshot" target="client" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="290" y="210"/>
+                        </Array>
+                        <mxPoint x="270" y="310" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="2" value="Return Snapshot" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" parent="e6" vertex="1" connectable="0">
+                    <mxGeometry x="-0.1779" y="-1" relative="1" as="geometry">
+                        <mxPoint x="-1" as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="e7" style="edgeStyle=none;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" parent="1" source="events" target="client" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="860" y="470"/>
+                            <mxPoint x="390" y="470"/>
+                            <mxPoint x="290" y="470"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="e7label" value="Push Live Updates" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" parent="e7" vertex="1" connectable="0">
+                    <mxGeometry x="-0.023" y="2" relative="1" as="geometry">
+                        <mxPoint as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="title" value="&lt;font style=&quot;font-size: 36px;&quot;&gt;Status Service&lt;/font&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" parent="1" vertex="1">
+                    <mxGeometry x="470" y="520" width="260" height="60" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>
