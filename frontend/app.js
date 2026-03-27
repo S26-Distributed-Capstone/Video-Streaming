@@ -27,6 +27,8 @@ const transcodeHighBar = document.getElementById("transcodeHighBar");
 const transcodeHighPercent = document.getElementById("transcodeHighPercent");
 const transcodeHighTrack = document.getElementById("transcodeHighTrack");
 const doneMessage = document.getElementById("doneMessage");
+const processingRouteBanner = document.getElementById("processingRouteBanner");
+const processingRouteLabel = document.getElementById("processingRouteLabel");
 const player = document.getElementById("player");
 const playerStatus = document.getElementById("playerStatus");
 const playBtn = document.getElementById("playBtn");
@@ -68,6 +70,40 @@ function setPlayerVisible(visible) {
     return;
   }
   player.classList.toggle("hidden", !visible);
+}
+
+function getProcessingRouteVideoId() {
+  const match = window.location.pathname.match(/^\/processing\/([^/]+)$/);
+  if (!match) {
+    return null;
+  }
+  try {
+    return decodeURIComponent(match[1]);
+  } catch (_) {
+    return match[1];
+  }
+}
+
+function enterProcessingRoute(videoId) {
+  if (!videoId) {
+    return;
+  }
+  document.body.classList.add("processing-route");
+  if (processingRouteBanner) {
+    processingRouteBanner.classList.remove("hidden");
+  }
+  if (processingRouteLabel) {
+    processingRouteLabel.textContent = `Processing video ${videoId}`;
+  }
+  uploadBar.style.width = "100%";
+  uploadPercent.textContent = "100%";
+  if (processingBlock) {
+    processingBlock.classList.remove("hidden");
+  }
+  if (transcodeBlock) {
+    transcodeBlock.classList.remove("hidden");
+  }
+  setDoneMessage("Upload accepted. Processing in progress.", { success: true });
 }
 
 function setActiveTab(tab) {
@@ -729,6 +765,10 @@ function resolveBaseUrl() {
   return window.location.origin;
 }
 
+function deriveProcessingPageUrl(videoId) {
+  return `${resolveBaseUrl()}/processing/${encodeURIComponent(videoId)}`;
+}
+
 function renderJson(target, payload) {
   target.textContent = JSON.stringify(payload, null, 2);
 }
@@ -1042,11 +1082,7 @@ function uploadFile({ preserveLog, isRetry } = {}) {
     }
     ["low", "medium", "high"].forEach((profile) => updateTranscodeProfileUi(profile));
 
-    await fetchUploadInfo(baseUrl, currentVideoId, payload.uploadStatusUrl);
-    setPlayerStatus("Ready list updates when chunking and transcoding complete.", { success: true });
-
-    const wsUrl = payload.uploadStatusUrl || deriveWsUrl(baseUrl, currentVideoId);
-    connectWebSocket(wsUrl, currentVideoId);
+    window.location.assign(deriveProcessingPageUrl(currentVideoId));
   });
 
   xhr.addEventListener("error", () => {
@@ -1095,5 +1131,15 @@ if (refreshReadyBtn) {
 }
 
 refreshReadyList();
-setActiveTab("upload");
+const routeVideoId = getProcessingRouteVideoId();
+if (routeVideoId) {
+  currentVideoId = routeVideoId;
+  setActiveTab("upload");
+  enterProcessingRoute(routeVideoId);
+  const baseUrl = resolveBaseUrl();
+  fetchUploadInfo(baseUrl, routeVideoId).catch(() => {});
+  connectWebSocket(deriveWsUrl(baseUrl, routeVideoId), routeVideoId);
+} else {
+  setActiveTab("upload");
+}
 setPlayerVisible(false);

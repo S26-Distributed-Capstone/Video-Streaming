@@ -20,6 +20,8 @@ import io.javalin.config.SizeUnit;
 import io.javalin.http.staticfiles.Location;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Properties;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -149,6 +151,7 @@ public class UploadServiceApplication {
             }
             ctx.json(java.util.Map.of("status", "ready", "storageReady", true));
         });
+        registerFrontendRoutes(app);
         app.post("/upload", uploadHandler::upload);
         app.post("/upload/{videoId}/fail", terminalFailureHandler::markFailed);
 
@@ -254,6 +257,18 @@ public class UploadServiceApplication {
             java.nio.file.Files.createDirectories(java.nio.file.Path.of("logs"));
         } catch (java.io.IOException e) {
             logger.warn("Failed to create logs directory", e);
+        }
+    }
+
+    static void registerFrontendRoutes(Javalin app) {
+        app.get("/processing/{videoId}", ctx -> ctx.html(loadFrontendIndex()));
+    }
+
+    static String loadFrontendIndex() {
+        try {
+            return Files.readString(Path.of("frontend", "index.html"));
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to load frontend index.html", e);
         }
     }
 
