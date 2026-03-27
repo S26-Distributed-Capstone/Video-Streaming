@@ -70,21 +70,27 @@ The spool directory is backed by a Docker volume (`processing_spool`) so transco
 
 When MinIO becomes unreachable, the processing service continues transcoding any source chunks it already has and spools results locally for upload once MinIO recovers.
 
-1. **`ResilientStorageClient` wrapper** — All MinIO interactions in the processing service go through `ResilientStorageClient` (`shared` module), which wraps every S3 operation with retry + exponential backoff (500 ms initial → doubles each attempt → caps at 30 s). By default retries are unlimited; the loop only stops when the operation succeeds or the container shuts down (thread interrupted). Tunable via env vars:
+1. **`ResilientStorageClient` wrapper** — Write, list, and admin S3 operations (`uploadFile`, `deleteFile`, `listFiles`, `ensureBucketExists`, `generatePresignedUrl`) go through `ResilientStorageClient` (`shared` module), which wraps each call with retry + exponential backoff (500 ms initial → doubles each attempt → caps at 30 s). By default retries are unlimited; the loop only stops when the operation succeeds or the container shuts down (thread interrupted). Tunable via env vars:
    - `STORAGE_RETRY_INITIAL_DELAY_MS` (default 500)
    - `STORAGE_RETRY_MAX_DELAY_MS` (default 30 000)
    - `STORAGE_RETRY_MAX_ATTEMPTS` (default 0 = unlimited)
+
+   **Pass-through (no retry):** `fileExists` and `downloadFile` are delegated directly — `fileExists` is always an optimistic pre-check handled by `safeFileExists`, and `downloadFile` is called by `TranscodingTask.downloadChunkWithRetry()` which has its own bounded retry. Wrapping them in another (potentially unlimited) retry loop would make the caller's bounded logic dead code and could tie up worker threads indefinitely.
+
+   **Non-transient errors are never retried.** If the cause chain contains an `S3Exception` with a 4xx status code (other than 408 Request Timeout or 429 Too Many Requests), the error is thrown immediately — retrying will not fix a missing key, missing bucket, or access-denied error.
 
 2. **`fileExists` checks degrade gracefully** — Before transcoding, the service checks if the output already exists in MinIO (idempotency optimization). If MinIO is unreachable, the check returns `false` and transcoding proceeds anyway since all MinIO writes are idempotent. This `safeFileExists` pattern is applied in:
    - `TranscodingTask.execute()` and `transcodeToSpool()`
    - `LocalSpoolUploadWorkerPool.uploadSpoolTask()`
    - `StartupRecoveryService.recoverOrphanedSpoolFiles()`
 
-3. **Source chunk downloads** — If the source chunk cannot be downloaded from MinIO, the download retries with exponential backoff (configurable via `DOWNLOAD_MAX_ATTEMPTS`, default 5). Failed downloads produce readable error messages that surface the root cause (e.g. "Connection refused") rather than generic wrapper exceptions.
+3. **Source chunk downloads** — `downloadFile` is a pass-through in `ResilientStorageClient` — the caller (`TranscodingTask.downloadChunkWithRetry()`) owns retry logic with its own bounded exponential backoff (configurable via `DOWNLOAD_MAX_ATTEMPTS`, default 5). Failed downloads produce readable error messages that surface the root cause (e.g. "Connection refused") rather than generic wrapper exceptions.
 
 4. **Local spool upload workers** — When an upload to MinIO fails, the upload task is reset to `PENDING` and retried on the next poll cycle. The spool directory is backed by a Docker volume (`processing_spool`), so transcoded files survive container restarts and will be uploaded once MinIO returns.
 
-5. **Concise logging** — `S3StorageClient` logs all errors at `DEBUG` level only, so the verbose AWS SDK stack traces do not appear at default log levels. User-facing messages are owned by the callers:
+5. **Startup bucket check** — `ensureBucketExists()` is called on the raw `S3StorageClient` (single attempt, no retry wrapper) at startup. If MinIO is unreachable, the failure is logged at `WARN` and startup continues — worker pools, recovery logic, and the health endpoint all start normally. The bucket almost always already exists from a prior run; if not, subsequent operations through `ResilientStorageClient` will retry until MinIO is back.
+
+6. **Concise logging** — `S3StorageClient` logs all errors at `DEBUG` level only, so the verbose AWS SDK stack traces do not appear at default log levels. User-facing messages are owned by the callers:
    - `ResilientStorageClient` logs each retry attempt at `WARN` with `e.toString()` (one line)
    - `safeFileExists` logs the graceful fall-through at `WARN` with a short explanation
    - `downloadChunkWithRetry` unwraps exception chains to surface the root cause (e.g. "Connection refused") without a full stack trace

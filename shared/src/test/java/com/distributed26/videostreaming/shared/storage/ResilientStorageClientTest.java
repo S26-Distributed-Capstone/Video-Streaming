@@ -11,6 +11,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import software.amazon.awssdk.services.s3.model.NoSuchBucketException;
+import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
+import software.amazon.awssdk.services.s3.model.S3Exception;
 
 @ExtendWith(MockitoExtension.class)
 class ResilientStorageClientTest {
@@ -57,7 +60,7 @@ class ResilientStorageClientTest {
         verify(delegate, times(1)).listFiles("prefix/");
     }
 
-    // --- Retry behavior ---
+    // --- Pass-through behavior (no retry) ---
 
     @Test
     void fileExists_doesNotRetry_passesThrough() {
@@ -66,26 +69,21 @@ class ResilientStorageClientTest {
         ResilientStorageClient client = new ResilientStorageClient(delegate, 1, 10, 5);
 
         assertThrows(RuntimeException.class, () -> client.fileExists("key"));
-        // Called exactly once — no retry
         verify(delegate, times(1)).fileExists("key");
     }
 
     @Test
-    void downloadFile_retriesOnFailureThenSucceeds() {
-        InputStream expected = new ByteArrayInputStream(new byte[]{42});
-        AtomicInteger callCount = new AtomicInteger();
-        when(delegate.downloadFile("key")).thenAnswer(invocation -> {
-            if (callCount.incrementAndGet() < 2) {
-                throw new RuntimeException("Connection refused");
-            }
-            return expected;
-        });
+    void downloadFile_doesNotRetry_passesThrough() {
+        when(delegate.downloadFile("key")).thenThrow(new RuntimeException("Connection refused"));
 
         ResilientStorageClient client = new ResilientStorageClient(delegate, 1, 10, 5);
 
-        assertSame(expected, client.downloadFile("key"));
-        assertEquals(2, callCount.get());
+        assertThrows(RuntimeException.class, () -> client.downloadFile("key"));
+        // Called exactly once — no retry; caller (TranscodingTask) owns retry logic
+        verify(delegate, times(1)).downloadFile("key");
     }
+
+    // --- Retry behavior ---
 
     @Test
     void uploadFile_retriesOnFailureThenSucceeds() {
@@ -104,32 +102,123 @@ class ResilientStorageClientTest {
         assertEquals(2, callCount.get());
     }
 
+    @Test
+    void listFiles_retriesOnFailureThenSucceeds() {
+        AtomicInteger callCount = new AtomicInteger();
+        when(delegate.listFiles("prefix/")).thenAnswer(invocation -> {
+            if (callCount.incrementAndGet() < 2) {
+                throw new RuntimeException("Connection refused");
+            }
+            return List.of("a");
+        });
+
+        ResilientStorageClient client = new ResilientStorageClient(delegate, 1, 10, 5);
+
+        assertEquals(List.of("a"), client.listFiles("prefix/"));
+        assertEquals(2, callCount.get());
+    }
+
     // --- Exhausted retries ---
 
-
     @Test
-    void downloadFile_throwsAfterMaxAttempts() {
-        when(delegate.downloadFile("key")).thenThrow(new RuntimeException("Connection refused"));
+    void uploadFile_throwsAfterMaxAttempts() {
+        InputStream data = new ByteArrayInputStream(new byte[]{1});
+        doThrow(new RuntimeException("Connection refused"))
+                .when(delegate).uploadFile("key", data, 1);
 
         ResilientStorageClient client = new ResilientStorageClient(delegate, 1, 10, 2);
 
-        RuntimeException ex = assertThrows(RuntimeException.class, () -> client.downloadFile("key"));
+        RuntimeException ex = assertThrows(RuntimeException.class, () -> client.uploadFile("key", data, 1));
         assertTrue(ex.getMessage().contains("failed after 2 attempt(s)"));
-        verify(delegate, times(2)).downloadFile("key");
+        verify(delegate, times(2)).uploadFile("key", data, 1);
+    }
+
+    // --- Non-transient error detection ---
+
+    @Test
+    void isNonTransient_trueForNoSuchKey() {
+        NoSuchKeyException nsk = (NoSuchKeyException) NoSuchKeyException.builder()
+                .statusCode(404).message("key not found").build();
+        assertTrue(ResilientStorageClient.isNonTransient(
+                new IllegalStateException("wrapped", nsk)));
+    }
+
+    @Test
+    void isNonTransient_trueForNoSuchBucket() {
+        NoSuchBucketException nsb = (NoSuchBucketException) NoSuchBucketException.builder()
+                .statusCode(404).message("bucket not found").build();
+        assertTrue(ResilientStorageClient.isNonTransient(
+                new IllegalStateException("wrapped", nsb)));
+    }
+
+    @Test
+    void isNonTransient_trueFor403() {
+        S3Exception forbidden = (S3Exception) S3Exception.builder()
+                .statusCode(403).message("Access Denied").build();
+        assertTrue(ResilientStorageClient.isNonTransient(
+                new IllegalStateException("wrapped", forbidden)));
+    }
+
+    @Test
+    void isNonTransient_falseFor408RequestTimeout() {
+        S3Exception timeout = (S3Exception) S3Exception.builder()
+                .statusCode(408).message("Request Timeout").build();
+        assertFalse(ResilientStorageClient.isNonTransient(
+                new IllegalStateException("wrapped", timeout)));
+    }
+
+    @Test
+    void isNonTransient_falseFor429TooManyRequests() {
+        S3Exception throttle = (S3Exception) S3Exception.builder()
+                .statusCode(429).message("Too Many Requests").build();
+        assertFalse(ResilientStorageClient.isNonTransient(
+                new IllegalStateException("wrapped", throttle)));
+    }
+
+    @Test
+    void isNonTransient_falseFor500() {
+        S3Exception serverError = (S3Exception) S3Exception.builder()
+                .statusCode(500).message("Internal Server Error").build();
+        assertFalse(ResilientStorageClient.isNonTransient(
+                new IllegalStateException("wrapped", serverError)));
+    }
+
+    @Test
+    void isNonTransient_falseForConnectionError() {
+        assertFalse(ResilientStorageClient.isNonTransient(
+                new RuntimeException("Connection refused")));
+    }
+
+    @Test
+    void uploadFile_throwsImmediatelyOnNonTransientError() {
+        NoSuchBucketException nsb = (NoSuchBucketException) NoSuchBucketException.builder()
+                .statusCode(404).message("bucket not found").build();
+        InputStream data = new ByteArrayInputStream(new byte[]{1});
+        doThrow(new IllegalStateException("wrapped", nsb))
+                .when(delegate).uploadFile("key", data, 1);
+
+        // Unlimited retries configured — but should still fail immediately
+        ResilientStorageClient client = new ResilientStorageClient(delegate, 1, 10, 0);
+
+        RuntimeException ex = assertThrows(RuntimeException.class, () -> client.uploadFile("key", data, 1));
+        assertTrue(ex.getMessage().contains("non-transient"));
+        // Called only once — no retry for non-transient errors
+        verify(delegate, times(1)).uploadFile("key", data, 1);
     }
 
     // --- Interrupt handling ---
 
     @Test
     void retry_respectsInterruptFlag() {
-        when(delegate.downloadFile("key")).thenAnswer(invocation -> {
+        InputStream data = new ByteArrayInputStream(new byte[]{1});
+        doAnswer(invocation -> {
             Thread.currentThread().interrupt();
             throw new RuntimeException("Connection refused");
-        });
+        }).when(delegate).uploadFile("key", data, 1);
 
         ResilientStorageClient client = new ResilientStorageClient(delegate, 1, 10, 0);
 
-        assertThrows(RuntimeException.class, () -> client.downloadFile("key"));
+        assertThrows(RuntimeException.class, () -> client.uploadFile("key", data, 1));
         assertTrue(Thread.interrupted(), "Interrupt flag should be preserved");
     }
 

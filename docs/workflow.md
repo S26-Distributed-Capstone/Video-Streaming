@@ -48,9 +48,10 @@ This workflow covers:
 When MinIO becomes unreachable during processing, the service degrades gracefully instead of stopping:
 
 - **Transcoding continues** — source chunks already downloaded are transcoded and spooled locally. The `fileExists` idempotency check falls through safely (`safeFileExists` returns `false` on error) so workers are never blocked waiting for MinIO.
-- **Downloads retry with backoff** — source chunk downloads use configurable retry + exponential backoff. Failed downloads surface a concise root-cause message (e.g. "Connection refused") rather than full stack traces.
+- **Downloads use bounded retry** — source chunk downloads are a pass-through in `ResilientStorageClient`; `TranscodingTask.downloadChunkWithRetry()` owns retry logic with its own bounded exponential backoff (default 5 attempts). Failed downloads surface a concise root-cause message (e.g. "Connection refused") rather than full stack traces.
 - **Uploads retry on next poll** — the `LocalSpoolUploadWorkerPool` resets failed upload tasks to `PENDING`; the spool directory is Docker-volume-backed, so transcoded files survive restarts and are uploaded once MinIO recovers.
-- **All other S3 operations** are wrapped by `ResilientStorageClient` with unlimited retry + exponential backoff (500 ms → 30 s cap, configurable via `STORAGE_RETRY_*` env vars).
+- **Write/list/admin S3 operations** are wrapped by `ResilientStorageClient` with retry + exponential backoff (500 ms → 30 s cap, configurable via `STORAGE_RETRY_*` env vars). Non-transient errors (4xx S3 status codes, except 408/429) are thrown immediately — retrying won't fix a missing key or access denied.
+- **Startup bucket check** — `ensureBucketExists()` is best-effort (single attempt, no retry). If it fails, startup continues normally; worker pools, recovery, and the health endpoint are never blocked.
 - **Logging** — `S3StorageClient` logs at `DEBUG` level only; callers (`ResilientStorageClient`, `safeFileExists`, `downloadChunkWithRetry`) produce concise `WARN`-level messages with `e.toString()` so default logs stay readable.
 
 For full details on failure handling see [docs/challenges.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/challenges.md#minio--object-storage-outage).

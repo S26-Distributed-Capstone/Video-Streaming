@@ -4,17 +4,28 @@ import java.io.InputStream;
 import java.util.List;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import software.amazon.awssdk.services.s3.model.S3Exception;
 
 /**
  * Decorator around {@link ObjectStorageClient} that adds retry with exponential
- * backoff to every operation. This makes the processing pipeline resilient to
- * transient MinIO / S3 outages — callers block (with bounded back-off sleeps)
- * instead of failing immediately.
+ * backoff to write/list/admin operations. This makes the processing pipeline
+ * resilient to transient MinIO / S3 outages — callers block (with bounded
+ * back-off sleeps) instead of failing immediately.
  *
- * <p>The retry loop runs until the operation succeeds or the calling thread is
- * interrupted (e.g. container shutdown). There is no hard attempt cap because
- * MinIO may be down for an extended period and the service should resume
- * automatically once connectivity is restored.
+ * <p><strong>Pass-through (no retry):</strong> {@code fileExists} and
+ * {@code downloadFile} are delegated directly. {@code fileExists} is always an
+ * optimistic pre-check handled by {@code safeFileExists}. {@code downloadFile}
+ * is called by {@code TranscodingTask.downloadChunkWithRetry()}, which already
+ * has its own bounded retry with exponential backoff; wrapping it in another
+ * (potentially unlimited) retry loop would make that bounded logic dead code
+ * and could tie up worker threads indefinitely on missing keys or prolonged
+ * outages.
+ *
+ * <p><strong>Non-transient errors are never retried.</strong> If the cause
+ * chain contains an {@code S3Exception} with a 4xx status code (other than
+ * 408 Request Timeout or 429 Too Many Requests), the error is thrown
+ * immediately — retrying will not fix a missing key, missing bucket, or
+ * access-denied error.
  *
  * <p>Back-off parameters are configurable via {@code .env} / environment variables
  * (resolved by the caller and passed to the constructor):
@@ -55,9 +66,17 @@ public class ResilientStorageClient implements ObjectStorageClient {
         retryVoid("uploadFile(" + key + ")", () -> delegate.uploadFile(key, data, size));
     }
 
+    /**
+     * No retry — {@code downloadFile} is called by
+     * {@code TranscodingTask.downloadChunkWithRetry()}, which already has its
+     * own bounded retry with exponential backoff and descriptive error messages.
+     * Wrapping it in another (potentially unlimited) retry loop would make that
+     * bounded logic dead code and could tie up worker threads indefinitely on
+     * missing keys or prolonged outages.
+     */
     @Override
     public InputStream downloadFile(String key) {
-        return retry("downloadFile(" + key + ")", () -> delegate.downloadFile(key));
+        return delegate.downloadFile(key);
     }
 
     @Override
@@ -126,6 +145,9 @@ public class ResilientStorageClient implements ObjectStorageClient {
                     Thread.currentThread().interrupt();
                     throw toRuntime("Interrupted during " + operationName, e);
                 }
+                if (isNonTransient(e)) {
+                    throw toRuntime(operationName + " failed with non-transient error", e);
+                }
                 if (maxAttempts > 0 && attempt >= maxAttempts) {
                     throw toRuntime(operationName + " failed after " + attempt + " attempt(s)", e);
                 }
@@ -147,6 +169,30 @@ public class ResilientStorageClient implements ObjectStorageClient {
 
     private void retryVoid(String operationName, RunnableWithException operation) {
         retry(operationName, () -> { operation.run(); return null; });
+    }
+
+    /**
+     * Walks the exception cause chain looking for an {@link S3Exception} with a
+     * 4xx status code. Client errors (missing key, missing bucket, access
+     * denied, invalid request) will never succeed on retry — retrying wastes
+     * worker time and hides the real error.
+     *
+     * <p>408 (Request Timeout) and 429 (Too Many Requests) are excluded because
+     * they are transient and <em>should</em> be retried.
+     */
+    static boolean isNonTransient(Exception e) {
+        Throwable current = e;
+        while (current != null) {
+            if (current instanceof S3Exception s3ex) {
+                int status = s3ex.statusCode();
+                if (status >= 400 && status < 500 && status != 408 && status != 429) {
+                    return true;
+                }
+            }
+            if (current.getCause() == current) break;
+            current = current.getCause();
+        }
+        return false;
     }
 
     private static void sleep(long ms) {
