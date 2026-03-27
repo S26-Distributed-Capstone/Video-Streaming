@@ -10,6 +10,7 @@ import com.distributed26.videostreaming.processing.runtime.StartupRecoveryServic
 import com.distributed26.videostreaming.shared.config.StorageConfig;
 import com.distributed26.videostreaming.shared.jobs.Worker;
 import com.distributed26.videostreaming.shared.jobs.WorkerStatus;
+import com.distributed26.videostreaming.shared.upload.RabbitMQDevLogPublisher;
 import com.distributed26.videostreaming.shared.upload.RabbitMQStatusEventBus;
 import com.distributed26.videostreaming.shared.upload.RabbitMQTranscodeTaskBus;
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
@@ -51,6 +52,7 @@ import org.apache.logging.log4j.Logger;
  */
 public class ProcessingServiceApplication {
     private static final Logger LOGGER = LogManager.getLogger(ProcessingServiceApplication.class);
+    private static final String DEV_LOG_SERVICE = "Processing-service";
     private static final String MANIFEST_PROCESSOR_EXECUTOR_NAME = "AbrManifestGenerator";
     private static volatile ExecutorService uploadExecutorRef;
     private static volatile ProcessingRuntime runtimeRef;
@@ -63,6 +65,7 @@ public class ProcessingServiceApplication {
 
     public static void main(String[] args) throws Exception {
         Dotenv dotenv = Dotenv.configure().directory("./").ignoreIfMissing().load();
+        RabbitMQDevLogPublisher devLogPublisher = createDevLogPublisher();
 
         // Storage
         StorageConfig storageConfig = new StorageConfig(
@@ -73,8 +76,14 @@ public class ProcessingServiceApplication {
                 getEnvOrDotenv(dotenv, "MINIO_REGION",      "us-east-1")
         );
         ObjectStorageClient storageClient = new S3StorageClient(storageConfig);
-        storageClient.ensureBucketExists();
+        try {
+            storageClient.ensureBucketExists();
+        } catch (RuntimeException e) {
+            publishDevLogError(devLogPublisher, "Processing service could not reach MinIO during startup");
+            throw e;
+        }
         LOGGER.info("Storage ready — bucket={}", storageConfig.getDefaultBucketName());
+        publishDevLogInfo(devLogPublisher, "Processing service storage ready");
 
         StatusEventBus statusEventBus = RabbitMQStatusEventBus.fromEnv();
         TranscodeTaskBus transcodeTaskBus = RabbitMQTranscodeTaskBus.fromEnv();
@@ -86,6 +95,7 @@ public class ProcessingServiceApplication {
                 r -> new Thread(r, MANIFEST_PROCESSOR_EXECUTOR_NAME)
         );
         LOGGER.info("RabbitMQ status/task buses connected");
+        publishDevLogInfo(devLogPublisher, "Processing service connected to RabbitMQ");
 
         // Executor threads run one transcode task at a time. The executor's internal queue
         // is now the local buffer between RabbitMQ intake and FFmpeg execution.
@@ -162,7 +172,7 @@ public class ProcessingServiceApplication {
         int uploadWorkerCount = Integer.parseInt(getEnvOrDotenv(dotenv, "LOCAL_UPLOAD_WORKER_COUNT", "2"));
         long uploadPollMillis = Long.parseLong(getEnvOrDotenv(dotenv, "LOCAL_UPLOAD_POLL_MILLIS", "500"));
         long uploadClaimTimeoutMillis = Long.parseLong(getEnvOrDotenv(dotenv, "LOCAL_UPLOAD_CLAIM_TIMEOUT_MILLIS", "60000"));
-        ExecutorService uploadExecutor = new LocalSpoolUploadWorkerPool(PROFILES, runtime).startUploadWorkers(
+        ExecutorService uploadExecutor = new LocalSpoolUploadWorkerPool(PROFILES, runtime, devLogPublisher).startUploadWorkers(
                 uploadWorkerCount,
                 uploadPollMillis,
                 uploadClaimTimeoutMillis,
@@ -172,6 +182,7 @@ public class ProcessingServiceApplication {
 
 
         LOGGER.info("Processing service ready — waiting for transcode tasks...");
+        publishDevLogInfo(devLogPublisher, "Processing service ready for transcode tasks");
 
         int port = Integer.parseInt(getEnvOrDotenv(dotenv, "PROCESSING_PORT", "8082"));
         startApp(port, workers, taskExecutor);
@@ -189,6 +200,7 @@ public class ProcessingServiceApplication {
             try { transcodeTaskBus.close(); } catch (Exception e) { LOGGER.warn("Error closing transcode task bus", e); }
             try { statusEventBus.close(); } catch (Exception e) { LOGGER.warn("Error closing status event bus", e); }
             try { storageClient.close(); } catch (Exception e) { LOGGER.warn("Error closing storage client", e); }
+            closeDevLogPublisher(devLogPublisher);
         }));
 
         Thread.currentThread().join();
@@ -239,6 +251,48 @@ public class ProcessingServiceApplication {
             java.nio.file.Files.createDirectories(java.nio.file.Path.of("logs"));
         } catch (java.io.IOException e) {
             LOGGER.warn("Failed to create logs directory", e);
+        }
+    }
+
+    private static RabbitMQDevLogPublisher createDevLogPublisher() {
+        try {
+            return RabbitMQDevLogPublisher.fromEnv();
+        } catch (RuntimeException e) {
+            LOGGER.warn("Failed to initialize dev log publisher", e);
+            return null;
+        }
+    }
+
+    private static void publishDevLogInfo(RabbitMQDevLogPublisher publisher, String message) {
+        if (publisher == null) {
+            return;
+        }
+        try {
+            publisher.publishInfo(DEV_LOG_SERVICE, message);
+        } catch (RuntimeException e) {
+            LOGGER.warn("Failed to publish processing dev log info message={}", message, e);
+        }
+    }
+
+    private static void publishDevLogError(RabbitMQDevLogPublisher publisher, String message) {
+        if (publisher == null) {
+            return;
+        }
+        try {
+            publisher.publishError(DEV_LOG_SERVICE, message);
+        } catch (RuntimeException e) {
+            LOGGER.warn("Failed to publish processing dev log error message={}", message, e);
+        }
+    }
+
+    private static void closeDevLogPublisher(RabbitMQDevLogPublisher publisher) {
+        if (publisher == null) {
+            return;
+        }
+        try {
+            publisher.close();
+        } catch (Exception e) {
+            LOGGER.warn("Error closing dev log publisher", e);
         }
     }
 

@@ -2,6 +2,8 @@ package com.distributed26.videostreaming.upload.upload;
 
 import com.distributed26.videostreaming.shared.config.StorageConfig;
 import com.distributed26.videostreaming.shared.upload.FailedVideoRegistry;
+import com.distributed26.videostreaming.shared.upload.RabbitMQDevLogReader;
+import com.distributed26.videostreaming.shared.upload.RabbitMQDevLogPublisher;
 import com.distributed26.videostreaming.shared.upload.RabbitMQStatusEventBus;
 import com.distributed26.videostreaming.shared.upload.RabbitMQTranscodeTaskBus;
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
@@ -34,6 +36,8 @@ public class UploadServiceApplication {
     private static final int DEFAULT_STATUS_PORT = 8081;
     private static final String MODE_UPLOAD = "upload";
     private static final String MODE_STATUS = "status";
+    private static final String DEV_LOG_UPLOAD_SERVICE = "Upload-service";
+    private static final String DEV_LOG_STATUS_SERVICE = "Status-service";
     private static final String FRONTEND_DIRECTORY = "frontend";
     private static final String FRONTEND_INDEX_FILE = "index.html";
 	private static final Logger logger = LogManager.getLogger(UploadServiceApplication.class);
@@ -66,7 +70,8 @@ public class UploadServiceApplication {
         String machineId = resolveMachineId();
         String containerId = resolveContainerId();
         FailedVideoRegistry failedVideoRegistry = new FailedVideoRegistry();
-        StorageStateTracker storageStateTracker = new StorageStateTracker(videoUploadRepository, statusEventBus);
+        RabbitMQDevLogPublisher devLogPublisher = createDevLogPublisher();
+        StorageStateTracker storageStateTracker = new StorageStateTracker(videoUploadRepository, statusEventBus, devLogPublisher);
         statusEventBus.subscribeAll(event -> {
             if (event instanceof UploadFailedEvent failed) {
                 failedVideoRegistry.markFailed(failed.getJobId());
@@ -169,6 +174,7 @@ public class UploadServiceApplication {
             } catch (Exception e) {
                 logger.warn("Error closing storage client on shutdown", e);
             }
+            closeDevLogPublisher(devLogPublisher);
             storageStartupExecutor.shutdownNow();
         }));
 
@@ -187,6 +193,8 @@ public class UploadServiceApplication {
                 segmentUploadRepository,
                 transcodedSegmentStatusRepository
         );
+        RabbitMQDevLogPublisher devLogPublisher = createDevLogPublisher();
+        RabbitMQDevLogReader devLogReader = createDevLogReader();
 
         Javalin app = Javalin.create();
         app.before(ctx -> {
@@ -198,6 +206,26 @@ public class UploadServiceApplication {
         app.get("/health", ctx -> ctx.json(java.util.Map.of("status", "ok")));
         app.ws("/upload-status", uploadStatusWebSocket::configure);
         app.get("/upload-info/{videoId}", uploadInfoHandler::getInfo);
+        app.get("/dev-logs", ctx -> {
+            if (devLogReader == null) {
+                ctx.status(503).json(java.util.Map.of(
+                        "status", "unavailable",
+                        "message", "Dev log reader is not configured"
+                ));
+                return;
+            }
+            int limit = parseDevLogLimit(ctx.queryParam("limit"));
+            ctx.json(java.util.Map.of(
+                    "queue", RabbitMQDevLogPublisher.DEFAULT_QUEUE,
+                    "binding", RabbitMQDevLogPublisher.DEFAULT_BINDING,
+                    "limit", limit,
+                    "logs", devLogReader.peek(limit)
+            ));
+        });
+        app.events(event -> event.serverStopped(() -> {
+            closeDevLogPublisher(devLogPublisher);
+            closeDevLogReader(devLogReader);
+        }));
         return app;
     }
 
@@ -307,6 +335,7 @@ public class UploadServiceApplication {
         StatusEventBus statusEventBus = RabbitMQStatusEventBus.fromEnv();
         TranscodeTaskBus transcodeTaskBus = RabbitMQTranscodeTaskBus.fromEnv();
 		Javalin uploadApp = createUploadApp(statusEventBus, transcodeTaskBus);
+        publishDevLogInfo(createDevLogPublisher(), DEV_LOG_UPLOAD_SERVICE, "Upload service started");
         logger.info("Starting upload app on port {}", uploadPort);
 		uploadApp.start(uploadPort);
 	}
@@ -314,8 +343,73 @@ public class UploadServiceApplication {
     static void startStatusApp(int statusPort) {
         StatusEventBus statusEventBus = RabbitMQStatusEventBus.fromEnv();
         Javalin statusApp = createStatusApp(statusEventBus);
+        publishDevLogInfo(createDevLogPublisher(), DEV_LOG_STATUS_SERVICE, "Status service started");
         logger.info("Starting status app on port {}", statusPort);
         statusApp.start(statusPort);
+    }
+
+    private static RabbitMQDevLogPublisher createDevLogPublisher() {
+        try {
+            return RabbitMQDevLogPublisher.fromEnv();
+        } catch (RuntimeException e) {
+            logger.warn("Failed to initialize dev log publisher", e);
+            return null;
+        }
+    }
+
+    private static RabbitMQDevLogReader createDevLogReader() {
+        try {
+            return RabbitMQDevLogReader.fromEnv();
+        } catch (RuntimeException e) {
+            logger.warn("Failed to initialize dev log reader", e);
+            return null;
+        }
+    }
+
+    private static void publishDevLogInfo(RabbitMQDevLogPublisher publisher, String serviceName, String message) {
+        if (publisher == null) {
+            return;
+        }
+        try {
+            publisher.publishInfo(serviceName, message);
+        } catch (RuntimeException e) {
+            logger.warn("Failed to publish dev log info service={} message={}", serviceName, message, e);
+        } finally {
+            closeDevLogPublisher(publisher);
+        }
+    }
+
+    private static void closeDevLogPublisher(RabbitMQDevLogPublisher publisher) {
+        if (publisher == null) {
+            return;
+        }
+        try {
+            publisher.close();
+        } catch (Exception e) {
+            logger.warn("Error closing dev log publisher", e);
+        }
+    }
+
+    private static void closeDevLogReader(RabbitMQDevLogReader reader) {
+        if (reader == null) {
+            return;
+        }
+        try {
+            reader.close();
+        } catch (Exception e) {
+            logger.warn("Error closing dev log reader", e);
+        }
+    }
+
+    private static int parseDevLogLimit(String limitParam) {
+        if (limitParam == null || limitParam.isBlank()) {
+            return 20;
+        }
+        try {
+            return Math.max(1, Math.min(Integer.parseInt(limitParam.trim()), 100));
+        } catch (NumberFormatException e) {
+            return 20;
+        }
     }
 
 }
