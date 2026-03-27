@@ -80,12 +80,14 @@ public class ProcessingServiceApplication {
         int storageRetryMaxAttempts = Integer.parseInt(getEnvOrDotenv(dotenv, "STORAGE_RETRY_MAX_ATTEMPTS",
                 String.valueOf(ResilientStorageClient.DEFAULT_MAX_ATTEMPTS)));
         S3StorageClient rawStorageClient = new S3StorageClient(storageConfig);
+        boolean bucketVerified = false;
         try {
             rawStorageClient.ensureBucketExists();
             LOGGER.info("Bucket '{}' verified", storageConfig.getDefaultBucketName());
+            bucketVerified = true;
         } catch (Exception e) {
             LOGGER.warn("Could not verify bucket '{}' at startup (MinIO may be unavailable). " +
-                    "Continuing — bucket will be checked on first successful S3 operation: {}",
+                    "A background thread will keep retrying until the bucket is confirmed: {}",
                     storageConfig.getDefaultBucketName(), e.toString());
         }
         ObjectStorageClient storageClient = new ResilientStorageClient(
@@ -94,6 +96,10 @@ public class ProcessingServiceApplication {
                 storageRetryMaxMs,
                 storageRetryMaxAttempts
         );
+        if (!bucketVerified) {
+            startBucketEnsureBackground(rawStorageClient, storageConfig.getDefaultBucketName(),
+                    storageRetryInitialMs, storageRetryMaxMs);
+        }
         LOGGER.info("Storage ready — bucket={} (retry: initialDelay={}ms maxDelay={}ms maxAttempts={})",
                 storageConfig.getDefaultBucketName(), storageRetryInitialMs, storageRetryMaxMs,
                 storageRetryMaxAttempts == 0 ? "unlimited" : storageRetryMaxAttempts);
@@ -360,6 +366,40 @@ public class ProcessingServiceApplication {
                     rawPath, e);
             return null;
         }
+    }
+
+    /**
+     * Spawns a daemon thread that retries {@code ensureBucketExists()} with
+     * exponential backoff until it succeeds. Called only when the synchronous
+     * startup check fails (MinIO unreachable). Without this, a truly missing
+     * bucket (fresh deployment) would cause every subsequent S3 operation to hit
+     * {@code NoSuchBucketException} (404) — which {@code ResilientStorageClient}
+     * treats as non-transient and fails immediately.
+     */
+    private static void startBucketEnsureBackground(S3StorageClient rawClient, String bucketName,
+                                                     long initialDelayMs, long maxDelayMs) {
+        Thread t = new Thread(() -> {
+            long delay = initialDelayMs;
+            while (!Thread.currentThread().isInterrupted()) {
+                try {
+                    Thread.sleep(delay);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+                try {
+                    rawClient.ensureBucketExists();
+                    LOGGER.info("Background bucket check succeeded — bucket '{}' is ready", bucketName);
+                    return;
+                } catch (Exception e) {
+                    LOGGER.warn("Background bucket check for '{}' still failing — next retry in {} ms: {}",
+                            bucketName, Math.min(maxDelayMs, delay * 2), e.toString());
+                    delay = Math.min(maxDelayMs, delay * 2);
+                }
+            }
+        }, "bucket-ensure-bg");
+        t.setDaemon(true);
+        t.start();
     }
 
     static void onStatusEvent(JobEvent event, AbrManifestService manifestService, ExecutorService manifestExecutor) {
