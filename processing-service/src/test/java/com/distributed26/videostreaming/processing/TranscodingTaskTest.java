@@ -95,14 +95,17 @@ class TranscodingTaskTest {
     void execute_proceedsWhenFileExistsThrows() {
         when(storageClient.fileExists(anyString()))
                 .thenThrow(new RuntimeException("Connection refused"));
-        // downloadFile will also fail — we just verify it attempted to proceed past fileExists
+        // Fail first download attempt, then return an empty stream on the second.
+        // Files.copy succeeds on the empty stream, then FFmpeg fails immediately
+        // on the fake data — no retry sleeps are incurred beyond the first.
         when(storageClient.downloadFile(anyString()))
-                .thenThrow(new RuntimeException("Connection refused"));
+                .thenThrow(new RuntimeException("Connection refused"))
+                .thenReturn(new java.io.ByteArrayInputStream(new byte[0]));
 
         TranscodingTask task = new TranscodingTask("t1", "vid1",
                 "vid1/chunks/seg0.ts", TranscodingProfile.LOW);
 
-        // Should not throw the fileExists error; should attempt download (which we let fail)
+        // Should not throw the fileExists error; should attempt download
         assertThrows(Exception.class, () -> task.execute(storageClient));
         // Verify it got past fileExists and tried to download the source chunk
         verify(storageClient, atLeastOnce()).downloadFile(anyString());
@@ -112,8 +115,10 @@ class TranscodingTaskTest {
     void transcodeToSpool_proceedsWhenFileExistsThrows() throws Exception {
         when(storageClient.fileExists(anyString()))
                 .thenThrow(new RuntimeException("Connection refused"));
+        // Fail first download, then return empty stream — avoids full retry backoff sleeps
         when(storageClient.downloadFile(anyString()))
-                .thenThrow(new RuntimeException("Connection refused"));
+                .thenThrow(new RuntimeException("Connection refused"))
+                .thenReturn(new java.io.ByteArrayInputStream(new byte[0]));
 
         TranscodingTask task = new TranscodingTask("t1", "vid1",
                 "vid1/chunks/seg0.ts", TranscodingProfile.LOW);
