@@ -70,12 +70,15 @@ The spool directory is backed by a Docker volume (`processing_spool`) so transco
 
 When MinIO becomes unreachable, the processing service continues transcoding any source chunks it already has and spools results locally for upload once MinIO recovers.
 
-1. **`ResilientStorageClient` wrapper** — Write, list, and admin S3 operations (`uploadFile`, `deleteFile`, `listFiles`, `ensureBucketExists`, `generatePresignedUrl`) go through `ResilientStorageClient` (`shared` module), which wraps each call with retry + exponential backoff (500 ms initial → doubles each attempt → caps at 30 s). By default retries are unlimited; the loop only stops when the operation succeeds or the container shuts down (thread interrupted). Tunable via env vars:
+1. **`ResilientStorageClient` wrapper** — Stateless S3 operations (`deleteFile`, `listFiles`, `ensureBucketExists`, `generatePresignedUrl`) go through `ResilientStorageClient` (`shared` module), which wraps each call with retry + exponential backoff (500 ms initial → doubles each attempt → caps at 30 s). By default retries are unlimited; the loop only stops when the operation succeeds or the container shuts down (thread interrupted). Tunable via env vars:
    - `STORAGE_RETRY_INITIAL_DELAY_MS` (default 500)
    - `STORAGE_RETRY_MAX_DELAY_MS` (default 30 000)
    - `STORAGE_RETRY_MAX_ATTEMPTS` (default 0 = unlimited)
 
-   **Pass-through (no retry):** `fileExists` and `downloadFile` are delegated directly — `fileExists` is always an optimistic pre-check handled by `safeFileExists`, and `downloadFile` is called by `TranscodingTask.downloadChunkWithRetry()` which has its own bounded retry. Wrapping them in another (potentially unlimited) retry loop would make the caller's bounded logic dead code and could tie up worker threads indefinitely.
+   **Pass-through (no retry):** `fileExists`, `downloadFile`, and `uploadFile` are delegated directly:
+   - `fileExists` — optimistic pre-check handled by `safeFileExists`; retrying would block the worker for no benefit
+   - `downloadFile` — `TranscodingTask.downloadChunkWithRetry()` has its own bounded retry; a second retry layer would make that logic dead code
+   - `uploadFile` — the `InputStream` argument is consumed on the first attempt; if that attempt partially reads the stream before failing, retrying with the same (now exhausted) stream would upload corrupt/truncated data. Every caller already handles failure by reopening the stream from its source (`LocalSpoolUploadWorkerPool` resets to PENDING and opens a fresh `FileInputStream` on the next poll; `TranscodingTask` re-queues via RabbitMQ; `AbrManifestService` regenerates the manifest)
 
    **Non-transient errors are never retried.** If the cause chain contains an `S3Exception` with a 4xx status code (other than 408 Request Timeout or 429 Too Many Requests), the error is thrown immediately — retrying will not fix a missing key, missing bucket, or access-denied error.
 

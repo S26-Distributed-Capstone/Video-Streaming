@@ -86,20 +86,16 @@ class ResilientStorageClientTest {
     // --- Retry behavior ---
 
     @Test
-    void uploadFile_retriesOnFailureThenSucceeds() {
-        AtomicInteger callCount = new AtomicInteger();
+    void uploadFile_doesNotRetry_passesThrough() {
         InputStream data = new ByteArrayInputStream(new byte[]{1});
-        doAnswer(invocation -> {
-            if (callCount.incrementAndGet() < 2) {
-                throw new RuntimeException("Connection refused");
-            }
-            return null;
-        }).when(delegate).uploadFile("key", data, 1);
+        doThrow(new RuntimeException("Connection refused"))
+                .when(delegate).uploadFile("key", data, 1);
 
         ResilientStorageClient client = new ResilientStorageClient(delegate, 1, 10, 5);
 
-        assertDoesNotThrow(() -> client.uploadFile("key", data, 1));
-        assertEquals(2, callCount.get());
+        assertThrows(RuntimeException.class, () -> client.uploadFile("key", data, 1));
+        // Called exactly once — no retry; InputStream is consumed on first attempt
+        verify(delegate, times(1)).uploadFile("key", data, 1);
     }
 
     @Test
@@ -121,16 +117,14 @@ class ResilientStorageClientTest {
     // --- Exhausted retries ---
 
     @Test
-    void uploadFile_throwsAfterMaxAttempts() {
-        InputStream data = new ByteArrayInputStream(new byte[]{1});
-        doThrow(new RuntimeException("Connection refused"))
-                .when(delegate).uploadFile("key", data, 1);
+    void listFiles_throwsAfterMaxAttempts() {
+        when(delegate.listFiles("prefix/")).thenThrow(new RuntimeException("Connection refused"));
 
         ResilientStorageClient client = new ResilientStorageClient(delegate, 1, 10, 2);
 
-        RuntimeException ex = assertThrows(RuntimeException.class, () -> client.uploadFile("key", data, 1));
+        RuntimeException ex = assertThrows(RuntimeException.class, () -> client.listFiles("prefix/"));
         assertTrue(ex.getMessage().contains("failed after 2 attempt(s)"));
-        verify(delegate, times(2)).uploadFile("key", data, 1);
+        verify(delegate, times(2)).listFiles("prefix/");
     }
 
     // --- Non-transient error detection ---
@@ -190,35 +184,33 @@ class ResilientStorageClientTest {
     }
 
     @Test
-    void uploadFile_throwsImmediatelyOnNonTransientError() {
+    void deleteFile_throwsImmediatelyOnNonTransientError() {
         NoSuchBucketException nsb = (NoSuchBucketException) NoSuchBucketException.builder()
                 .statusCode(404).message("bucket not found").build();
-        InputStream data = new ByteArrayInputStream(new byte[]{1});
         doThrow(new IllegalStateException("wrapped", nsb))
-                .when(delegate).uploadFile("key", data, 1);
+                .when(delegate).deleteFile("key");
 
         // Unlimited retries configured — but should still fail immediately
         ResilientStorageClient client = new ResilientStorageClient(delegate, 1, 10, 0);
 
-        RuntimeException ex = assertThrows(RuntimeException.class, () -> client.uploadFile("key", data, 1));
+        RuntimeException ex = assertThrows(RuntimeException.class, () -> client.deleteFile("key"));
         assertTrue(ex.getMessage().contains("non-transient"));
         // Called only once — no retry for non-transient errors
-        verify(delegate, times(1)).uploadFile("key", data, 1);
+        verify(delegate, times(1)).deleteFile("key");
     }
 
     // --- Interrupt handling ---
 
     @Test
     void retry_respectsInterruptFlag() {
-        InputStream data = new ByteArrayInputStream(new byte[]{1});
         doAnswer(invocation -> {
             Thread.currentThread().interrupt();
             throw new RuntimeException("Connection refused");
-        }).when(delegate).uploadFile("key", data, 1);
+        }).when(delegate).deleteFile("key");
 
         ResilientStorageClient client = new ResilientStorageClient(delegate, 1, 10, 0);
 
-        assertThrows(RuntimeException.class, () -> client.uploadFile("key", data, 1));
+        assertThrows(RuntimeException.class, () -> client.deleteFile("key"));
         assertTrue(Thread.interrupted(), "Interrupt flag should be preserved");
     }
 

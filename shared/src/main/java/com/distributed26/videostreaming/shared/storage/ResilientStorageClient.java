@@ -12,14 +12,22 @@ import software.amazon.awssdk.services.s3.model.S3Exception;
  * resilient to transient MinIO / S3 outages — callers block (with bounded
  * back-off sleeps) instead of failing immediately.
  *
- * <p><strong>Pass-through (no retry):</strong> {@code fileExists} and
- * {@code downloadFile} are delegated directly. {@code fileExists} is always an
- * optimistic pre-check handled by {@code safeFileExists}. {@code downloadFile}
- * is called by {@code TranscodingTask.downloadChunkWithRetry()}, which already
- * has its own bounded retry with exponential backoff; wrapping it in another
- * (potentially unlimited) retry loop would make that bounded logic dead code
- * and could tie up worker threads indefinitely on missing keys or prolonged
- * outages.
+ * <p><strong>Pass-through (no retry):</strong> {@code fileExists},
+ * {@code downloadFile}, and {@code uploadFile} are delegated directly.
+ * {@code fileExists} is always an optimistic pre-check handled by
+ * {@code safeFileExists}. {@code downloadFile} is called by
+ * {@code TranscodingTask.downloadChunkWithRetry()}, which already has its own
+ * bounded retry with exponential backoff. {@code uploadFile} cannot be safely
+ * retried at this layer because the {@code InputStream} argument is consumed on
+ * the first attempt — if that attempt partially reads the stream before failing,
+ * subsequent retries would upload corrupt/truncated data. Every caller already
+ * has its own retry mechanism that reopens the stream:
+ * <ul>
+ *   <li>{@code LocalSpoolUploadWorkerPool} — catches failure, resets task to
+ *       PENDING, next poll cycle opens a fresh {@code FileInputStream}</li>
+ *   <li>{@code TranscodingTask} — failure re-queues the task via RabbitMQ</li>
+ *   <li>{@code AbrManifestService} — failure propagates, manifest is regenerated</li>
+ * </ul>
  *
  * <p><strong>Non-transient errors are never retried.</strong> If the cause
  * chain contains an {@code S3Exception} with a 4xx status code (other than
@@ -61,9 +69,16 @@ public class ResilientStorageClient implements ObjectStorageClient {
 
     // --- Delegated operations with retry ---
 
+    /**
+     * No retry — the {@code InputStream} is consumed on the first attempt. If
+     * that attempt partially reads the stream before failing, subsequent retries
+     * would upload corrupt or truncated data (most InputStreams are not
+     * rewindable). Every caller already handles failure with its own mechanism
+     * that recreates the stream from its source (file on disk, byte array, etc.).
+     */
     @Override
     public void uploadFile(String key, InputStream data, long size) {
-        retryVoid("uploadFile(" + key + ")", () -> delegate.uploadFile(key, data, size));
+        delegate.uploadFile(key, data, size);
     }
 
     /**
