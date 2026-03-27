@@ -67,6 +67,47 @@ The spool directory is backed by a Docker volume (`processing_spool`) so transco
 2. All streaming-service instances are unavailable when the client tries to fetch the manifest
   - Recovery: client shows "stream unavailable" and retries a few times before giving up
 
+### MinIO / Object Storage Outage
+
+When MinIO becomes unreachable, the processing service continues transcoding any source chunks it already has and spools results locally for upload once MinIO recovers.
+
+1. **`ResilientStorageClient` wrapper** — Stateless S3 operations (`deleteFile`, `listFiles`, `ensureBucketExists`, `generatePresignedUrl`) go through `ResilientStorageClient` (`shared` module), which wraps each call with retry + exponential backoff (500 ms initial → doubles each attempt → caps at 30 s). By default retries are unlimited; the loop only stops when the operation succeeds or the container shuts down (thread interrupted). Tunable via env vars:
+   - `STORAGE_RETRY_INITIAL_DELAY_MS` (default 500)
+   - `STORAGE_RETRY_MAX_DELAY_MS` (default 30 000)
+   - `STORAGE_RETRY_MAX_ATTEMPTS` (default 0 = unlimited)
+
+   **Pass-through (no retry):** `fileExists`, `downloadFile`, and `uploadFile` are delegated directly:
+   - `fileExists` — optimistic pre-check handled by `safeFileExists`; retrying would block the worker for no benefit
+   - `downloadFile` — `TranscodingTask.downloadChunkWithRetry()` has its own bounded retry; a second retry layer would make that logic dead code
+   - `uploadFile` — the `InputStream` argument is consumed on the first attempt; if that attempt partially reads the stream before failing, retrying with the same (now exhausted) stream would upload corrupt/truncated data. Every caller already handles failure by reopening the stream from its source (`LocalSpoolUploadWorkerPool` resets to PENDING and opens a fresh `FileInputStream` on the next poll; `TranscodingTask` re-queues via RabbitMQ; `AbrManifestService` regenerates the manifest)
+
+   **Non-transient errors are never retried.** If the cause chain contains an `S3Exception` with a 4xx status code (other than 408 Request Timeout or 429 Too Many Requests), the error is thrown immediately — retrying will not fix a missing key, missing bucket, or access-denied error.
+
+2. **`fileExists` checks degrade gracefully** — Before transcoding, the service checks if the output already exists in MinIO (idempotency optimization). If MinIO is unreachable, the check returns `false` and transcoding proceeds anyway since all MinIO writes are idempotent. This `safeFileExists` pattern is applied in:
+   - `TranscodingTask.execute()` and `transcodeToSpool()`
+   - `LocalSpoolUploadWorkerPool.uploadSpoolTask()`
+   - `StartupRecoveryService.recoverOrphanedSpoolFiles()`
+
+3. **Source chunk downloads** — `downloadFile` is a pass-through in `ResilientStorageClient` — the caller (`TranscodingTask.downloadChunkWithRetry()`) owns retry logic with its own bounded exponential backoff (configurable via `DOWNLOAD_MAX_ATTEMPTS`, default 5). Failed downloads produce readable error messages that surface the root cause (e.g. "Connection refused") rather than generic wrapper exceptions.
+
+4. **Local spool upload workers** — When an upload to MinIO fails, the upload task is reset to `PENDING` and retried on the next poll cycle. The spool directory is backed by a Docker volume (`processing_spool`), so transcoded files survive container restarts and will be uploaded once MinIO returns.
+
+5. **Startup bucket check** — `ensureBucketExists()` is called on the raw `S3StorageClient` (single attempt, no retry wrapper) at startup. If it succeeds, the service proceeds normally. If MinIO is unreachable, the failure is logged at `WARN` and a **background daemon thread** is spawned that retries `ensureBucketExists()` with exponential backoff (same `STORAGE_RETRY_*` timing as the main retry loop) until it succeeds. This is necessary because `ResilientStorageClient` treats `NoSuchBucketException` (404) as a non-transient error — without the background thread, a truly missing bucket on a fresh deployment would cause every subsequent S3 operation to fail immediately with no recovery path. Worker pools, recovery logic, and the health endpoint all start normally regardless.
+
+7. **Concise logging** — `S3StorageClient` logs every terminal failure at `WARN` with `ex.toString()` (one concise line), plus the full stack trace at `DEBUG` for troubleshooting. This two-tier approach keeps default logs readable while preserving observability for services that use `S3StorageClient` directly (upload-service, streaming-service). Callers in the processing pipeline add their own context:
+   - `ResilientStorageClient` logs each retry attempt at `WARN` with `e.toString()` (one line)
+   - `safeFileExists` logs the graceful fall-through at `WARN` with a short explanation
+   - `downloadChunkWithRetry` unwraps exception chains to surface the root cause (e.g. "Connection refused") without a full stack trace
+
+### Presigned URL Resolution In Docker
+
+Presigned URLs must be reachable by the browser, not just by services inside the Docker network. The `S3StorageClient` solves this by using two separate endpoints:
+
+- The `S3Client` (server-side operations) connects to `MINIO_ENDPOINT` (e.g. `http://minio:9000`), which resolves inside the Docker network.
+- The `S3Presigner` (presigned URL generation) uses `MINIO_PUBLIC_ENDPOINT` (e.g. `http://localhost:9000`), which resolves from the host machine.
+
+If `MINIO_PUBLIC_ENDPOINT` is misconfigured or points to the internal hostname, presigned URLs will contain `minio:9000` in the host portion, causing browser requests to fail with DNS resolution errors. This is the most common cause of "upload works but playback does not" in local development. Both endpoints must use path-style access (`pathStyleAccessEnabled(true)`) because MinIO does not support virtual-hosted-style bucket addressing.
+
 For the broader user workflow that reaches playback after successful upload and processing, see:
 
 - [docs/diagrams/bpmn-end-to-end-workflow.bpmn](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/diagrams/bpmn-end-to-end-workflow.bpmn)

@@ -108,7 +108,7 @@ public final class LocalSpoolUploadWorkerPool {
                 discardUploadTask(task, spoolPath);
                 return;
             }
-            if (storageClient.fileExists(task.outputKey())) {
+            if (safeFileExists(storageClient, task.outputKey())) {
                 LOGGER.info("Local upload task {} already present in object storage, cleaning up spool", task.id());
                 completeUploadTask(task, spoolPath);
                 return;
@@ -151,6 +151,20 @@ public final class LocalSpoolUploadWorkerPool {
             if (runtime.processingTaskClaimRepository() != null) {
                 runtime.processingTaskClaimRepository().release(task.videoId(), task.profile(), task.segmentNumber());
             }
+        }
+    }
+
+    /**
+     * Best-effort existence check — returns {@code false} when MinIO is unreachable
+     * so the upload worker proceeds with the upload (idempotent write).
+     */
+    private boolean safeFileExists(ObjectStorageClient storageClient, String key) {
+        try {
+            return storageClient.fileExists(key);
+        } catch (Exception e) {
+            LOGGER.warn("Unable to check object existence (key={}), proceeding with upload: {}",
+                    key, e.toString());
+            return false;
         }
     }
 

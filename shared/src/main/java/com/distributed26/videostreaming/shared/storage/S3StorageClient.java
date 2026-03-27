@@ -79,14 +79,15 @@ public class S3StorageClient implements ObjectStorageClient {
             s3Client.putObject(request, RequestBody.fromInputStream(data, size));
             LOGGER.info("Uploaded object '{}' to bucket '{}'", key, bucketName);
         } catch (RuntimeException ex) {
-            LOGGER.error("Failed to upload object '{}' to bucket '{}'", key, bucketName, ex);
+            LOGGER.warn("Failed to upload object '{}' to bucket '{}': {}", key, bucketName, ex.toString());
+            LOGGER.debug("Upload failure detail", ex);
             throw new IllegalStateException("Failed to upload object: " + key, ex);
         }
     }
 
     @Override
     public InputStream downloadFile(String key) {
-        LOGGER.info("Downloading object '{}' from bucket '{}'", key, bucketName);
+        LOGGER.debug("Downloading object '{}' from bucket '{}'", key, bucketName);
         try {
             GetObjectRequest request = GetObjectRequest.builder()
                     .bucket(bucketName)
@@ -97,7 +98,8 @@ public class S3StorageClient implements ObjectStorageClient {
             LOGGER.warn("Object '{}' not found in bucket '{}'", key, bucketName);
             throw ex;
         } catch (RuntimeException ex) {
-            LOGGER.error("Failed to download object '{}' from bucket '{}'", key, bucketName, ex);
+            LOGGER.warn("Failed to download object '{}' from bucket '{}': {}", key, bucketName, ex.toString());
+            LOGGER.debug("Download failure detail", ex);
             throw new IllegalStateException("Failed to download object: " + key, ex);
         }
     }
@@ -113,14 +115,15 @@ public class S3StorageClient implements ObjectStorageClient {
             s3Client.deleteObject(request);
             LOGGER.info("Deleted object '{}' from bucket '{}'", key, bucketName);
         } catch (RuntimeException ex) {
-            LOGGER.error("Failed to delete object '{}' from bucket '{}'", key, bucketName, ex);
+            LOGGER.warn("Failed to delete object '{}' from bucket '{}': {}", key, bucketName, ex.toString());
+            LOGGER.debug("Delete failure detail", ex);
             throw new IllegalStateException("Failed to delete object: " + key, ex);
         }
     }
 
     @Override
     public boolean fileExists(String key) {
-        LOGGER.info("Checking existence of object '{}' in bucket '{}'", key, bucketName);
+        LOGGER.debug("Checking existence of object '{}' in bucket '{}'", key, bucketName);
         try {
             HeadObjectRequest request = HeadObjectRequest.builder()
                     .bucket(bucketName)
@@ -134,10 +137,12 @@ public class S3StorageClient implements ObjectStorageClient {
             if (ex.statusCode() == 404) {
                 return false;
             }
-            LOGGER.error("Failed to check existence of object '{}' in bucket '{}'", key, bucketName, ex);
+            LOGGER.warn("Failed to check existence of object '{}' in bucket '{}': {}", key, bucketName, ex.toString());
+            LOGGER.debug("fileExists failure detail", ex);
             throw new IllegalStateException("Failed to check object existence: " + key, ex);
         } catch (RuntimeException ex) {
-            LOGGER.error("Failed to check existence of object '{}' in bucket '{}'", key, bucketName, ex);
+            LOGGER.warn("Failed to check existence of object '{}' in bucket '{}': {}", key, bucketName, ex.toString());
+            LOGGER.debug("fileExists failure detail", ex);
             throw new IllegalStateException("Failed to check object existence: " + key, ex);
         }
     }
@@ -163,7 +168,8 @@ public class S3StorageClient implements ObjectStorageClient {
             LOGGER.info("Listed {} object(s) in bucket '{}' with prefix '{}'", keys.size(), bucketName, prefix);
             return keys;
         } catch (RuntimeException ex) {
-            LOGGER.error("Failed to list objects in bucket '{}' with prefix '{}'", bucketName, prefix, ex);
+            LOGGER.warn("Failed to list objects in bucket '{}' with prefix '{}': {}", bucketName, prefix, ex.toString());
+            LOGGER.debug("listFiles failure detail", ex);
             throw new IllegalStateException("Failed to list objects with prefix: " + prefix, ex);
         }
     }
@@ -180,7 +186,8 @@ public class S3StorageClient implements ObjectStorageClient {
                 s3Client.createBucket(CreateBucketRequest.builder().bucket(bucketName).build());
                 LOGGER.info("Bucket '{}' created successfully", bucketName);
             } catch (S3Exception createEx) {
-                 LOGGER.error("Failed to create bucket '{}'", bucketName, createEx);
+                 LOGGER.warn("Failed to create bucket '{}': {}", bucketName, createEx.toString());
+                 LOGGER.debug("Bucket creation failure detail", createEx);
                  throw new IllegalStateException("Failed to create bucket: " + bucketName, createEx);
             }
         } catch (S3Exception e) {
@@ -191,11 +198,13 @@ public class S3StorageClient implements ObjectStorageClient {
                      LOGGER.info("Bucket '{}' created successfully", bucketName);
                      return;
                  } catch (S3Exception createEx) {
-                     LOGGER.error("Failed to create bucket '{}'", bucketName, createEx);
-                     throw new IllegalStateException("Failed to create bucket: " + bucketName, createEx);
+                      LOGGER.warn("Failed to create bucket '{}': {}", bucketName, createEx.toString());
+                      LOGGER.debug("Bucket creation failure detail", createEx);
+                      throw new IllegalStateException("Failed to create bucket: " + bucketName, createEx);
                  }
-             }
-             LOGGER.error("Failed to check bucket existence for '{}'", bucketName, e);
+              }
+              LOGGER.warn("Failed to check bucket existence for '{}': {}", bucketName, e.toString());
+              LOGGER.debug("Bucket existence check failure detail", e);
              throw new IllegalStateException("Failed to check bucket existence: " + bucketName, e);
         }
     }
@@ -215,7 +224,8 @@ public class S3StorageClient implements ObjectStorageClient {
             PresignedGetObjectRequest presigned = s3Presigner.presignGetObject(presignRequest);
             return presigned.url().toString();
         } catch (RuntimeException ex) {
-            LOGGER.error("Failed to generate presigned URL for '{}' in bucket '{}'", key, bucketName, ex);
+            LOGGER.warn("Failed to generate presigned URL for '{}' in bucket '{}': {}", key, bucketName, ex.toString());
+            LOGGER.debug("Presigned URL failure detail", ex);
             throw new IllegalStateException("Failed to generate presigned URL: " + key, ex);
         }
     }

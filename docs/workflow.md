@@ -46,6 +46,19 @@ This workflow covers:
 - processed outputs are uploaded to object storage
 - once source chunks are persisted, downstream transcoding is treated as server-side work rather than a new client upload responsibility
 
+#### MinIO Failure Resilience
+
+When MinIO becomes unreachable during processing, the service degrades gracefully instead of stopping:
+
+- **Transcoding continues** — source chunks already downloaded are transcoded and spooled locally. The `fileExists` idempotency check falls through safely (`safeFileExists` returns `false` on error) so workers are never blocked waiting for MinIO.
+- **Downloads use bounded retry** — source chunk downloads are a pass-through in `ResilientStorageClient`; `TranscodingTask.downloadChunkWithRetry()` owns retry logic with its own bounded exponential backoff (default 5 attempts). Failed downloads surface a concise root-cause message (e.g. "Connection refused") rather than full stack traces.
+- **Uploads are not retried at the storage layer** — `uploadFile` is a pass-through in `ResilientStorageClient` because the `InputStream` is consumed on the first attempt; retrying would upload corrupt data. Instead, `LocalSpoolUploadWorkerPool` resets failed tasks to `PENDING` and opens a fresh stream on the next poll. The spool directory is Docker-volume-backed, so transcoded files survive restarts and are uploaded once MinIO recovers.
+- **Stateless S3 operations** (`deleteFile`, `listFiles`, `generatePresignedUrl`) are wrapped by `ResilientStorageClient` with retry + exponential backoff (500 ms → 30 s cap, configurable via `STORAGE_RETRY_*` env vars). Non-transient errors (4xx S3 status codes, except 408/429) are thrown immediately — retrying won't fix a missing key or access denied.
+- **Startup bucket check** — `ensureBucketExists()` is best-effort (single attempt, no retry). If it fails, a background daemon thread retries with exponential backoff until the bucket is confirmed. Worker pools, recovery, and the health endpoint start normally regardless.
+- **Logging** — `S3StorageClient` logs terminal failures at `WARN` with `ex.toString()` (one line), plus full stack traces at `DEBUG`. Callers (`ResilientStorageClient`, `safeFileExists`, `downloadChunkWithRetry`) add their own concise `WARN`-level context. No stack traces appear at default log levels.
+
+For full details on failure handling see [docs/challenges.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/challenges.md#minio--object-storage-outage).
+
 Workflow diagram:
 
 - [docs/diagrams/processing-service.drawio](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/diagrams/processing-service.drawio)
@@ -59,6 +72,13 @@ This workflow covers:
 - streaming-service validates readiness
 - manifests are returned
 - the browser fetches segments through presigned object-storage URLs
+
+Presigned URL flow:
+
+- streaming-service reads the variant `playlist.m3u8` from MinIO via the internal endpoint (`S3Client`)
+- for each `.ts` segment entry, it calls `generatePresignedUrl()` on the `S3Presigner`, which uses the public endpoint (`MINIO_PUBLIC_ENDPOINT`)
+- the rewritten playlist (with presigned URLs) is returned to the browser
+- the browser fetches segment bytes directly from MinIO — media data does not pass through streaming-service
 
 Workflow diagram:
 
