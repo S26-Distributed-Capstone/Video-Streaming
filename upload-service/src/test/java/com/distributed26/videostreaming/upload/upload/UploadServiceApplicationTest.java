@@ -14,7 +14,7 @@ class UploadServiceApplicationTest {
     @DisplayName("Should serve the frontend shell for processing routes")
     void shouldServeFrontendShellForProcessingRoutes() {
         Javalin app = Javalin.create();
-        UploadServiceApplication.registerFrontendRoutes(app);
+        UploadServiceApplication.registerFrontendRoutes(app, "<!doctype html><div id=\"processingRouteBanner\"></div>");
 
         JavalinTest.test(app, (server, client) -> {
             try (var response = client.get("/processing/test-video-123")) {
@@ -22,6 +22,20 @@ class UploadServiceApplicationTest {
                 String body = response.body().string();
                 assertTrue(body.contains("<!doctype html>"));
                 assertTrue(body.contains("id=\"processingRouteBanner\""));
+            }
+        });
+    }
+
+    @Test
+    @DisplayName("Should return a controlled error when the frontend shell is unavailable")
+    void shouldReturnControlledErrorWhenFrontendShellUnavailable() {
+        Javalin app = Javalin.create();
+        UploadServiceApplication.registerFrontendRoutes(app, null);
+
+        JavalinTest.test(app, (server, client) -> {
+            try (var response = client.get("/processing/test-video-123")) {
+                assertEquals(500, response.code());
+                assertEquals("Frontend shell unavailable", response.body().string());
             }
         });
     }

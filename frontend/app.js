@@ -59,6 +59,7 @@ let hlsInstance = null;
 let selectedVideoId = null;
 let playbackAttemptToken = 0;
 let playbackRetryTimerId = null;
+const statusUrlStoragePrefix = "upload-status-url:";
 const transcodeProfiles = {
   low: { done: 0, transcoding: 0, uploading: 0, failed: 0, segments: new Map() },
   medium: { done: 0, transcoding: 0, uploading: 0, failed: 0, segments: new Map() },
@@ -82,6 +83,46 @@ function getProcessingRouteVideoId() {
   } catch (_) {
     return match[1];
   }
+}
+
+function getStatusUrlStorageKey(videoId) {
+  return `${statusUrlStoragePrefix}${videoId}`;
+}
+
+function persistStatusUrl(videoId, uploadStatusUrl) {
+  if (!videoId || !uploadStatusUrl || !window.sessionStorage) {
+    return;
+  }
+  try {
+    window.sessionStorage.setItem(getStatusUrlStorageKey(videoId), uploadStatusUrl);
+  } catch (_) {
+    // Ignore storage failures and continue with in-memory state.
+  }
+}
+
+function readPersistedStatusUrl(videoId) {
+  if (!videoId || !window.sessionStorage) {
+    return "";
+  }
+  try {
+    return window.sessionStorage.getItem(getStatusUrlStorageKey(videoId)) || "";
+  } catch (_) {
+    return "";
+  }
+}
+
+function getProcessingRouteStatusUrl(videoId) {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const statusUrl = params.get("statusUrl") || "";
+    if (statusUrl) {
+      persistStatusUrl(videoId, statusUrl);
+      return statusUrl;
+    }
+  } catch (_) {
+    // Ignore malformed query strings and fall back to session storage.
+  }
+  return readPersistedStatusUrl(videoId);
 }
 
 function enterProcessingRoute(videoId) {
@@ -415,7 +456,7 @@ function scheduleProgressRefresh() {
   }
   progressRefreshTimerId = setTimeout(async () => {
     progressRefreshTimerId = null;
-    await fetchUploadInfo(resolveBaseUrl(), currentVideoId);
+    await fetchUploadInfo(resolveBaseUrl(), currentVideoId, currentWsUrl);
   }, 150);
 }
 
@@ -765,8 +806,12 @@ function resolveBaseUrl() {
   return window.location.origin;
 }
 
-function deriveProcessingPageUrl(videoId) {
-  return `${resolveBaseUrl()}/processing/${encodeURIComponent(videoId)}`;
+function deriveProcessingPageUrl(videoId, uploadStatusUrl) {
+  const url = new URL(`${resolveBaseUrl()}/processing/${encodeURIComponent(videoId)}`);
+  if (uploadStatusUrl) {
+    url.searchParams.set("statusUrl", uploadStatusUrl);
+  }
+  return url.toString();
 }
 
 function renderJson(target, payload) {
@@ -831,6 +876,7 @@ function scheduleWebSocketReconnect(wsUrl, videoId, token) {
 function connectWebSocket(wsUrl, videoId, { isReconnect = false } = {}) {
   const priorWs = ws;
   currentWsUrl = wsUrl;
+  persistStatusUrl(videoId, wsUrl);
   wsToken += 1;
   const token = wsToken;
   if (priorWs) {
@@ -1082,7 +1128,11 @@ function uploadFile({ preserveLog, isRetry } = {}) {
     }
     ["low", "medium", "high"].forEach((profile) => updateTranscodeProfileUi(profile));
 
-    window.location.assign(deriveProcessingPageUrl(currentVideoId));
+    const uploadStatusUrl = payload.uploadStatusUrl || payload.upload_status_url || "";
+    if (uploadStatusUrl) {
+      persistStatusUrl(currentVideoId, uploadStatusUrl);
+    }
+    window.location.assign(deriveProcessingPageUrl(currentVideoId, uploadStatusUrl));
   });
 
   xhr.addEventListener("error", () => {
@@ -1136,9 +1186,11 @@ if (routeVideoId) {
   currentVideoId = routeVideoId;
   setActiveTab("upload");
   enterProcessingRoute(routeVideoId);
+  const routeStatusUrl = getProcessingRouteStatusUrl(routeVideoId);
   const baseUrl = resolveBaseUrl();
-  fetchUploadInfo(baseUrl, routeVideoId).catch(() => {});
-  connectWebSocket(deriveWsUrl(baseUrl, routeVideoId), routeVideoId);
+  const wsUrl = routeStatusUrl || deriveWsUrl(baseUrl, routeVideoId);
+  fetchUploadInfo(baseUrl, routeVideoId, wsUrl).catch(() => {});
+  connectWebSocket(wsUrl, routeVideoId);
 } else {
   setActiveTab("upload");
 }

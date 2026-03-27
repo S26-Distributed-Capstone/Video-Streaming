@@ -34,6 +34,8 @@ public class UploadServiceApplication {
     private static final int DEFAULT_STATUS_PORT = 8081;
     private static final String MODE_UPLOAD = "upload";
     private static final String MODE_STATUS = "status";
+    private static final String FRONTEND_DIRECTORY = "frontend";
+    private static final String FRONTEND_INDEX_FILE = "index.html";
 	private static final Logger logger = LogManager.getLogger(UploadServiceApplication.class);
 	public static void main(String[] args) {
         String mode = System.getenv("SERVICE_MODE");
@@ -135,10 +137,11 @@ public class UploadServiceApplication {
             config.jetty.multipartConfig.maxFileSize(10, SizeUnit.GB);
             config.staticFiles.add(staticFiles -> {
                 staticFiles.hostedPath = "/";
-                staticFiles.directory = "frontend";
+                staticFiles.directory = FRONTEND_DIRECTORY;
                 staticFiles.location = Location.EXTERNAL;
             });
         });
+        String frontendIndex = loadFrontendIndex();
 
         app.get("/health", ctx -> ctx.json(java.util.Map.of(
                 "status", "ok",
@@ -151,7 +154,7 @@ public class UploadServiceApplication {
             }
             ctx.json(java.util.Map.of("status", "ready", "storageReady", true));
         });
-        registerFrontendRoutes(app);
+        registerFrontendRoutes(app, frontendIndex);
         app.post("/upload", uploadHandler::upload);
         app.post("/upload/{videoId}/fail", terminalFailureHandler::markFailed);
 
@@ -260,15 +263,22 @@ public class UploadServiceApplication {
         }
     }
 
-    static void registerFrontendRoutes(Javalin app) {
-        app.get("/processing/{videoId}", ctx -> ctx.html(loadFrontendIndex()));
+    static void registerFrontendRoutes(Javalin app, String frontendIndex) {
+        app.get("/processing/{videoId}", ctx -> {
+            if (frontendIndex == null || frontendIndex.isBlank()) {
+                ctx.status(500).result("Frontend shell unavailable");
+                return;
+            }
+            ctx.html(frontendIndex);
+        });
     }
 
     static String loadFrontendIndex() {
         try {
-            return Files.readString(Path.of("frontend", "index.html"));
+            return Files.readString(Path.of(FRONTEND_DIRECTORY, FRONTEND_INDEX_FILE));
         } catch (IOException e) {
-            throw new RuntimeException("Failed to load frontend index.html", e);
+            logger.error("Failed to load frontend shell from {}/{}", FRONTEND_DIRECTORY, FRONTEND_INDEX_FILE, e);
+            return null;
         }
     }
 
