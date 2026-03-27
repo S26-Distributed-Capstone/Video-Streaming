@@ -55,6 +55,7 @@ public class ProcessingServiceApplication {
     private static final String MANIFEST_PROCESSOR_EXECUTOR_NAME = "AbrManifestGenerator";
     private static volatile ExecutorService uploadExecutorRef;
     private static volatile ProcessingRuntime runtimeRef;
+    private static volatile Thread bucketEnsureThread;
 
     static final TranscodingProfile[] PROFILES = {
         TranscodingProfile.LOW,
@@ -97,7 +98,7 @@ public class ProcessingServiceApplication {
                 storageRetryMaxAttempts
         );
         if (!bucketVerified) {
-            startBucketEnsureBackground(rawStorageClient, storageConfig.getDefaultBucketName(),
+            bucketEnsureThread = startBucketEnsureBackground(rawStorageClient, storageConfig.getDefaultBucketName(),
                     storageRetryInitialMs, storageRetryMaxMs);
         }
         LOGGER.info("Storage ready — bucket={} (retry: initialDelay={}ms maxDelay={}ms maxAttempts={})",
@@ -216,6 +217,10 @@ public class ProcessingServiceApplication {
             resetState();
             try { transcodeTaskBus.close(); } catch (Exception e) { LOGGER.warn("Error closing transcode task bus", e); }
             try { statusEventBus.close(); } catch (Exception e) { LOGGER.warn("Error closing status event bus", e); }
+            if (bucketEnsureThread != null) {
+                bucketEnsureThread.interrupt();
+                bucketEnsureThread = null;
+            }
             try { storageClient.close(); } catch (Exception e) { LOGGER.warn("Error closing storage client", e); }
         }));
 
@@ -375,9 +380,11 @@ public class ProcessingServiceApplication {
      * bucket (fresh deployment) would cause every subsequent S3 operation to hit
      * {@code NoSuchBucketException} (404) — which {@code ResilientStorageClient}
      * treats as non-transient and fails immediately.
+     *
+     * @return the background thread, so the shutdown hook can interrupt it
      */
-    private static void startBucketEnsureBackground(S3StorageClient rawClient, String bucketName,
-                                                     long initialDelayMs, long maxDelayMs) {
+    private static Thread startBucketEnsureBackground(S3StorageClient rawClient, String bucketName,
+                                                      long initialDelayMs, long maxDelayMs) {
         Thread t = new Thread(() -> {
             long delay = initialDelayMs;
             while (!Thread.currentThread().isInterrupted()) {
@@ -385,11 +392,13 @@ public class ProcessingServiceApplication {
                     Thread.sleep(delay);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
+                    LOGGER.info("Background bucket-ensure thread interrupted — shutting down");
                     return;
                 }
                 try {
                     rawClient.ensureBucketExists();
                     LOGGER.info("Background bucket check succeeded — bucket '{}' is ready", bucketName);
+                    bucketEnsureThread = null;
                     return;
                 } catch (Exception e) {
                     LOGGER.warn("Background bucket check for '{}' still failing — next retry in {} ms: {}",
@@ -400,6 +409,7 @@ public class ProcessingServiceApplication {
         }, "bucket-ensure-bg");
         t.setDaemon(true);
         t.start();
+        return t;
     }
 
     static void onStatusEvent(JobEvent event, AbrManifestService manifestService, ExecutorService manifestExecutor) {
