@@ -180,7 +180,7 @@ public class S3StorageClient implements ObjectStorageClient {
                 s3Client.createBucket(CreateBucketRequest.builder().bucket(bucketName).build());
                 LOGGER.info("Bucket '{}' created successfully", bucketName);
             } catch (S3Exception createEx) {
-                 LOGGER.error("Failed to create bucket '{}'", bucketName, createEx);
+                 LOGGER.debug("Failed to create bucket '{}'", bucketName, createEx);
                  throw new IllegalStateException("Failed to create bucket: " + bucketName, createEx);
             }
         } catch (S3Exception e) {
@@ -191,11 +191,11 @@ public class S3StorageClient implements ObjectStorageClient {
                      LOGGER.info("Bucket '{}' created successfully", bucketName);
                      return;
                  } catch (S3Exception createEx) {
-                     LOGGER.error("Failed to create bucket '{}'", bucketName, createEx);
-                     throw new IllegalStateException("Failed to create bucket: " + bucketName, createEx);
+                      LOGGER.debug("Failed to create bucket '{}'", bucketName, createEx);
+                      throw new IllegalStateException("Failed to create bucket: " + bucketName, createEx);
                  }
-             }
-             LOGGER.error("Failed to check bucket existence for '{}'", bucketName, e);
+              }
+              LOGGER.debug("Failed to check bucket existence for '{}'", bucketName, e);
              throw new IllegalStateException("Failed to check bucket existence: " + bucketName, e);
         }
     }
@@ -215,7 +215,7 @@ public class S3StorageClient implements ObjectStorageClient {
             PresignedGetObjectRequest presigned = s3Presigner.presignGetObject(presignRequest);
             return presigned.url().toString();
         } catch (RuntimeException ex) {
-            LOGGER.error("Failed to generate presigned URL for '{}' in bucket '{}'", key, bucketName, ex);
+            LOGGER.debug("Failed to generate presigned URL for '{}' in bucket '{}'", key, bucketName, ex);
             throw new IllegalStateException("Failed to generate presigned URL: " + key, ex);
         }
     }
