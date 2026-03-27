@@ -9,6 +9,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.concurrent.atomic.AtomicLong;
 import net.bramp.ffmpeg.FFmpeg;
 import net.bramp.ffmpeg.FFmpegExecutor;
 import net.bramp.ffmpeg.FFprobe;
@@ -27,6 +28,11 @@ public class TranscodingTask extends Task {
     private static final int DOWNLOAD_MAX_ATTEMPTS;
     private static final long DOWNLOAD_RETRY_INITIAL_DELAY_MILLIS;
     private static final long DOWNLOAD_RETRY_MAX_DELAY_MILLIS;
+
+    /** Rate-limiting state for the safeFileExists WARN log. */
+    private static final long FILE_EXISTS_WARN_INTERVAL_MS = parseLongEnv("FILE_EXISTS_WARN_INTERVAL_MS", 30_000L);
+    private static final AtomicLong lastFileExistsWarnNanos = new AtomicLong(0L);
+    private static final AtomicLong fileExistsSuppressedCount = new AtomicLong(0L);
 
     /**
      * Number of threads each FFmpeg process may use.
@@ -237,13 +243,32 @@ public class TranscodingTask extends Task {
      * (rather than crashing) when MinIO is unreachable. Because all MinIO writes
      * are idempotent, the safe default is to proceed with transcoding when the
      * existence check cannot be completed.
+     *
+     * <p>To avoid flooding logs during a sustained MinIO outage (many concurrent
+     * segments all failing the pre-check), the WARN log is rate-limited to at
+     * most once every {@code FILE_EXISTS_WARN_INTERVAL_MS} (default 30 s, env
+     * override). Every individual failure is still recorded at DEBUG level so
+     * the detail is available when needed.</p>
      */
     private static boolean safeFileExists(ObjectStorageClient storageClient, String key) {
         try {
             return storageClient.fileExists(key);
         } catch (Exception e) {
-            LOGGER.warn("Unable to check if output already exists in object storage (key={}). " +
+            LOGGER.debug("Unable to check if output already exists in object storage (key={}). " +
                     "Proceeding with transcoding since writes are idempotent: {}", key, e.toString());
+
+            fileExistsSuppressedCount.incrementAndGet();
+            long nowNanos = System.nanoTime();
+            long lastNanos = lastFileExistsWarnNanos.get();
+            long intervalNanos = FILE_EXISTS_WARN_INTERVAL_MS * 1_000_000L;
+
+            if (nowNanos - lastNanos >= intervalNanos
+                    && lastFileExistsWarnNanos.compareAndSet(lastNanos, nowNanos)) {
+                long count = fileExistsSuppressedCount.getAndSet(0L);
+                LOGGER.warn("MinIO unreachable for output-exists pre-check — {} occurrence(s) since last warning. " +
+                        "Latest key={}. Proceeding with transcoding since writes are idempotent: {}",
+                        count, key, e.toString());
+            }
             return false;
         }
     }
