@@ -76,7 +76,7 @@ class StreamingServiceApplicationTest {
     }
 
     @Test
-    void variantPlaylistContainsPresignedUrls() throws Exception {
+    void variantPlaylistContainsProxySegmentUrls() throws Exception {
         HttpRequest request = HttpRequest.newBuilder()
             .uri(URI.create("http://localhost:" + port + "/stream/" + VIDEO_ID + "/variant/low/playlist.m3u8"))
             .GET()
@@ -87,8 +87,41 @@ class StreamingServiceApplicationTest {
         assertEquals(HttpURLConnection.HTTP_OK, response.statusCode());
         String body = new String(response.body(), StandardCharsets.UTF_8);
         assertTrue(body.contains("#EXTM3U"));
-        assertTrue(body.contains("presigned://"), "Expected presigned URLs for segments");
-        assertTrue(body.contains(VIDEO_ID + "/processed/low/000.ts"));
+        assertTrue(body.contains("/stream/" + VIDEO_ID + "/segment/low/000.ts"),
+                "Expected proxy segment URLs, got: " + body);
+    }
+
+    @Test
+    void segmentEndpointRedirectsWithPresignedUrl() throws Exception {
+        HttpClient noRedirectClient = HttpClient.newBuilder()
+            .followRedirects(HttpClient.Redirect.NEVER)
+            .build();
+
+        HttpRequest request = HttpRequest.newBuilder()
+            .uri(URI.create("http://localhost:" + port + "/stream/" + VIDEO_ID + "/segment/low/000.ts"))
+            .GET()
+            .build();
+
+        HttpResponse<byte[]> response = noRedirectClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
+
+        assertEquals(HttpURLConnection.HTTP_MOVED_TEMP, response.statusCode());
+        String location = response.headers().firstValue("Location").orElse("");
+        assertTrue(location.contains("presigned://"), "Expected presigned URL in Location header, got: " + location);
+        assertTrue(location.contains(VIDEO_ID + "/processed/low/000.ts"));
+    }
+
+    @Test
+    void segmentEndpointRejectsInvalidSegmentName() throws Exception {
+        HttpRequest request = HttpRequest.newBuilder()
+            .uri(URI.create("http://localhost:" + port + "/stream/" + VIDEO_ID + "/segment/low/../../../etc/passwd"))
+            .GET()
+            .build();
+
+        HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
+
+        // Javalin may resolve the path or return 400; either way it must not be 302
+        assertTrue(response.statusCode() != HttpURLConnection.HTTP_MOVED_TEMP,
+                "Should not redirect for invalid segment name");
     }
 
     @Test

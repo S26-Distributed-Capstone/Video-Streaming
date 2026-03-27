@@ -9,7 +9,13 @@ import java.util.concurrent.ConcurrentHashMap;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 
 public final class PlaylistService {
-    private static final long PRESIGNED_URL_DURATION_SECONDS = 3600;
+    /**
+     * TTL for the presigned redirect URL generated when a client fetches a
+     * single segment.  Kept short (10 s) so that URLs cannot be meaningfully
+     * shared or replayed after the segment has been delivered.
+     */
+    private static final long SEGMENT_PRESIGNED_URL_TTL_SECONDS = 10;
+
     private static final long PLAYLIST_CACHE_TTL_MILLIS = 30 * 60 * 1000L;
 
     private final ObjectStorageClient storageClient;
@@ -29,6 +35,12 @@ public final class PlaylistService {
         }
     }
 
+    /**
+     * Returns a variant playlist whose segment lines are proxy URLs that point
+     * back to the streaming service ({@code /stream/{videoId}/segment/…}).
+     * Because these URLs never expire, the cached manifest stays valid for its
+     * full cache TTL regardless of video length.
+     */
     public String loadVariantManifest(String videoId, String profile) throws IOException {
         String cacheKey = videoId + "/" + profile;
         CachedPlaylist cached = playlistCache.get(cacheKey);
@@ -39,12 +51,21 @@ public final class PlaylistService {
         String objectKey = videoId + "/manifest/" + profile + ".m3u8";
         try (InputStream is = storageClient.downloadFile(objectKey)) {
             String content = new String(is.readAllBytes(), StandardCharsets.UTF_8);
-            String rewritten = rewriteVariantManifestWithPresignedUrls(content, videoId, profile);
+            String rewritten = rewriteVariantManifestWithProxyUrls(content, videoId, profile);
             playlistCache.put(cacheKey, new CachedPlaylist(rewritten, System.currentTimeMillis()));
             return rewritten;
         } catch (NoSuchKeyException e) {
             throw e;
         }
+    }
+
+    /**
+     * Generates a short-lived presigned URL for a single segment.
+     * Called on every segment request so the client always receives a fresh URL.
+     */
+    public String generateSegmentUrl(String videoId, String profile, String segment) {
+        String objectKey = videoId + "/processed/" + profile + "/" + segment;
+        return storageClient.generatePresignedUrl(objectKey, SEGMENT_PRESIGNED_URL_TTL_SECONDS);
     }
 
     static String rewriteMasterManifest(String content) {
@@ -65,20 +86,25 @@ public final class PlaylistService {
         return rewritten.toString();
     }
 
-    static String rewriteVariantManifestWithPresignedUrls(
+    /**
+     * Rewrites segment references in a variant manifest to proxy URLs on the
+     * streaming service.  The player will hit
+     * {@code /stream/{videoId}/segment/{profile}/{file}} which generates a
+     * fresh presigned redirect at request time.
+     */
+    static String rewriteVariantManifestWithProxyUrls(
             String content,
             String videoId,
-            String profile,
-            ObjectStorageClient storageClient
+            String profile
     ) {
         String[] lines = content.split("\\r?\\n");
         StringBuilder rewritten = new StringBuilder(content.length() * 2);
         for (String line : lines) {
             if (!line.isEmpty() && !line.startsWith("#")) {
                 String segmentFile = line.endsWith(".ts") ? line : line + ".ts";
-                String objectKey = videoId + "/processed/" + profile + "/" + segmentFile;
-                String presignedUrl = storageClient.generatePresignedUrl(objectKey, PRESIGNED_URL_DURATION_SECONDS);
-                rewritten.append(presignedUrl);
+                rewritten.append("/stream/").append(videoId)
+                        .append("/segment/").append(profile)
+                        .append("/").append(segmentFile);
             } else {
                 rewritten.append(line);
             }
@@ -87,9 +113,6 @@ public final class PlaylistService {
         return rewritten.toString();
     }
 
-    private String rewriteVariantManifestWithPresignedUrls(String content, String videoId, String profile) {
-        return rewriteVariantManifestWithPresignedUrls(content, videoId, profile, storageClient);
-    }
 
     private record CachedPlaylist(String content, long createdAtMillis) {
         boolean isExpired() {
