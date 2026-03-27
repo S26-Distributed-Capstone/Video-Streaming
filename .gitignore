@@ -1,6 +1,7 @@
 # Compiled class file
 *.class
 .env
+AGENTS.md
 
 # Log file
 *.log
