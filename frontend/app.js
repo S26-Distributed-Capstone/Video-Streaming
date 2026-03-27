@@ -27,6 +27,8 @@ const transcodeHighBar = document.getElementById("transcodeHighBar");
 const transcodeHighPercent = document.getElementById("transcodeHighPercent");
 const transcodeHighTrack = document.getElementById("transcodeHighTrack");
 const doneMessage = document.getElementById("doneMessage");
+const processingRouteBanner = document.getElementById("processingRouteBanner");
+const processingRouteLabel = document.getElementById("processingRouteLabel");
 const player = document.getElementById("player");
 const playerStatus = document.getElementById("playerStatus");
 const playBtn = document.getElementById("playBtn");
@@ -57,6 +59,7 @@ let hlsInstance = null;
 let selectedVideoId = null;
 let playbackAttemptToken = 0;
 let playbackRetryTimerId = null;
+const statusUrlStoragePrefix = "upload-status-url:";
 const transcodeProfiles = {
   low: { done: 0, transcoding: 0, uploading: 0, failed: 0, segments: new Map() },
   medium: { done: 0, transcoding: 0, uploading: 0, failed: 0, segments: new Map() },
@@ -68,6 +71,80 @@ function setPlayerVisible(visible) {
     return;
   }
   player.classList.toggle("hidden", !visible);
+}
+
+function getProcessingRouteVideoId() {
+  const match = window.location.pathname.match(/^\/processing\/([^/]+)$/);
+  if (!match) {
+    return null;
+  }
+  try {
+    return decodeURIComponent(match[1]);
+  } catch (_) {
+    return match[1];
+  }
+}
+
+function getStatusUrlStorageKey(videoId) {
+  return `${statusUrlStoragePrefix}${videoId}`;
+}
+
+function persistStatusUrl(videoId, uploadStatusUrl) {
+  if (!videoId || !uploadStatusUrl || !window.sessionStorage) {
+    return;
+  }
+  try {
+    window.sessionStorage.setItem(getStatusUrlStorageKey(videoId), uploadStatusUrl);
+  } catch (_) {
+    // Ignore storage failures and continue with in-memory state.
+  }
+}
+
+function readPersistedStatusUrl(videoId) {
+  if (!videoId || !window.sessionStorage) {
+    return "";
+  }
+  try {
+    return window.sessionStorage.getItem(getStatusUrlStorageKey(videoId)) || "";
+  } catch (_) {
+    return "";
+  }
+}
+
+function getProcessingRouteStatusUrl(videoId) {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const statusUrl = params.get("statusUrl") || "";
+    if (statusUrl) {
+      persistStatusUrl(videoId, statusUrl);
+      return statusUrl;
+    }
+  } catch (_) {
+    // Ignore malformed query strings and fall back to session storage.
+  }
+  return readPersistedStatusUrl(videoId);
+}
+
+function enterProcessingRoute(videoId) {
+  if (!videoId) {
+    return;
+  }
+  document.body.classList.add("processing-route");
+  if (processingRouteBanner) {
+    processingRouteBanner.classList.remove("hidden");
+  }
+  if (processingRouteLabel) {
+    processingRouteLabel.textContent = `Processing video ${videoId}`;
+  }
+  uploadBar.style.width = "100%";
+  uploadPercent.textContent = "100%";
+  if (processingBlock) {
+    processingBlock.classList.remove("hidden");
+  }
+  if (transcodeBlock) {
+    transcodeBlock.classList.remove("hidden");
+  }
+  setDoneMessage("Upload accepted. Processing in progress.", { success: true });
 }
 
 function setActiveTab(tab) {
@@ -379,7 +456,7 @@ function scheduleProgressRefresh() {
   }
   progressRefreshTimerId = setTimeout(async () => {
     progressRefreshTimerId = null;
-    await fetchUploadInfo(resolveBaseUrl(), currentVideoId);
+    await fetchUploadInfo(resolveBaseUrl(), currentVideoId, currentWsUrl);
   }, 150);
 }
 
@@ -729,6 +806,14 @@ function resolveBaseUrl() {
   return window.location.origin;
 }
 
+function deriveProcessingPageUrl(videoId, uploadStatusUrl) {
+  const url = new URL(`${resolveBaseUrl()}/processing/${encodeURIComponent(videoId)}`);
+  if (uploadStatusUrl) {
+    url.searchParams.set("statusUrl", uploadStatusUrl);
+  }
+  return url.toString();
+}
+
 function renderJson(target, payload) {
   target.textContent = JSON.stringify(payload, null, 2);
 }
@@ -791,6 +876,7 @@ function scheduleWebSocketReconnect(wsUrl, videoId, token) {
 function connectWebSocket(wsUrl, videoId, { isReconnect = false } = {}) {
   const priorWs = ws;
   currentWsUrl = wsUrl;
+  persistStatusUrl(videoId, wsUrl);
   wsToken += 1;
   const token = wsToken;
   if (priorWs) {
@@ -1042,11 +1128,11 @@ function uploadFile({ preserveLog, isRetry } = {}) {
     }
     ["low", "medium", "high"].forEach((profile) => updateTranscodeProfileUi(profile));
 
-    await fetchUploadInfo(baseUrl, currentVideoId, payload.uploadStatusUrl);
-    setPlayerStatus("Ready list updates when chunking and transcoding complete.", { success: true });
-
-    const wsUrl = payload.uploadStatusUrl || deriveWsUrl(baseUrl, currentVideoId);
-    connectWebSocket(wsUrl, currentVideoId);
+    const uploadStatusUrl = payload.uploadStatusUrl || payload.upload_status_url || "";
+    if (uploadStatusUrl) {
+      persistStatusUrl(currentVideoId, uploadStatusUrl);
+    }
+    window.location.assign(deriveProcessingPageUrl(currentVideoId, uploadStatusUrl));
   });
 
   xhr.addEventListener("error", () => {
@@ -1095,5 +1181,17 @@ if (refreshReadyBtn) {
 }
 
 refreshReadyList();
-setActiveTab("upload");
+const routeVideoId = getProcessingRouteVideoId();
+if (routeVideoId) {
+  currentVideoId = routeVideoId;
+  setActiveTab("upload");
+  enterProcessingRoute(routeVideoId);
+  const routeStatusUrl = getProcessingRouteStatusUrl(routeVideoId);
+  const baseUrl = resolveBaseUrl();
+  const wsUrl = routeStatusUrl || deriveWsUrl(baseUrl, routeVideoId);
+  fetchUploadInfo(baseUrl, routeVideoId, wsUrl).catch(() => {});
+  connectWebSocket(wsUrl, routeVideoId);
+} else {
+  setActiveTab("upload");
+}
 setPlayerVisible(false);

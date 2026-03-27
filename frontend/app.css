@@ -98,6 +98,33 @@ video {
   margin-bottom: 18px;
 }
 
+.route-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: linear-gradient(180deg, #fff, #f7ead7);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-weight: 700;
+}
+
+.route-link {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.route-link:hover {
+  text-decoration: underline;
+}
+
+body.processing-route .controls {
+  display: none;
+}
+
 input[type="text"],
 input[type="file"] {
   width: 100%;
@@ -343,6 +370,11 @@ button:disabled {
   .tab-bar {
     grid-template-columns: 1fr;
     display: grid;
+  }
+
+  .route-banner {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   button {
