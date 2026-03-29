@@ -64,9 +64,9 @@ public final class RabbitMQDevLogReader implements AutoCloseable {
     }
 
     public synchronized List<RabbitMQDevLogPublisher.DevLogMessage> peek(int limit) {
-        int normalizedLimit = Math.max(1, Math.min(limit, 100));
-        List<Long> deliveryTags = new ArrayList<>(normalizedLimit);
-        List<RabbitMQDevLogPublisher.DevLogMessage> messages = new ArrayList<>(normalizedLimit);
+        int normalizedLimit = Math.max(1, limit);
+        List<Long> deliveryTags = new ArrayList<>();
+        List<RabbitMQDevLogPublisher.DevLogMessage> messages = new ArrayList<>();
         try {
             for (int i = 0; i < normalizedLimit; i++) {
                 GetResponse response = channel.basicGet(queueName, false);
@@ -84,6 +84,30 @@ public final class RabbitMQDevLogReader implements AutoCloseable {
             throw new RuntimeException("Failed to read dev logs", e);
         } finally {
             requeue(deliveryTags);
+        }
+    }
+
+    /**
+     * Reads <em>all</em> messages currently in the queue, then requeues them.
+     */
+    public synchronized List<RabbitMQDevLogPublisher.DevLogMessage> peekAll() {
+        int count = messageCount();
+        if (count <= 0) {
+            return List.of();
+        }
+        return peek(count);
+    }
+
+    /**
+     * Returns the number of messages currently sitting in the queue without
+     * consuming any of them.
+     */
+    public synchronized int messageCount() {
+        try {
+            return channel.queueDeclarePassive(queueName).getMessageCount();
+        } catch (IOException e) {
+            LOGGER.warn("Failed to query queue depth for {}", queueName, e);
+            return 0;
         }
     }
 
