@@ -102,8 +102,8 @@ public class StreamingServiceApplication {
             String profile = ctx.pathParam("profile");
             try {
                 String playlist = playlistService.loadVariantManifest(videoId, profile);
-                long segmentCount = playlist.lines().filter(line -> line.startsWith("http")).count();
-                LOGGER.info("Generated variant playlist for videoId={} profile={} with {} presigned segment URLs",
+                long segmentCount = playlist.lines().filter(line -> line.startsWith("/stream/")).count();
+                LOGGER.info("Generated variant playlist for videoId={} profile={} with {} proxy segment URLs",
                         videoId, profile, segmentCount);
                 ctx.status(HttpStatus.OK)
                         .header("Cache-Control", "no-store, max-age=0")
@@ -114,6 +114,28 @@ public class StreamingServiceApplication {
             } catch (IOException e) {
                 LOGGER.error("Failed to read variant manifest for videoId={} profile={}", videoId, profile, e);
                 ctx.status(HttpStatus.INTERNAL_SERVER_ERROR).result("Failed to read variant manifest");
+            }
+        });
+
+        app.get("/stream/{videoId}/segment/{profile}/{segment}", ctx -> {
+            if (!readinessService.validateVideoId(ctx)
+                    || !readinessService.validateProfile(ctx, ctx.pathParam("profile"))) {
+                return;
+            }
+            String segment = ctx.pathParam("segment");
+            if (segment == null || !segment.matches("^[A-Za-z0-9_.-]+\\.ts$")) {
+                ctx.status(HttpStatus.BAD_REQUEST).result("Invalid segment name");
+                return;
+            }
+            String videoId = ctx.pathParam("videoId");
+            String profile = ctx.pathParam("profile");
+            try {
+                String presignedUrl = playlistService.generateSegmentUrl(videoId, profile, segment);
+                ctx.redirect(presignedUrl, HttpStatus.FOUND);
+            } catch (Exception e) {
+                LOGGER.error("Failed to generate segment URL for videoId={} profile={} segment={}",
+                        videoId, profile, segment, e);
+                ctx.status(HttpStatus.INTERNAL_SERVER_ERROR).result("Failed to generate segment URL");
             }
         });
 

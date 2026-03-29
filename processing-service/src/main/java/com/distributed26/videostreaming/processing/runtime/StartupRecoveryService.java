@@ -130,7 +130,7 @@ public final class StartupRecoveryService {
 
                                 // If already in object storage, clean up and mark DONE
                                 String outputKey = videoId + "/processed/" + profileName + "/" + fileName;
-                                if (storageClient.fileExists(outputKey)) {
+                                if (safeFileExists(storageClient, outputKey)) {
                                     try {
                                         Files.deleteIfExists(file);
                                     } catch (IOException e) {
@@ -359,6 +359,22 @@ public final class StartupRecoveryService {
             return Double.parseDouble(matcher.group(1).trim());
         } catch (NumberFormatException e) {
             return 0d;
+        }
+    }
+
+    /**
+     * Best-effort existence check for use during startup recovery.
+     * Returns {@code false} when MinIO is unreachable so the spool file
+     * is re-registered as a PENDING upload task (safe default — the upload
+     * workers will handle the actual upload once MinIO returns).
+     */
+    private boolean safeFileExists(ObjectStorageClient storageClient, String key) {
+        try {
+            return storageClient.fileExists(key);
+        } catch (Exception e) {
+            LOGGER.warn("Spool recovery: unable to check object existence (key={}), treating as not uploaded: {}",
+                    key, e.toString());
+            return false;
         }
     }
 
