@@ -125,7 +125,9 @@ public class ProcessingTaskClaimRepository {
             }
             return segmentNumbers;
         } catch (SQLException | RuntimeException e) {
-            throw new RuntimeException("Failed to list processing_task_claim segments", e);
+            LOGGER.warn("Failed to list processing_task_claim segments videoId={} profile={}",
+                    videoId, profile, e);
+            return java.util.Set.of();
         }
     }
 
