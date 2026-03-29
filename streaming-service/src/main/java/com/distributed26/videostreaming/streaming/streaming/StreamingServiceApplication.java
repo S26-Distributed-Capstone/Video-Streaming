@@ -189,13 +189,16 @@ public class StreamingServiceApplication {
                 }
             }
 
+            for (String videoId : request.videoIds()) {
+                if (videoStatusRepository.findStatusByVideoId(videoId).isEmpty()) {
+                    ctx.status(HttpStatus.NOT_FOUND).result("Video not found");
+                    return;
+                }
+            }
+
             try {
                 for (String videoId : request.videoIds()) {
-                    boolean deleted = readinessService.deleteVideo(videoId);
-                    if (!deleted) {
-                        ctx.status(HttpStatus.NOT_FOUND).result("Video not found");
-                        return;
-                    }
+                    readinessService.deleteVideo(videoId);
                     playlistService.invalidateVideo(videoId);
                 }
                 ctx.status(HttpStatus.OK).json(new DeleteVideosResponse(request.videoIds()));
