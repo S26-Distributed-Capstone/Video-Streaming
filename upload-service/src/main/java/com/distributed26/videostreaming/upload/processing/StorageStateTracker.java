@@ -1,5 +1,6 @@
 package com.distributed26.videostreaming.upload.processing;
 
+import com.distributed26.videostreaming.shared.upload.RabbitMQDevLogPublisher;
 import com.distributed26.videostreaming.shared.upload.StatusEventBus;
 import com.distributed26.videostreaming.shared.upload.events.UploadStorageStatusEvent;
 import com.distributed26.videostreaming.upload.db.VideoUploadRepository;
@@ -12,16 +13,27 @@ import org.apache.logging.log4j.Logger;
 
 public final class StorageStateTracker {
     private static final Logger logger = LogManager.getLogger(StorageStateTracker.class);
+    private static final String DEV_LOG_SERVICE = "Upload-service";
 
     private final VideoUploadRepository videoUploadRepository;
     private final StatusEventBus statusEventBus;
+    private final RabbitMQDevLogPublisher devLogPublisher;
     private final AtomicBoolean serviceReady = new AtomicBoolean(true);
     private final AtomicInteger waitingOperations = new AtomicInteger(0);
     private final Map<String, AtomicInteger> waitingOperationsByVideo = new ConcurrentHashMap<>();
 
     public StorageStateTracker(VideoUploadRepository videoUploadRepository, StatusEventBus statusEventBus) {
+        this(videoUploadRepository, statusEventBus, null);
+    }
+
+    public StorageStateTracker(
+            VideoUploadRepository videoUploadRepository,
+            StatusEventBus statusEventBus,
+            RabbitMQDevLogPublisher devLogPublisher
+    ) {
         this.videoUploadRepository = videoUploadRepository;
         this.statusEventBus = statusEventBus;
+        this.devLogPublisher = devLogPublisher;
     }
 
     public boolean isServiceReady() {
@@ -38,6 +50,7 @@ public final class StorageStateTracker {
         if (global == 1) {
             serviceReady.set(false);
             logger.warn("Storage entered unavailable state reason={}", reason);
+            publishDevLogWarn("MinIO is down, continuing to segment and will upload when it's back up");
         }
 
         if (videoId == null || videoId.isBlank()) {
@@ -68,6 +81,7 @@ public final class StorageStateTracker {
         if (global == 0) {
             serviceReady.set(true);
             logger.info("Storage recovered and is available again");
+            publishDevLogInfo("MinIO recovered; upload service resumed normal uploads");
         }
     }
 
@@ -90,6 +104,28 @@ public final class StorageStateTracker {
             statusEventBus.publish(new UploadStorageStatusEvent(videoId, state, reason));
         } catch (RuntimeException e) {
             logger.warn("Failed to publish storage status event videoId={} state={}", videoId, state, e);
+        }
+    }
+
+    private void publishDevLogWarn(String message) {
+        if (devLogPublisher == null) {
+            return;
+        }
+        try {
+            devLogPublisher.publishWarn(DEV_LOG_SERVICE, message);
+        } catch (RuntimeException e) {
+            logger.warn("Failed to publish dev log warning message={}", message, e);
+        }
+    }
+
+    private void publishDevLogInfo(String message) {
+        if (devLogPublisher == null) {
+            return;
+        }
+        try {
+            devLogPublisher.publishInfo(DEV_LOG_SERVICE, message);
+        } catch (RuntimeException e) {
+            logger.warn("Failed to publish dev log info message={}", message, e);
         }
     }
 }

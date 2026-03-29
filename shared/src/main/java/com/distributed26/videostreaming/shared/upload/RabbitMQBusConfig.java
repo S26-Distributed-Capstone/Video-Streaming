@@ -13,7 +13,9 @@ record RabbitMQBusConfig(
         String statusBinding,
         String failureBinding,
         String taskQueue,
-        String taskBinding
+        String taskBinding,
+        String devLogQueue,
+        String devLogBinding
 ) {
     static RabbitMQBusConfig fromEnv() {
         Dotenv dotenv = Dotenv.configure().directory("./").ignoreIfMissing().load();
@@ -28,7 +30,9 @@ record RabbitMQBusConfig(
                 getEnvOrDotenv(dotenv, "RABBITMQ_STATUS_BINDING", "upload.status.*"),
                 getEnvOrDotenv(dotenv, "RABBITMQ_FAILURE_BINDING", "upload.failure"),
                 getEnvOrDotenv(dotenv, "RABBITMQ_TASK_QUEUE", "processing.tasks.queue"),
-                getEnvOrDotenv(dotenv, "RABBITMQ_TASK_BINDING", "upload.task.transcode")
+                getEnvOrDotenv(dotenv, "RABBITMQ_TASK_BINDING", "upload.task.transcode"),
+                getEnvOrDotenv(dotenv, "RABBITMQ_DEV_LOG_QUEUE", "dev.logs.queue"),
+                getEnvOrDotenv(dotenv, "RABBITMQ_DEV_LOG_BINDING", "dev.log")
         );
     }
 

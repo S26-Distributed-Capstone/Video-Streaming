@@ -3,12 +3,14 @@ package com.distributed26.videostreaming.processing.runtime;
 import com.distributed26.videostreaming.processing.LocalSpoolUploadTask;
 import com.distributed26.videostreaming.processing.TranscodingProfile;
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
+import com.distributed26.videostreaming.shared.upload.RabbitMQDevLogPublisher;
 import com.distributed26.videostreaming.shared.upload.TranscodeTaskBus;
 import com.distributed26.videostreaming.shared.upload.events.TranscodeSegmentState;
 import com.distributed26.videostreaming.shared.upload.events.TranscodeTaskEvent;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
@@ -17,13 +19,25 @@ import org.apache.logging.log4j.Logger;
 
 public final class LocalSpoolUploadWorkerPool {
     private static final Logger LOGGER = LogManager.getLogger(LocalSpoolUploadWorkerPool.class);
+    private static final String DEV_LOG_SERVICE = "Processing-service";
 
     private final TranscodingProfile[] profiles;
     private final ProcessingRuntime runtime;
+    private final RabbitMQDevLogPublisher devLogPublisher;
+    private final AtomicBoolean storageDegraded = new AtomicBoolean(false);
 
     public LocalSpoolUploadWorkerPool(TranscodingProfile[] profiles, ProcessingRuntime runtime) {
+        this(profiles, runtime, null);
+    }
+
+    public LocalSpoolUploadWorkerPool(
+            TranscodingProfile[] profiles,
+            ProcessingRuntime runtime,
+            RabbitMQDevLogPublisher devLogPublisher
+    ) {
         this.profiles = profiles;
         this.runtime = runtime;
+        this.devLogPublisher = devLogPublisher;
     }
 
     public ExecutorService startUploadWorkers(
@@ -143,10 +157,16 @@ public final class LocalSpoolUploadWorkerPool {
             try (InputStream is = Files.newInputStream(spoolPath)) {
                 storageClient.uploadFile(task.outputKey(), is, task.sizeBytes());
             }
+            if (storageDegraded.compareAndSet(true, false)) {
+                publishDevLogInfo("MinIO recovered; processing service resumed local spool uploads");
+            }
             completeUploadTask(task, spoolPath);
         } catch (Exception e) {
             LOGGER.warn("Failed local upload task {} videoId={} profile={} segment={} attempt={}",
                     task.id(), task.videoId(), task.profile(), task.segmentNumber(), task.attemptCount(), e);
+            if (storageDegraded.compareAndSet(false, true)) {
+                publishDevLogWarn("MinIO is down, continuing to process and polling for restart");
+            }
             runtime.processingUploadTaskRepository().markPending(task.id());
             if (runtime.processingTaskClaimRepository() != null) {
                 runtime.processingTaskClaimRepository().release(task.videoId(), task.profile(), task.segmentNumber());
@@ -192,5 +212,27 @@ public final class LocalSpoolUploadWorkerPool {
         }
         runtime.publishTranscodeState(task.videoId(), task.profile(), task.segmentNumber(),
                 TranscodeSegmentState.DONE, profiles);
+    }
+
+    private void publishDevLogWarn(String message) {
+        if (devLogPublisher == null) {
+            return;
+        }
+        try {
+            devLogPublisher.publishWarn(DEV_LOG_SERVICE, message);
+        } catch (RuntimeException e) {
+            LOGGER.warn("Failed to publish processing dev log warning message={}", message, e);
+        }
+    }
+
+    private void publishDevLogInfo(String message) {
+        if (devLogPublisher == null) {
+            return;
+        }
+        try {
+            devLogPublisher.publishInfo(DEV_LOG_SERVICE, message);
+        } catch (RuntimeException e) {
+            LOGGER.warn("Failed to publish processing dev log info message={}", message, e);
+        }
     }
 }
