@@ -134,7 +134,9 @@ function enterProcessingRoute(videoId) {
     processingRouteBanner.classList.remove("hidden");
   }
   if (processingRouteLabel) {
-    processingRouteLabel.textContent = `Processing video ${videoId}`;
+    processingRouteLabel.textContent = currentUploadName
+      ? `Processing video: ${currentUploadName}`
+      : "Processing video\u2026";
   }
   uploadBar.style.width = "100%";
   uploadPercent.textContent = "100%";
@@ -406,6 +408,10 @@ function updateTranscodeProfileUi(profile) {
 function applyUploadInfoSnapshot(payload) {
   if (!payload || typeof payload !== "object") {
     return;
+  }
+
+  if (payload.videoName && processingRouteLabel) {
+    processingRouteLabel.textContent = `Processing video: ${payload.videoName}`;
   }
 
   updateStorageRetryUi({
