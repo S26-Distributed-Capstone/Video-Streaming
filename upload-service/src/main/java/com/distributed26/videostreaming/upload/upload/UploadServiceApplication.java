@@ -193,7 +193,6 @@ public class UploadServiceApplication {
                 segmentUploadRepository,
                 transcodedSegmentStatusRepository
         );
-        RabbitMQDevLogPublisher devLogPublisher = createDevLogPublisher();
         RabbitMQDevLogReader devLogReader = createDevLogReader();
 
         Javalin app = Javalin.create();
@@ -216,16 +215,13 @@ public class UploadServiceApplication {
             }
             int limit = parseDevLogLimit(ctx.queryParam("limit"));
             ctx.json(java.util.Map.of(
-                    "queue", RabbitMQDevLogPublisher.DEFAULT_QUEUE,
-                    "binding", RabbitMQDevLogPublisher.DEFAULT_BINDING,
+                    "queue", devLogReader.queueName(),
+                    "binding", devLogReader.bindingKey(),
                     "limit", limit,
                     "logs", devLogReader.peek(limit)
             ));
         });
-        app.events(event -> event.serverStopped(() -> {
-            closeDevLogPublisher(devLogPublisher);
-            closeDevLogReader(devLogReader);
-        }));
+        app.events(event -> event.serverStopped(() -> closeDevLogReader(devLogReader)));
         return app;
     }
 

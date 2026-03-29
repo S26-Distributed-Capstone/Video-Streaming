@@ -11,6 +11,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.TimeoutException;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 /**
  * Small debug reader for dev-log messages stored in RabbitMQ.
@@ -20,10 +22,12 @@ import java.util.concurrent.TimeoutException;
  */
 public final class RabbitMQDevLogReader implements AutoCloseable {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final Logger LOGGER = LogManager.getLogger(RabbitMQDevLogReader.class);
 
     private final Connection connection;
     private final Channel channel;
     private final String queueName;
+    private final String bindingKey;
 
     public static RabbitMQDevLogReader fromEnv() {
         return new RabbitMQDevLogReader(RabbitMQBusConfig.fromEnv());
@@ -32,6 +36,7 @@ public final class RabbitMQDevLogReader implements AutoCloseable {
     public RabbitMQDevLogReader(RabbitMQBusConfig config) {
         Objects.requireNonNull(config, "config is null");
         this.queueName = Objects.requireNonNull(config.devLogQueue(), "devLogQueue is null");
+        this.bindingKey = Objects.requireNonNull(config.devLogBinding(), "devLogBinding is null");
         try {
             ConnectionFactory factory = new ConnectionFactory();
             factory.setHost(config.host());
@@ -44,13 +49,21 @@ public final class RabbitMQDevLogReader implements AutoCloseable {
 
             channel.exchangeDeclare(config.exchange(), BuiltinExchangeType.TOPIC, true);
             channel.queueDeclare(this.queueName, true, false, false, null);
-            channel.queueBind(this.queueName, config.exchange(), config.devLogBinding());
+            channel.queueBind(this.queueName, config.exchange(), this.bindingKey);
         } catch (IOException | TimeoutException e) {
             throw new RuntimeException("Failed to initialize RabbitMQDevLogReader", e);
         }
     }
 
-    public List<RabbitMQDevLogPublisher.DevLogMessage> peek(int limit) {
+    public String queueName() {
+        return queueName;
+    }
+
+    public String bindingKey() {
+        return bindingKey;
+    }
+
+    public synchronized List<RabbitMQDevLogPublisher.DevLogMessage> peek(int limit) {
         int normalizedLimit = Math.max(1, Math.min(limit, 100));
         List<Long> deliveryTags = new ArrayList<>(normalizedLimit);
         List<RabbitMQDevLogPublisher.DevLogMessage> messages = new ArrayList<>(normalizedLimit);
@@ -79,7 +92,7 @@ public final class RabbitMQDevLogReader implements AutoCloseable {
             try {
                 channel.basicNack(deliveryTags.get(i), false, true);
             } catch (IOException e) {
-                throw new RuntimeException("Failed to requeue dev log deliveryTag=" + deliveryTags.get(i), e);
+                LOGGER.warn("Failed to requeue dev log deliveryTag={}", deliveryTags.get(i), e);
             }
         }
     }
