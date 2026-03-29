@@ -14,7 +14,6 @@ import com.distributed26.videostreaming.shared.upload.RabbitMQDevLogPublisher;
 import com.distributed26.videostreaming.shared.upload.RabbitMQStatusEventBus;
 import com.distributed26.videostreaming.shared.upload.RabbitMQTranscodeTaskBus;
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
-import com.distributed26.videostreaming.shared.storage.ResilientStorageClient;
 import com.distributed26.videostreaming.shared.storage.S3StorageClient;
 import com.distributed26.videostreaming.shared.upload.StatusEventBus;
 import com.distributed26.videostreaming.shared.upload.TranscodeTaskBus;
@@ -79,14 +78,6 @@ public class ProcessingServiceApplication {
                     getEnvOrDotenv(dotenv, "MINIO_REGION",      "us-east-1")
             );
             ObjectStorageClient storageClient = new S3StorageClient(storageConfig);
-            try {
-                storageClient.ensureBucketExists();
-            } catch (RuntimeException e) {
-                publishDevLogError(devLogPublisher, "Processing service could not reach MinIO during startup");
-                throw e;
-            }
-            LOGGER.info("Storage ready — bucket={}", storageConfig.getDefaultBucketName());
-            publishDevLogInfo(devLogPublisher, "Processing service storage ready");
 
             StatusEventBus statusEventBus = RabbitMQStatusEventBus.fromEnv();
             TranscodeTaskBus transcodeTaskBus = RabbitMQTranscodeTaskBus.fromEnv();
@@ -157,15 +148,8 @@ public class ProcessingServiceApplication {
             transcodeTaskBus.subscribe(ev -> runtime.submitTranscodeTask(ev, taskExecutor, storageClient, workersByThread, PROFILES));
             statusEventBus.subscribeAll(runtime::onStatusEvent);
 
-        // --- Startup recovery: re-queue orphaned spool files and incomplete videos ---
-        // Phase 1: Scan the local spool directory for transcoded segments whose
-        //          upload tasks were lost (crash between transcodeToSpool and upsertPending).
-        //          This creates PENDING upload tasks so the upload workers pick them up.
-        // Phase 2: Re-publish transcode tasks for any segments that are neither DONE
-        //          nor have an open upload task (covers segments that need re-transcoding).
             StartupRecoveryService startupRecovery = new StartupRecoveryService(PROFILES, runtime);
-            startupRecovery.recoverOrphanedSpoolFiles(storageClient, localUploadSpoolRoot);
-            startupRecovery.recoverIncompleteVideos(storageClient);
+            startBucketEnsureThread(storageClient, startupRecovery, localUploadSpoolRoot, devLogPublisher);
 
             int pendingUploads = processingUploadTaskRepository.countByState("PENDING");
             if (pendingUploads > 0) {
@@ -198,6 +182,10 @@ public class ProcessingServiceApplication {
                 if (uploadExecutorRef != null) {
                     uploadExecutorRef.shutdownNow();
                     uploadExecutorRef = null;
+                }
+                if (bucketEnsureThread != null) {
+                    bucketEnsureThread.interrupt();
+                    bucketEnsureThread = null;
                 }
                 resetState();
                 try { transcodeTaskBus.close(); } catch (Exception e) { LOGGER.warn("Error closing transcode task bus", e); }
@@ -263,6 +251,76 @@ public class ProcessingServiceApplication {
         }
     }
 
+    private static void startBucketEnsureThread(
+            ObjectStorageClient storageClient,
+            StartupRecoveryService startupRecovery,
+            Path localUploadSpoolRoot,
+            RabbitMQDevLogPublisher devLogPublisher
+    ) {
+        Thread priorThread = bucketEnsureThread;
+        if (priorThread != null && priorThread.isAlive()) {
+            priorThread.interrupt();
+        }
+
+        Thread thread = new Thread(() -> runBucketEnsureLoop(
+                storageClient,
+                startupRecovery,
+                localUploadSpoolRoot,
+                devLogPublisher
+        ), "processing-bucket-ensure");
+        thread.setDaemon(true);
+        bucketEnsureThread = thread;
+        thread.start();
+    }
+
+    private static void runBucketEnsureLoop(
+            ObjectStorageClient storageClient,
+            StartupRecoveryService startupRecovery,
+            Path localUploadSpoolRoot,
+            RabbitMQDevLogPublisher devLogPublisher
+    ) {
+        long delayMillis = 500L;
+        boolean waiting = false;
+        while (!Thread.currentThread().isInterrupted()) {
+            try {
+                storageClient.ensureBucketExists();
+                LOGGER.info("Storage ready — bucket ensure completed");
+                if (waiting) {
+                    publishDevLogInfo(devLogPublisher, "MinIO recovered; processing service resumed startup recovery");
+                } else {
+                    publishDevLogInfo(devLogPublisher, "Processing service storage ready");
+                }
+
+                // Run startup recovery only after object storage becomes reachable.
+                startupRecovery.recoverOrphanedSpoolFiles(storageClient, localUploadSpoolRoot);
+                startupRecovery.recoverIncompleteVideos(storageClient);
+                bucketEnsureThread = null;
+                return;
+            } catch (RuntimeException e) {
+                if (!waiting) {
+                    waiting = true;
+                    LOGGER.warn("MinIO unavailable during processing startup; continuing and retrying bucket ensure", e);
+                    publishDevLogWarn(devLogPublisher, "MinIO is down, continuing to process and polling for restart");
+                } else {
+                    LOGGER.warn("Retrying processing startup bucket ensure in {} ms", delayMillis, e);
+                }
+                try {
+                    Thread.sleep(delayMillis);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    bucketEnsureThread = null;
+                    return;
+                }
+                delayMillis = Math.min(30_000L, delayMillis * 2);
+            } catch (Exception e) {
+                LOGGER.warn("Unexpected failure in processing startup bucket ensure loop", e);
+                bucketEnsureThread = null;
+                return;
+            }
+        }
+        bucketEnsureThread = null;
+    }
+
     private static RabbitMQDevLogPublisher createDevLogPublisher() {
         try {
             return RabbitMQDevLogPublisher.fromEnv();
@@ -291,6 +349,17 @@ public class ProcessingServiceApplication {
             publisher.publishError(DEV_LOG_SERVICE, message);
         } catch (RuntimeException e) {
             LOGGER.warn("Failed to publish processing dev log error message={}", message, e);
+        }
+    }
+
+    private static void publishDevLogWarn(RabbitMQDevLogPublisher publisher, String message) {
+        if (publisher == null) {
+            return;
+        }
+        try {
+            publisher.publishWarn(DEV_LOG_SERVICE, message);
+        } catch (RuntimeException e) {
+            LOGGER.warn("Failed to publish processing dev log warning message={}", message, e);
         }
     }
 
