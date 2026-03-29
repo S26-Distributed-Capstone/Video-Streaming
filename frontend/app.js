@@ -225,6 +225,14 @@ function hideCancelButton() {
   }
 }
 
+function restoreCancelButton() {
+  if (cancelProcessingBtn) {
+    cancelProcessingBtn.disabled = false;
+    cancelProcessingBtn.textContent = "Cancel";
+    cancelProcessingBtn.classList.remove("hidden");
+  }
+}
+
 async function cancelProcessing() {
   if (!currentVideoId) {
     return;
@@ -240,16 +248,19 @@ async function cancelProcessing() {
     if (resp.ok || resp.status === 204) {
       appendLog(`Processing cancelled for video ${videoId}`);
       setDoneMessage("Processing cancelled.", { success: false });
+      hideCancelButton();
     } else if (resp.status === 409) {
       appendLog("Video is no longer in an active processing state.", "error");
       setDoneMessage("Video is already completed or failed.", { success: false });
+      hideCancelButton();
     } else {
       appendLog(`Cancel request returned ${resp.status}`, "error");
+      restoreCancelButton();
     }
   } catch (err) {
     appendLog("Failed to cancel processing.", "error");
+    restoreCancelButton();
   }
-  hideCancelButton();
 }
 
 function isUploadRetryableFailure(payload) {
@@ -275,7 +286,7 @@ async function persistTerminalUploadFailure(videoId) {
   const failUrl = `${baseUrl}/upload/${videoId}/fail`;
   try {
     const resp = await fetch(failUrl, { method: "POST" });
-    if (!resp.ok) {
+    if (!resp.ok && resp.status !== 409) {
       appendLog(`Failed to persist terminal upload failure (${resp.status})`, "error");
     }
   } catch (err) {
@@ -283,7 +294,7 @@ async function persistTerminalUploadFailure(videoId) {
   }
 }
 
-async function exhaustUploadRetries(message) {
+async function exhaustUploadRetries(message, { skipPersist = false } = {}) {
   const failedVideoId = currentVideoId;
   processingComplete = true;
   hideCancelButton();
@@ -292,7 +303,9 @@ async function exhaustUploadRetries(message) {
   uploadBtn.disabled = false;
   uploadInFlight = false;
   resetStateForNextUpload();
-  await persistTerminalUploadFailure(failedVideoId);
+  if (!skipPersist) {
+    await persistTerminalUploadFailure(failedVideoId);
+  }
   if (doneMessage) {
     setDoneMessage(message || "Upload failed.", { success: false });
   }
@@ -982,7 +995,7 @@ function connectWebSocket(wsUrl, videoId, { isReconnect = false } = {}) {
       }
       if (payload && payload.type === "failed") {
         if (payload.reason === "user_cancelled") {
-          void exhaustUploadRetries("Processing cancelled.");
+          void exhaustUploadRetries("Processing cancelled.", { skipPersist: true });
           return;
         }
         if (isUploadRetryableFailure(payload)) {
