@@ -36,6 +36,7 @@ import org.apache.logging.log4j.Logger;
 public final class ProcessingRuntime {
     private static final Logger LOGGER = LogManager.getLogger(ProcessingRuntime.class);
     private static final java.util.regex.Pattern SEGMENT_NUMBER_PATTERN = java.util.regex.Pattern.compile("(\\d+)");
+    private static final long DEFAULT_CLAIM_STALE_MILLIS = 60_000L;
     private final Set<String> manifestsInFlight = ConcurrentHashMap.newKeySet();
 
     private TranscodedSegmentStatusRepository transcodeStatusRepository;
@@ -49,6 +50,7 @@ public final class ProcessingRuntime {
     private Path localUploadSpoolRoot;
     private FailedVideoRegistry failedVideoRegistry;
     private final String processorInstanceId;
+    private final long claimStaleMillis;
 
     public ProcessingRuntime(
             TranscodedSegmentStatusRepository transcodeStatusRepository,
@@ -62,6 +64,34 @@ public final class ProcessingRuntime {
             Path localUploadSpoolRoot,
             String processorInstanceId
     ) {
+        this(
+                transcodeStatusRepository,
+                videoProcessingRepository,
+                processingUploadTaskRepository,
+                processingTaskClaimRepository,
+                statusBus,
+                transcodeTaskBus,
+                manifestService,
+                manifestExecutor,
+                localUploadSpoolRoot,
+                processorInstanceId,
+                DEFAULT_CLAIM_STALE_MILLIS
+        );
+    }
+
+    public ProcessingRuntime(
+            TranscodedSegmentStatusRepository transcodeStatusRepository,
+            VideoProcessingRepository videoProcessingRepository,
+            ProcessingUploadTaskRepository processingUploadTaskRepository,
+            ProcessingTaskClaimRepository processingTaskClaimRepository,
+            StatusEventBus statusBus,
+            TranscodeTaskBus transcodeTaskBus,
+            AbrManifestService manifestService,
+            ExecutorService manifestExecutor,
+            Path localUploadSpoolRoot,
+            String processorInstanceId,
+            long claimStaleMillis
+    ) {
         this.transcodeStatusRepository = transcodeStatusRepository;
         this.videoProcessingRepository = videoProcessingRepository;
         this.processingUploadTaskRepository = processingUploadTaskRepository;
@@ -73,6 +103,7 @@ public final class ProcessingRuntime {
         this.localUploadSpoolRoot = localUploadSpoolRoot;
         this.failedVideoRegistry = new FailedVideoRegistry();
         this.processorInstanceId = processorInstanceId;
+        this.claimStaleMillis = Math.max(0L, claimStaleMillis);
     }
 
     public void resetForTests() {
@@ -190,6 +221,11 @@ public final class ProcessingRuntime {
                     videoId, profile.getName(), segmentNumber);
             return null;
         }
+        if (hasActiveClaim(videoId, profile.getName(), segmentNumber)) {
+            LOGGER.info("Skipping segment already claimed by another processing instance videoId={} profile={} segment={}",
+                    videoId, profile.getName(), segmentNumber);
+            return null;
+        }
         publishTranscodeState(videoId, profile.getName(), segmentNumber, TranscodeSegmentState.QUEUED, profiles);
         return new TranscodingTask(
                 UUID.randomUUID().toString(),
@@ -217,13 +253,21 @@ public final class ProcessingRuntime {
             return CompletableFuture.completedFuture(true);
         }
         if (processingTaskClaimRepository != null) {
-            processingTaskClaimRepository.claim(
+            ProcessingTaskClaimRepository.ClaimResult claimResult = processingTaskClaimRepository.claim(
                     task.getJobId(),
                     task.getProfile().getName(),
                     parseSegmentNumber(task.getChunkKey()),
                     "TRANSCODING",
-                    processorInstanceId
+                    processorInstanceId,
+                    claimStaleMillis
             );
+            if (claimResult != ProcessingTaskClaimRepository.ClaimResult.ACQUIRED) {
+                if (claimResult == ProcessingTaskClaimRepository.ClaimResult.HELD_BY_OTHER) {
+                    LOGGER.info("Skipping submitted transcode task already claimed elsewhere videoId={} profile={} chunk={}",
+                            task.getJobId(), task.getProfile().getName(), task.getChunkKey());
+                }
+                return CompletableFuture.completedFuture(true);
+            }
         }
         return CompletableFuture.supplyAsync(
                 () -> executeTranscodingTask(task, storageClient, workersByThread, profiles),
@@ -280,6 +324,10 @@ public final class ProcessingRuntime {
 
     public String processorInstanceId() {
         return processorInstanceId;
+    }
+
+    public long claimStaleMillis() {
+        return claimStaleMillis;
     }
 
     public VideoProcessingRepository videoProcessingRepository() {
@@ -500,6 +548,18 @@ public final class ProcessingRuntime {
             return processingUploadTaskRepository.hasOpenTask(videoId, profile, segmentNumber);
         } catch (Exception e) {
             LOGGER.warn("Failed local upload-task lookup videoId={} profile={} segment={}", videoId, profile, segmentNumber, e);
+            return false;
+        }
+    }
+
+    private boolean hasActiveClaim(String videoId, String profile, int segmentNumber) {
+        if (segmentNumber < 0 || processingTaskClaimRepository == null) {
+            return false;
+        }
+        try {
+            return processingTaskClaimRepository.hasActiveClaim(videoId, profile, segmentNumber, claimStaleMillis);
+        } catch (Exception e) {
+            LOGGER.warn("Failed processing-claim lookup videoId={} profile={} segment={}", videoId, profile, segmentNumber, e);
             return false;
         }
     }

@@ -113,7 +113,8 @@ public final class LocalSpoolUploadWorkerPool {
                     task.profile(),
                     task.segmentNumber(),
                     "UPLOADING",
-                    runtime.processorInstanceId()
+                    runtime.processorInstanceId(),
+                    runtime.claimStaleMillis()
             );
         }
         try {
