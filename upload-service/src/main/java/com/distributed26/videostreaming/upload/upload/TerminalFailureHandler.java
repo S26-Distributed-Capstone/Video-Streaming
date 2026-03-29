@@ -45,14 +45,18 @@ public final class TerminalFailureHandler {
             return;
         }
         if (result == FailedTransitionResult.NOT_PROCESSING) {
-            ctx.status(409).result("Video is not in PROCESSING state");
+            ctx.status(409).result("Video is not in an active processing state");
             return;
         }
 
         if (statusEventBus != null) {
+            String reason = ctx.queryParam("reason");
+            if (reason == null || reason.isBlank()) {
+                reason = "client_retry_exhausted";
+            }
             statusEventBus.publish(new UploadFailedEvent(
                     videoId,
-                    "client_retry_exhausted",
+                    reason,
                     machineId,
                     containerId
             ));

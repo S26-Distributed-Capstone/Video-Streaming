@@ -121,6 +121,32 @@ video {
   text-decoration: underline;
 }
 
+.route-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.cancel-btn {
+  padding: 8px 16px;
+  border: 1px solid var(--danger-text);
+  border-radius: 999px;
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  font-weight: 700;
+  cursor: pointer;
+  font-size: 0.85em;
+}
+
+.cancel-btn:hover {
+  background: rgba(201, 109, 68, 0.22);
+}
+
+.cancel-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 body.processing-route .controls {
   display: none;
 }
