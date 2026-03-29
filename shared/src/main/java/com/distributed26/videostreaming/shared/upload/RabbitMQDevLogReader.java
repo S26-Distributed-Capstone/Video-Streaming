@@ -24,19 +24,28 @@ public final class RabbitMQDevLogReader implements AutoCloseable {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final Logger LOGGER = LogManager.getLogger(RabbitMQDevLogReader.class);
 
+    /** Hard default when no env/config override is provided. */
+    static final int DEFAULT_MAX_PEEK_LIMIT = 1000;
+
     private final Connection connection;
     private final Channel channel;
     private final String queueName;
     private final String bindingKey;
+    private final int maxPeekLimit;
 
     public static RabbitMQDevLogReader fromEnv() {
         return new RabbitMQDevLogReader(RabbitMQBusConfig.fromEnv());
     }
 
     public RabbitMQDevLogReader(RabbitMQBusConfig config) {
+        this(config, resolveMaxPeekLimit());
+    }
+
+    public RabbitMQDevLogReader(RabbitMQBusConfig config, int maxPeekLimit) {
         Objects.requireNonNull(config, "config is null");
         this.queueName = Objects.requireNonNull(config.devLogQueue(), "devLogQueue is null");
         this.bindingKey = Objects.requireNonNull(config.devLogBinding(), "devLogBinding is null");
+        this.maxPeekLimit = Math.max(1, maxPeekLimit);
         try {
             ConnectionFactory factory = new ConnectionFactory();
             factory.setHost(config.host());
@@ -55,6 +64,29 @@ public final class RabbitMQDevLogReader implements AutoCloseable {
         }
     }
 
+    public int maxPeekLimit() {
+        return maxPeekLimit;
+    }
+
+    private static int resolveMaxPeekLimit() {
+        String value = System.getenv("DEV_LOG_MAX_PEEK");
+        if (value == null || value.isBlank()) {
+            try {
+                io.github.cdimascio.dotenv.Dotenv dotenv =
+                        io.github.cdimascio.dotenv.Dotenv.configure().directory("./").ignoreIfMissing().load();
+                value = dotenv.get("DEV_LOG_MAX_PEEK");
+            } catch (RuntimeException ignored) { }
+        }
+        if (value != null && !value.isBlank()) {
+            try {
+                return Math.max(1, Integer.parseInt(value.trim()));
+            } catch (NumberFormatException e) {
+                LOGGER.warn("Invalid DEV_LOG_MAX_PEEK value '{}', using default {}", value, DEFAULT_MAX_PEEK_LIMIT);
+            }
+        }
+        return DEFAULT_MAX_PEEK_LIMIT;
+    }
+
     public String queueName() {
         return queueName;
     }
@@ -64,7 +96,7 @@ public final class RabbitMQDevLogReader implements AutoCloseable {
     }
 
     public synchronized List<RabbitMQDevLogPublisher.DevLogMessage> peek(int limit) {
-        int normalizedLimit = Math.max(1, Math.min(limit, 100));
+        int normalizedLimit = Math.max(1, Math.min(limit, maxPeekLimit));
         List<Long> deliveryTags = new ArrayList<>(normalizedLimit);
         List<RabbitMQDevLogPublisher.DevLogMessage> messages = new ArrayList<>(normalizedLimit);
         try {
@@ -84,6 +116,30 @@ public final class RabbitMQDevLogReader implements AutoCloseable {
             throw new RuntimeException("Failed to read dev logs", e);
         } finally {
             requeue(deliveryTags);
+        }
+    }
+
+    /**
+     * Reads up to {@link #maxPeekLimit()} messages currently in the queue, then requeues them.
+     */
+    public synchronized List<RabbitMQDevLogPublisher.DevLogMessage> peekAll() {
+        int count = messageCount();
+        if (count <= 0) {
+            return List.of();
+        }
+        return peek(Math.min(count, maxPeekLimit));
+    }
+
+    /**
+     * Returns the number of messages currently sitting in the queue without
+     * consuming any of them.
+     */
+    public synchronized int messageCount() {
+        try {
+            return channel.queueDeclarePassive(queueName).getMessageCount();
+        } catch (IOException e) {
+            LOGGER.warn("Failed to query queue depth for {}", queueName, e);
+            return 0;
         }
     }
 

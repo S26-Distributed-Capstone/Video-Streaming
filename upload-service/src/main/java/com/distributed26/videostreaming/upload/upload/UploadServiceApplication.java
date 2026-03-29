@@ -40,6 +40,7 @@ public class UploadServiceApplication {
     private static final String DEV_LOG_STATUS_SERVICE = "Status-service";
     private static final String FRONTEND_DIRECTORY = "frontend";
     private static final String FRONTEND_INDEX_FILE = "index.html";
+    private static final String DEV_LOGS_HTML_FILE = "dev-logs.html";
 	private static final Logger logger = LogManager.getLogger(UploadServiceApplication.class);
 	public static void main(String[] args) {
         String mode = System.getenv("SERVICE_MODE");
@@ -194,6 +195,7 @@ public class UploadServiceApplication {
                 transcodedSegmentStatusRepository
         );
         RabbitMQDevLogReader devLogReader = createDevLogReader();
+        String devLogsHtml = loadDevLogsPage();
 
         Javalin app = Javalin.create();
         app.before(ctx -> {
@@ -206,20 +208,37 @@ public class UploadServiceApplication {
         app.ws("/upload-status", uploadStatusWebSocket::configure);
         app.get("/upload-info/{videoId}", uploadInfoHandler::getInfo);
         app.get("/dev-logs", ctx -> {
-            if (devLogReader == null) {
-                ctx.status(503).json(java.util.Map.of(
-                        "status", "unavailable",
-                        "message", "Dev log reader is not configured"
+            String format = ctx.queryParam("format");
+            boolean wantsJson = "json".equalsIgnoreCase(format);
+
+            if (wantsJson) {
+                if (devLogReader == null) {
+                    ctx.status(503).json(java.util.Map.of(
+                            "status", "unavailable",
+                            "message", "Dev log reader is not configured"
+                    ));
+                    return;
+                }
+                int limit = parseDevLogLimit(ctx.queryParam("limit"));
+                java.util.List<RabbitMQDevLogPublisher.DevLogMessage> all = devLogReader.peekAll();
+                java.util.List<RabbitMQDevLogPublisher.DevLogMessage> tail = all.size() > limit
+                        ? all.subList(all.size() - limit, all.size())
+                        : all;
+                ctx.json(java.util.Map.of(
+                        "queue", devLogReader.queueName(),
+                        "binding", devLogReader.bindingKey(),
+                        "limit", limit,
+                        "total", all.size(),
+                        "logs", tail
                 ));
                 return;
             }
-            int limit = parseDevLogLimit(ctx.queryParam("limit"));
-            ctx.json(java.util.Map.of(
-                    "queue", devLogReader.queueName(),
-                    "binding", devLogReader.bindingKey(),
-                    "limit", limit,
-                    "logs", devLogReader.peek(limit)
-            ));
+
+            if (devLogsHtml == null || devLogsHtml.isBlank()) {
+                ctx.status(500).result("Dev logs page unavailable");
+                return;
+            }
+            ctx.html(devLogsHtml);
         });
         app.events(event -> event.serverStopped(() -> closeDevLogReader(devLogReader)));
         return app;
@@ -302,6 +321,15 @@ public class UploadServiceApplication {
             return Files.readString(Path.of(FRONTEND_DIRECTORY, FRONTEND_INDEX_FILE));
         } catch (IOException e) {
             logger.error("Failed to load frontend shell from {}/{}", FRONTEND_DIRECTORY, FRONTEND_INDEX_FILE, e);
+            return null;
+        }
+    }
+
+    static String loadDevLogsPage() {
+        try {
+            return Files.readString(Path.of(FRONTEND_DIRECTORY, DEV_LOGS_HTML_FILE));
+        } catch (IOException e) {
+            logger.error("Failed to load dev-logs page from {}/{}", FRONTEND_DIRECTORY, DEV_LOGS_HTML_FILE, e);
             return null;
         }
     }
@@ -402,7 +430,7 @@ public class UploadServiceApplication {
             return 20;
         }
         try {
-            return Math.max(1, Math.min(Integer.parseInt(limitParam.trim()), 100));
+            return Math.max(1, Math.min(Integer.parseInt(limitParam.trim()), 1000));
         } catch (NumberFormatException e) {
             return 20;
         }
