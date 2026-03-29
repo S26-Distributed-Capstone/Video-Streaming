@@ -11,6 +11,7 @@ import com.distributed26.videostreaming.streaming.service.StreamingServiceConfig
 import io.javalin.Javalin;
 import io.javalin.http.HttpStatus;
 import java.io.IOException;
+import java.util.List;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
@@ -69,7 +70,7 @@ public class StreamingServiceApplication {
 
         app.before(ctx -> {
             ctx.header("Access-Control-Allow-Origin", "*");
-            ctx.header("Access-Control-Allow-Methods", "GET,OPTIONS");
+            ctx.header("Access-Control-Allow-Methods", "GET,DELETE,OPTIONS");
             ctx.header("Access-Control-Allow-Headers", "Content-Type,Range");
         });
         app.options("/*", ctx -> ctx.status(204));
@@ -147,6 +148,63 @@ public class StreamingServiceApplication {
             ctx.status(HttpStatus.OK).json(readinessService.readyVideos(parseReadyLimit(ctx.queryParam("limit"))));
         });
 
+        app.delete("/stream/{videoId}", ctx -> {
+            if (!readinessService.validateVideoId(ctx)) {
+                return;
+            }
+            String videoId = ctx.pathParam("videoId");
+            try {
+                boolean deleted = readinessService.deleteVideo(videoId);
+                if (!deleted) {
+                    ctx.status(HttpStatus.NOT_FOUND).result("Video not found");
+                    return;
+                }
+                playlistService.invalidateVideo(videoId);
+                ctx.status(HttpStatus.OK).json(new DeleteVideosResponse(List.of(videoId)));
+            } catch (Exception e) {
+                LOGGER.error("Failed to delete videoId={}", videoId, e);
+                ctx.status(HttpStatus.INTERNAL_SERVER_ERROR).result("Failed to delete video");
+            }
+        });
+
+        app.delete("/stream", ctx -> {
+            DeleteVideosRequest request;
+            try {
+                request = ctx.bodyAsClass(DeleteVideosRequest.class);
+            } catch (Exception e) {
+                ctx.status(HttpStatus.BAD_REQUEST).result("Invalid delete request");
+                return;
+            }
+            if (request == null || request.videoIds() == null || request.videoIds().isEmpty()) {
+                ctx.status(HttpStatus.BAD_REQUEST).result("No video IDs provided");
+                return;
+            }
+
+            for (String videoId : request.videoIds()) {
+                try {
+                    java.util.UUID.fromString(videoId);
+                } catch (IllegalArgumentException e) {
+                    ctx.status(HttpStatus.BAD_REQUEST).result("Invalid video ID");
+                    return;
+                }
+            }
+
+            try {
+                for (String videoId : request.videoIds()) {
+                    boolean deleted = readinessService.deleteVideo(videoId);
+                    if (!deleted) {
+                        ctx.status(HttpStatus.NOT_FOUND).result("Video not found");
+                        return;
+                    }
+                    playlistService.invalidateVideo(videoId);
+                }
+                ctx.status(HttpStatus.OK).json(new DeleteVideosResponse(request.videoIds()));
+            } catch (Exception e) {
+                LOGGER.error("Failed to delete videoIds={}", request.videoIds(), e);
+                ctx.status(HttpStatus.INTERNAL_SERVER_ERROR).result("Failed to delete videos");
+            }
+        });
+
         return app;
     }
 
@@ -219,5 +277,11 @@ public class StreamingServiceApplication {
         } catch (Exception e) {
             LOGGER.warn("Error closing dev log publisher", e);
         }
+    }
+
+    private record DeleteVideosRequest(List<String> videoIds) {
+    }
+
+    private record DeleteVideosResponse(List<String> deletedVideoIds) {
     }
 }

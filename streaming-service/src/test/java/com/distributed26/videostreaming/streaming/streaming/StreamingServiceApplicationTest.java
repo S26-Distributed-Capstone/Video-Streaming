@@ -15,6 +15,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -183,6 +184,46 @@ class StreamingServiceApplicationTest {
         assertEquals(HttpURLConnection.HTTP_NOT_FOUND, response.statusCode());
     }
 
+    @Test
+    void deleteEndpointRemovesVideoFromStorageAndRepository() throws Exception {
+        storage.put(VIDEO_ID + "/manifest/high.m3u8",
+            "#EXTM3U\n#EXTINF:10,\n000.ts\n".getBytes(StandardCharsets.UTF_8));
+
+        HttpRequest request = HttpRequest.newBuilder()
+            .uri(URI.create("http://localhost:" + port + "/stream/" + VIDEO_ID))
+            .DELETE()
+            .build();
+
+        HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
+
+        assertEquals(HttpURLConnection.HTTP_OK, response.statusCode());
+        assertTrue(!statuses.containsKey(VIDEO_ID), "Video status should be deleted");
+        assertTrue(storage.keySet().stream().noneMatch(key -> key.startsWith(VIDEO_ID + "/")),
+                "All storage objects under the video prefix should be deleted");
+    }
+
+    @Test
+    void bulkDeleteEndpointRemovesAllRequestedVideos() throws Exception {
+        String secondVideoId = "66666666-6666-6666-6666-666666666666";
+        statuses.put(secondVideoId, "COMPLETED");
+        storage.put(secondVideoId + "/manifest/master.m3u8",
+            "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nlow/playlist.m3u8\n".getBytes(StandardCharsets.UTF_8));
+        storage.put(secondVideoId + "/processed/low/000.ts", "segment-000".getBytes(StandardCharsets.UTF_8));
+
+        HttpRequest request = HttpRequest.newBuilder()
+            .uri(URI.create("http://localhost:" + port + "/stream"))
+            .header("Content-Type", "application/json")
+            .method("DELETE", HttpRequest.BodyPublishers.ofString(
+                    "{\"videoIds\":[\"" + VIDEO_ID + "\",\"" + secondVideoId + "\"]}"))
+            .build();
+
+        HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
+
+        assertEquals(HttpURLConnection.HTTP_OK, response.statusCode());
+        assertEquals(Set.of(), statuses.keySet(), "All requested videos should be removed from status storage");
+        assertTrue(storage.isEmpty(), "All requested video objects should be deleted");
+    }
+
     private static class FakeStatusRepository extends VideoStatusRepository {
         private final Map<String, String> statuses;
 
@@ -194,6 +235,20 @@ class StreamingServiceApplicationTest {
         @Override
         public Optional<String> findStatusByVideoId(String videoId) {
             return Optional.ofNullable(statuses.get(videoId));
+        }
+
+        @Override
+        public List<ReadyVideoRecord> findCompletedVideos(int limit) {
+            return statuses.entrySet().stream()
+                .filter(entry -> "COMPLETED".equalsIgnoreCase(entry.getValue()))
+                .limit(limit)
+                .map(entry -> new ReadyVideoRecord(entry.getKey(), entry.getKey()))
+                .toList();
+        }
+
+        @Override
+        public boolean deleteByVideoId(String videoId) {
+            return statuses.remove(videoId) != null;
         }
     }
 

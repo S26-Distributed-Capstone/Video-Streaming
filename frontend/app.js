@@ -33,6 +33,7 @@ const player = document.getElementById("player");
 const playerStatus = document.getElementById("playerStatus");
 const playBtn = document.getElementById("playBtn");
 const refreshReadyBtn = document.getElementById("refreshReadyBtn");
+const deleteSelectedBtn = document.getElementById("deleteSelectedBtn");
 const readyList = document.getElementById("readyList");
 
 let ws = null;
@@ -57,6 +58,9 @@ const reconnectBaseDelayMs = 1000;
 const maxUploadRetryAttempts = 5;
 let hlsInstance = null;
 let selectedVideoId = null;
+let readyVideosState = [];
+let selectedReadyVideoIds = new Set();
+let readyListBusy = false;
 let playbackAttemptToken = 0;
 let playbackRetryTimerId = null;
 const statusUrlStoragePrefix = "upload-status-url:";
@@ -538,8 +542,13 @@ function setPlayerStatus(text, { success = false, hidden = false } = {}) {
   if (!playerStatus) {
     return;
   }
-  playerStatus.textContent = "";
-  playerStatus.classList.add("hidden");
+  playerStatus.textContent = text;
+  playerStatus.classList.toggle("success", success);
+  if (hidden || !text) {
+    playerStatus.classList.add("hidden");
+  } else {
+    playerStatus.classList.remove("hidden");
+  }
 }
 
 function deriveStreamingUrl(baseUrl, videoId) {
@@ -554,6 +563,20 @@ function deriveReadyListUrl(baseUrl) {
   const host = baseUrl.replace(/^https?:\/\//, "").replace(/:\d+$/, "");
   const streamingPort = "8083";
   return `${scheme}://${host}:${streamingPort}/stream/ready`;
+}
+
+function deriveDeleteVideoUrl(baseUrl, videoId) {
+  const scheme = baseUrl.startsWith("https://") ? "https" : "http";
+  const host = baseUrl.replace(/^https?:\/\//, "").replace(/:\d+$/, "");
+  const streamingPort = "8083";
+  return `${scheme}://${host}:${streamingPort}/stream/${encodeURIComponent(videoId)}`;
+}
+
+function deriveBulkDeleteUrl(baseUrl) {
+  const scheme = baseUrl.startsWith("https://") ? "https" : "http";
+  const host = baseUrl.replace(/^https?:\/\//, "").replace(/:\d+$/, "");
+  const streamingPort = "8083";
+  return `${scheme}://${host}:${streamingPort}/stream`;
 }
 
 function teardownPlayer() {
@@ -713,19 +736,44 @@ function setSelectedVideoId(videoId) {
   });
 }
 
-function renderReadyList(videos) {
+function setReadyListBusy(isBusy) {
+  readyListBusy = isBusy;
+  if (refreshReadyBtn) {
+    refreshReadyBtn.disabled = isBusy;
+  }
+  updateDeleteSelectedButton();
   if (!readyList) {
     return;
   }
-  readyList.textContent = "";
-  if (!Array.isArray(videos) || videos.length === 0) {
-    const empty = document.createElement("li");
-    empty.className = "muted";
-    empty.textContent = "No completed videos yet.";
-    readyList.appendChild(empty);
+  Array.from(readyList.querySelectorAll("input, button")).forEach((control) => {
+    control.disabled = isBusy;
+  });
+}
+
+function updateDeleteSelectedButton() {
+  if (!deleteSelectedBtn) {
     return;
   }
-  const normalized = videos.map((item) => {
+  const hasSelection = selectedReadyVideoIds.size > 0;
+  deleteSelectedBtn.classList.toggle("hidden", !hasSelection);
+  deleteSelectedBtn.disabled = readyListBusy || !hasSelection;
+}
+
+function createTrashIcon() {
+  const template = document.createElement("template");
+  template.innerHTML = `
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M9 3h6l1 2h4v2H4V5h4l1-2zm1 6h2v8h-2V9zm4 0h2v8h-2V9zM7 9h2v8H7V9zm1 12a2 2 0 0 1-2-2V8h12v11a2 2 0 0 1-2 2H8z"></path>
+    </svg>
+  `;
+  return template.content.firstElementChild;
+}
+
+function normalizeReadyVideos(videos) {
+  if (!Array.isArray(videos)) {
+    return [];
+  }
+  return videos.map((item) => {
     if (typeof item === "string") {
       return { videoId: item, videoName: item };
     }
@@ -734,21 +782,95 @@ function renderReadyList(videos) {
       videoName: item.videoName || item.video_name || item.name
     };
   }).filter((item) => item.videoId);
+}
 
-  normalized.forEach((video) => {
+function applyReadyVideoRemoval(videoIds) {
+  const removed = new Set(videoIds);
+  readyVideosState = readyVideosState.filter((video) => !removed.has(video.videoId));
+  selectedReadyVideoIds = new Set(Array.from(selectedReadyVideoIds).filter((videoId) => !removed.has(videoId)));
+  if (selectedVideoId && removed.has(selectedVideoId)) {
+    selectedVideoId = null;
+    teardownPlayer();
+  }
+}
+
+function renderReadyList(videos) {
+  if (!readyList) {
+    return;
+  }
+  readyVideosState = normalizeReadyVideos(videos);
+  selectedReadyVideoIds = new Set(Array.from(selectedReadyVideoIds)
+    .filter((videoId) => readyVideosState.some((video) => video.videoId === videoId)));
+  readyList.textContent = "";
+  if (readyVideosState.length === 0) {
+    const empty = document.createElement("li");
+    empty.className = "muted";
+    empty.textContent = "No completed videos yet.";
+    readyList.appendChild(empty);
+    updateDeleteSelectedButton();
+    return;
+  }
+
+  readyVideosState.forEach((video) => {
     const item = document.createElement("li");
     item.dataset.videoId = video.videoId;
-    item.textContent = video.videoName || video.videoId;
-    item.addEventListener("click", () => setSelectedVideoId(video.videoId));
+
+    const row = document.createElement("div");
+    row.className = "ready-list-row";
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.className = "ready-list-checkbox";
+    checkbox.checked = selectedReadyVideoIds.has(video.videoId);
+    checkbox.setAttribute("aria-label", `Select ${video.videoName || video.videoId}`);
+    checkbox.addEventListener("click", (event) => event.stopPropagation());
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) {
+        selectedReadyVideoIds.add(video.videoId);
+      } else {
+        selectedReadyVideoIds.delete(video.videoId);
+      }
+      updateDeleteSelectedButton();
+    });
+
+    const label = document.createElement("button");
+    label.type = "button";
+    label.className = "ready-list-label";
+    label.addEventListener("click", () => setSelectedVideoId(video.videoId));
+
+    const name = document.createElement("span");
+    name.className = "ready-list-name";
+    name.textContent = video.videoName || video.videoId;
+
+    label.appendChild(name);
+
+    const deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.className = "icon-button";
+    deleteBtn.setAttribute("aria-label", `Delete ${video.videoName || video.videoId}`);
+    deleteBtn.appendChild(createTrashIcon());
+    deleteBtn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      await deleteSingleVideo(video);
+    });
+
+    row.appendChild(checkbox);
+    row.appendChild(label);
+    row.appendChild(deleteBtn);
+    item.appendChild(row);
     readyList.appendChild(item);
   });
 
-  const ids = normalized.map((video) => video.videoId);
+  const ids = readyVideosState.map((video) => video.videoId);
   if (currentVideoId && ids.includes(currentVideoId)) {
     setSelectedVideoId(currentVideoId);
+  } else if (selectedVideoId && !ids.includes(selectedVideoId)) {
+    setSelectedVideoId(ids[0] || null);
   } else if (!selectedVideoId && ids.length > 0) {
     setSelectedVideoId(ids[0]);
   }
+  updateDeleteSelectedButton();
+  setReadyListBusy(readyListBusy);
 }
 
 async function refreshReadyList() {
@@ -764,6 +886,62 @@ async function refreshReadyList() {
     renderReadyList(videos);
   } catch (err) {
     setPlayerStatus("Failed to load ready videos.", { success: false });
+  }
+}
+
+async function deleteSingleVideo(video) {
+  const label = video.videoName || video.videoId;
+  if (!window.confirm(`Delete "${label}" from object storage?`)) {
+    return;
+  }
+  setReadyListBusy(true);
+  try {
+    const resp = await fetch(deriveDeleteVideoUrl(resolveBaseUrl(), video.videoId), {
+      method: "DELETE"
+    });
+    if (!resp.ok) {
+      setPlayerStatus(`Failed to delete video (${resp.status})`, { success: false });
+      return;
+    }
+    applyReadyVideoRemoval([video.videoId]);
+    renderReadyList(readyVideosState);
+  } catch (_) {
+    setPlayerStatus("Failed to delete video.", { success: false });
+  } finally {
+    setReadyListBusy(false);
+  }
+}
+
+async function deleteSelectedVideos() {
+  const videoIds = Array.from(selectedReadyVideoIds);
+  if (videoIds.length === 0) {
+    return;
+  }
+  const message = videoIds.length === 1
+    ? "Delete the selected video from object storage?"
+    : `Delete ${videoIds.length} selected videos from object storage?`;
+  if (!window.confirm(message)) {
+    return;
+  }
+  setReadyListBusy(true);
+  try {
+    const resp = await fetch(deriveBulkDeleteUrl(resolveBaseUrl()), {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ videoIds })
+    });
+    if (!resp.ok) {
+      setPlayerStatus(`Failed to delete videos (${resp.status})`, { success: false });
+      return;
+    }
+    applyReadyVideoRemoval(videoIds);
+    renderReadyList(readyVideosState);
+  } catch (_) {
+    setPlayerStatus("Failed to delete videos.", { success: false });
+  } finally {
+    setReadyListBusy(false);
   }
 }
 
@@ -1178,6 +1356,9 @@ if (playBtn) {
 }
 if (refreshReadyBtn) {
   refreshReadyBtn.addEventListener("click", refreshReadyList);
+}
+if (deleteSelectedBtn) {
+  deleteSelectedBtn.addEventListener("click", deleteSelectedVideos);
 }
 
 refreshReadyList();

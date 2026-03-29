@@ -198,6 +198,10 @@ button.secondary {
   color: var(--text);
 }
 
+button.danger {
+  background: linear-gradient(90deg, #b24f31, #d17847);
+}
+
 button:disabled {
   opacity: 0.55;
   cursor: not-allowed;
@@ -312,11 +316,10 @@ button:disabled {
 }
 
 .ready-list li {
-  padding: 10px 12px;
+  padding: 0;
   border-radius: 16px;
   background: #fff;
   border: 1px solid var(--line);
-  cursor: pointer;
   word-break: break-word;
   font-size: 0.92rem;
 }
@@ -329,6 +332,63 @@ button:disabled {
 .ready-list li.muted {
   color: var(--muted);
   cursor: default;
+  padding: 10px 12px;
+}
+
+.ready-list-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.ready-list-checkbox {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+}
+
+.ready-list-label {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font-weight: inherit;
+  text-align: left;
+  width: auto;
+  cursor: pointer;
+}
+
+.ready-list-name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--danger-text);
+}
+
+.icon-button:hover:not(:disabled) {
+  background: var(--danger-bg);
+}
+
+.icon-button svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
 }
 
 #player {

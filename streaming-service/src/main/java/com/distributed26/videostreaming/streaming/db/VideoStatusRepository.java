@@ -93,6 +93,17 @@ public class VideoStatusRepository {
         }
     }
 
+    public boolean deleteByVideoId(String videoId) {
+        String sql = "DELETE FROM video_upload WHERE video_id = ?";
+        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setObject(1, UUID.fromString(videoId));
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to delete video_upload", e);
+        }
+    }
+
     public record ReadyVideoRecord(String videoId, String videoName) {
     }
 }
