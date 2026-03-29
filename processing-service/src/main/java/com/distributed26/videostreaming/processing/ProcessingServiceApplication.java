@@ -105,6 +105,7 @@ public class ProcessingServiceApplication {
             ProcessingTaskClaimRepository processingTaskClaimRepository = createProcessingTaskClaimRepository();
             Path localUploadSpoolRoot = initializeSpoolRoot(getEnvOrDotenv(dotenv, "PROCESSING_SPOOL_ROOT", "processing-spool"));
             String processorInstanceId = getEnvOrDotenv(dotenv, "HOSTNAME", "processing-service");
+            long claimStaleMillis = Long.parseLong(getEnvOrDotenv(dotenv, "PROCESSING_TASK_CLAIM_STALE_MILLIS", "60000"));
             ProcessingRuntime runtime = new ProcessingRuntime(
                     transcodeStatusRepository,
                     videoProcessingRepository,
@@ -115,7 +116,8 @@ public class ProcessingServiceApplication {
                     manifestService,
                     manifestExecutor,
                     localUploadSpoolRoot,
-                    processorInstanceId
+                    processorInstanceId,
+                    claimStaleMillis
             );
             runtimeRef = runtime;
             if (videoProcessingRepository != null) {

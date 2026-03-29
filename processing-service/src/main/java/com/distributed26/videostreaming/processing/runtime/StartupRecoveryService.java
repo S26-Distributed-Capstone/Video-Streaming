@@ -295,17 +295,29 @@ public final class StartupRecoveryService {
 
     private Map<String, Set<Integer>> loadOpenUploadSegmentsByProfile(String videoId) {
         Map<String, Set<Integer>> openSegmentsByProfile = new HashMap<>();
-        if (runtime.processingUploadTaskRepository() == null) {
+        if (runtime.processingUploadTaskRepository() == null && runtime.processingTaskClaimRepository() == null) {
             return openSegmentsByProfile;
         }
         for (TranscodingProfile profile : profiles) {
+            Set<Integer> claimedOrOpenSegments = new HashSet<>();
             try {
-                openSegmentsByProfile.put(
-                        profile.getName(),
-                        runtime.processingUploadTaskRepository().findOpenSegmentNumbers(videoId, profile.getName())
-                );
+                if (runtime.processingUploadTaskRepository() != null) {
+                    claimedOrOpenSegments.addAll(
+                            runtime.processingUploadTaskRepository().findOpenSegmentNumbers(videoId, profile.getName())
+                    );
+                }
+                if (runtime.processingTaskClaimRepository() != null) {
+                    claimedOrOpenSegments.addAll(
+                            runtime.processingTaskClaimRepository().findClaimedSegmentNumbers(
+                                    videoId,
+                                    profile.getName(),
+                                    runtime.claimStaleMillis()
+                            )
+                    );
+                }
+                openSegmentsByProfile.put(profile.getName(), claimedOrOpenSegments);
             } catch (Exception e) {
-                LOGGER.warn("Startup recovery failed to load local upload tasks videoId={} profile={}",
+                LOGGER.warn("Startup recovery failed to load open processing work videoId={} profile={}",
                         videoId, profile.getName(), e);
             }
         }

@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 import com.distributed26.videostreaming.processing.db.ProcessingUploadTaskRepository;
+import com.distributed26.videostreaming.processing.db.ProcessingTaskClaimRepository;
 import com.distributed26.videostreaming.processing.db.TranscodedSegmentStatusRepository;
 import com.distributed26.videostreaming.shared.jobs.Status;
 import com.distributed26.videostreaming.shared.upload.StatusEventBus;
@@ -28,6 +29,8 @@ class ProcessingServiceApplicationTest {
     private TranscodedSegmentStatusRepository transcodeStatusRepository;
     @Mock
     private ProcessingUploadTaskRepository processingUploadTaskRepository;
+    @Mock
+    private ProcessingTaskClaimRepository processingTaskClaimRepository;
 
     private BlockingQueue<TranscodingTask> taskQueue;
 
@@ -224,6 +227,21 @@ class ProcessingServiceApplicationTest {
         sendChunks("vid1", "vid1/chunks/seg0.ts");
 
         assertEquals(0, taskQueue.size(), "Failed videos should not enqueue more transcode work");
+    }
+
+    @Test
+    void activeClaim_isSkipped() {
+        ProcessingServiceApplication.runtime().setProcessingTaskClaimRepository(processingTaskClaimRepository);
+        when(processingTaskClaimRepository.hasActiveClaim("vid1", "low", 0, 60000L)).thenReturn(true);
+        when(processingTaskClaimRepository.hasActiveClaim("vid1", "medium", 0, 60000L)).thenReturn(false);
+        when(processingTaskClaimRepository.hasActiveClaim("vid1", "high", 0, 60000L)).thenReturn(false);
+
+        sendChunks("vid1", "vid1/chunks/seg0.ts");
+
+        assertEquals(2, taskQueue.size(), "One profile should be skipped because another instance already claimed it");
+        verify(processingTaskClaimRepository).hasActiveClaim("vid1", "low", 0, 60000L);
+        verify(processingTaskClaimRepository).hasActiveClaim("vid1", "medium", 0, 60000L);
+        verify(processingTaskClaimRepository).hasActiveClaim("vid1", "high", 0, 60000L);
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────

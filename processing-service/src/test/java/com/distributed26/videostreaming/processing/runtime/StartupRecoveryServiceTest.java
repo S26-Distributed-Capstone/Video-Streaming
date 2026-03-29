@@ -6,6 +6,7 @@ import static org.mockito.Mockito.*;
 
 import com.distributed26.videostreaming.processing.LocalSpoolUploadTask;
 import com.distributed26.videostreaming.processing.TranscodingProfile;
+import com.distributed26.videostreaming.processing.db.ProcessingTaskClaimRepository;
 import com.distributed26.videostreaming.processing.db.ProcessingUploadTaskRepository;
 import com.distributed26.videostreaming.processing.db.TranscodedSegmentStatusRepository;
 import com.distributed26.videostreaming.processing.db.VideoProcessingRepository;
@@ -13,10 +14,13 @@ import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
 import com.distributed26.videostreaming.shared.upload.StatusEventBus;
 import com.distributed26.videostreaming.shared.upload.TranscodeTaskBus;
 import com.distributed26.videostreaming.shared.upload.events.TranscodeSegmentState;
+import com.distributed26.videostreaming.shared.upload.events.TranscodeTaskEvent;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -50,6 +54,7 @@ class StartupRecoveryServiceTest {
 
     @Mock private ObjectStorageClient storageClient;
     @Mock private ProcessingUploadTaskRepository uploadTaskRepo;
+    @Mock private ProcessingTaskClaimRepository claimRepo;
     @Mock private TranscodedSegmentStatusRepository transcodeStatusRepo;
     @Mock private VideoProcessingRepository videoProcessingRepo;
     @Mock private StatusEventBus statusBus;
@@ -67,7 +72,7 @@ class StartupRecoveryServiceTest {
                 transcodeStatusRepo,
                 videoProcessingRepo,
                 uploadTaskRepo,
-                null,   // processingTaskClaimRepository
+                claimRepo,
                 statusBus,
                 transcodeTaskBus,
                 null,   // manifestService
@@ -287,6 +292,43 @@ class StartupRecoveryServiceTest {
             verify(uploadTaskRepo).upsertPending(
                     eq(videoId), eq("low"), eq(0), anyString(), anyString(), anyString(),
                     eq((long) content.length()), anyDouble());
+        }
+    }
+
+    @Nested
+    class IncompleteVideoRecovery {
+
+        @Test
+        void activeClaim_preventsRequeueForThatSegment() {
+            String videoId = UUID.randomUUID().toString();
+
+            when(videoProcessingRepo.findVideoIdsByStatus("PROCESSING")).thenReturn(List.of(videoId));
+            when(storageClient.listFiles(videoId + "/chunks/")).thenReturn(List.of(
+                    videoId + "/chunks/output0.ts",
+                    videoId + "/chunks/output1.ts"
+            ));
+            when(transcodeStatusRepo.findSegmentNumbersByState(videoId, "low", TranscodeSegmentState.DONE)).thenReturn(Set.of());
+            when(transcodeStatusRepo.findSegmentNumbersByState(videoId, "medium", TranscodeSegmentState.DONE)).thenReturn(Set.of());
+            when(transcodeStatusRepo.findSegmentNumbersByState(videoId, "high", TranscodeSegmentState.DONE)).thenReturn(Set.of());
+            when(uploadTaskRepo.findOpenSegmentNumbers(videoId, "low")).thenReturn(Set.of());
+            when(uploadTaskRepo.findOpenSegmentNumbers(videoId, "medium")).thenReturn(Set.of());
+            when(uploadTaskRepo.findOpenSegmentNumbers(videoId, "high")).thenReturn(Set.of());
+            when(claimRepo.findClaimedSegmentNumbers(videoId, "low", runtime.claimStaleMillis())).thenReturn(Set.of(0));
+            when(claimRepo.findClaimedSegmentNumbers(videoId, "medium", runtime.claimStaleMillis())).thenReturn(Set.of());
+            when(claimRepo.findClaimedSegmentNumbers(videoId, "high", runtime.claimStaleMillis())).thenReturn(Set.of());
+
+            recoveryService.recoverIncompleteVideos(storageClient);
+
+            verify(transcodeTaskBus, never()).publish(argThat((TranscodeTaskEvent ev) ->
+                    videoId.equals(ev.getJobId())
+                            && "low".equals(ev.getProfile())
+                            && ev.getSegmentNumber() == 0
+            ));
+            verify(transcodeTaskBus).publish(argThat((TranscodeTaskEvent ev) ->
+                    videoId.equals(ev.getJobId())
+                            && "low".equals(ev.getProfile())
+                            && ev.getSegmentNumber() == 1
+            ));
         }
     }
 
@@ -593,4 +635,3 @@ class StartupRecoveryServiceTest {
         return file;
     }
 }
-
