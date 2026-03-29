@@ -10,6 +10,7 @@ import com.distributed26.videostreaming.processing.runtime.StartupRecoveryServic
 import com.distributed26.videostreaming.shared.config.StorageConfig;
 import com.distributed26.videostreaming.shared.jobs.Worker;
 import com.distributed26.videostreaming.shared.jobs.WorkerStatus;
+import com.distributed26.videostreaming.shared.upload.RabbitMQDevLogPublisher;
 import com.distributed26.videostreaming.shared.upload.RabbitMQStatusEventBus;
 import com.distributed26.videostreaming.shared.upload.RabbitMQTranscodeTaskBus;
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
@@ -52,6 +53,7 @@ import org.apache.logging.log4j.Logger;
  */
 public class ProcessingServiceApplication {
     private static final Logger LOGGER = LogManager.getLogger(ProcessingServiceApplication.class);
+    private static final String DEV_LOG_SERVICE = "Processing-service";
     private static final String MANIFEST_PROCESSOR_EXECUTOR_NAME = "AbrManifestGenerator";
     private static volatile ExecutorService uploadExecutorRef;
     private static volatile ProcessingRuntime runtimeRef;
@@ -65,113 +67,95 @@ public class ProcessingServiceApplication {
 
     public static void main(String[] args) throws Exception {
         Dotenv dotenv = Dotenv.configure().directory("./").ignoreIfMissing().load();
-
-        // Storage
-        StorageConfig storageConfig = new StorageConfig(
-                getEnvOrDotenv(dotenv, "MINIO_ENDPOINT",    "http://localhost:9000"),
-                getEnvOrDotenv(dotenv, "MINIO_ACCESS_KEY",  "minioadmin"),
-                getEnvOrDotenv(dotenv, "MINIO_SECRET_KEY",  "minioadmin"),
-                getEnvOrDotenv(dotenv, "MINIO_BUCKET_NAME", "uploads"),
-                getEnvOrDotenv(dotenv, "MINIO_REGION",      "us-east-1")
-        );
-        long storageRetryInitialMs = Long.parseLong(getEnvOrDotenv(dotenv, "STORAGE_RETRY_INITIAL_DELAY_MS",
-                String.valueOf(ResilientStorageClient.DEFAULT_INITIAL_DELAY_MS)));
-        long storageRetryMaxMs = Long.parseLong(getEnvOrDotenv(dotenv, "STORAGE_RETRY_MAX_DELAY_MS",
-                String.valueOf(ResilientStorageClient.DEFAULT_MAX_DELAY_MS)));
-        int storageRetryMaxAttempts = Integer.parseInt(getEnvOrDotenv(dotenv, "STORAGE_RETRY_MAX_ATTEMPTS",
-                String.valueOf(ResilientStorageClient.DEFAULT_MAX_ATTEMPTS)));
-        S3StorageClient rawStorageClient = new S3StorageClient(storageConfig);
-        boolean bucketVerified = false;
+        RabbitMQDevLogPublisher devLogPublisher = createDevLogPublisher();
+        boolean devLogPublisherOwnedByShutdownHook = false;
         try {
-            rawStorageClient.ensureBucketExists();
-            LOGGER.info("Bucket '{}' verified", storageConfig.getDefaultBucketName());
-            bucketVerified = true;
-        } catch (Exception e) {
-            LOGGER.warn("Could not verify bucket '{}' at startup (MinIO may be unavailable). " +
-                    "A background thread will keep retrying until the bucket is confirmed: {}",
-                    storageConfig.getDefaultBucketName(), e.toString());
-        }
-        ObjectStorageClient storageClient = new ResilientStorageClient(
-                rawStorageClient,
-                storageRetryInitialMs,
-                storageRetryMaxMs,
-                storageRetryMaxAttempts
-        );
-        if (!bucketVerified) {
-            bucketEnsureThread = startBucketEnsureBackground(rawStorageClient, storageConfig.getDefaultBucketName(),
-                    storageRetryInitialMs, storageRetryMaxMs);
-        }
-        LOGGER.info("Storage ready — bucket={} (retry: initialDelay={}ms maxDelay={}ms maxAttempts={})",
-                storageConfig.getDefaultBucketName(), storageRetryInitialMs, storageRetryMaxMs,
-                storageRetryMaxAttempts == 0 ? "unlimited" : storageRetryMaxAttempts);
-
-        StatusEventBus statusEventBus = RabbitMQStatusEventBus.fromEnv();
-        TranscodeTaskBus transcodeTaskBus = RabbitMQTranscodeTaskBus.fromEnv();
-        AbrManifestService manifestService = new AbrManifestService(
-                storageClient,
-                Integer.parseInt(getEnvOrDotenv(dotenv, "ABR_MANIFEST_WAIT_SECONDS", "120"))
-        );
-        ExecutorService manifestExecutor = Executors.newSingleThreadExecutor(
-                r -> new Thread(r, MANIFEST_PROCESSOR_EXECUTOR_NAME)
-        );
-        LOGGER.info("RabbitMQ status/task buses connected");
-
-        // Executor threads run one transcode task at a time. The executor's internal queue
-        // is now the local buffer between RabbitMQ intake and FFmpeg execution.
-        // Default: 3/4 of available processors (leaves headroom for uploaders, GC, OS).
-        int availableCpus = Runtime.getRuntime().availableProcessors();
-        int dynamicDefault = Math.max(1, (availableCpus * 3) / 4);
-        int poolSize = Integer.parseInt(getEnvOrDotenv(dotenv, "WORKER_POOL_SIZE", String.valueOf(dynamicDefault)));
-        LOGGER.info("Detected {} available CPU(s); transcoding worker pool size = {} (default would be {})",
-                availableCpus, poolSize, dynamicDefault);
-        TranscodedSegmentStatusRepository transcodeStatusRepository = createTranscodeStatusRepository();
-        VideoProcessingRepository videoProcessingRepository = createVideoProcessingRepository();
-        ProcessingUploadTaskRepository processingUploadTaskRepository = createProcessingUploadTaskRepository();
-        ProcessingTaskClaimRepository processingTaskClaimRepository = createProcessingTaskClaimRepository();
-        Path localUploadSpoolRoot = initializeSpoolRoot(getEnvOrDotenv(dotenv, "PROCESSING_SPOOL_ROOT", "processing-spool"));
-        String processorInstanceId = getEnvOrDotenv(dotenv, "HOSTNAME", "processing-service");
-        ProcessingRuntime runtime = new ProcessingRuntime(
-                transcodeStatusRepository,
-                videoProcessingRepository,
-                processingUploadTaskRepository,
-                processingTaskClaimRepository,
-                statusEventBus,
-                transcodeTaskBus,
-                manifestService,
-                manifestExecutor,
-                localUploadSpoolRoot,
-                processorInstanceId
-        );
-        runtimeRef = runtime;
-        if (videoProcessingRepository != null) {
+            // Storage
+            StorageConfig storageConfig = new StorageConfig(
+                    getEnvOrDotenv(dotenv, "MINIO_ENDPOINT",    "http://localhost:9000"),
+                    getEnvOrDotenv(dotenv, "MINIO_ACCESS_KEY",  "minioadmin"),
+                    getEnvOrDotenv(dotenv, "MINIO_SECRET_KEY",  "minioadmin"),
+                    getEnvOrDotenv(dotenv, "MINIO_BUCKET_NAME", "uploads"),
+                    getEnvOrDotenv(dotenv, "MINIO_REGION",      "us-east-1")
+            );
+            ObjectStorageClient storageClient = new S3StorageClient(storageConfig);
             try {
-                videoProcessingRepository.findVideoIdsByStatus("FAILED").forEach(runtime::markVideoFailed);
-            } catch (Exception e) {
-                LOGGER.warn("Failed to preload failed videos into processing runtime", e);
+                storageClient.ensureBucketExists();
+            } catch (RuntimeException e) {
+                publishDevLogError(devLogPublisher, "Processing service could not reach MinIO during startup");
+                throw e;
             }
-        }
-        List<Worker> workers = createWorkers(poolSize);
-        Map<Thread, Worker> workersByThread = new ConcurrentHashMap<>();
-        ThreadPoolExecutor taskExecutor = createTaskExecutor(poolSize, workers, workersByThread);
-        taskExecutor.prestartAllCoreThreads();
-        LOGGER.info("Started {} transcoding worker(s)", poolSize);
+            LOGGER.info("Storage ready — bucket={}", storageConfig.getDefaultBucketName());
+            publishDevLogInfo(devLogPublisher, "Processing service storage ready");
 
-        if (processingUploadTaskRepository == null) {
-            throw new IllegalStateException("Processing upload queue requires Postgres configuration");
-        }
-        if (localUploadSpoolRoot == null) {
-            throw new IllegalStateException("Processing upload spool could not be initialized");
-        }
-        int resetUploads = processingUploadTaskRepository.resetUploadingTasks();
-        if (resetUploads > 0) {
-            LOGGER.info("Reset {} local upload task(s) from UPLOADING to PENDING during startup", resetUploads);
-        }
+            StatusEventBus statusEventBus = RabbitMQStatusEventBus.fromEnv();
+            TranscodeTaskBus transcodeTaskBus = RabbitMQTranscodeTaskBus.fromEnv();
+            AbrManifestService manifestService = new AbrManifestService(
+                    storageClient,
+                    Integer.parseInt(getEnvOrDotenv(dotenv, "ABR_MANIFEST_WAIT_SECONDS", "120"))
+            );
+            ExecutorService manifestExecutor = Executors.newSingleThreadExecutor(
+                    r -> new Thread(r, MANIFEST_PROCESSOR_EXECUTOR_NAME)
+            );
+            LOGGER.info("RabbitMQ status/task buses connected");
+            publishDevLogInfo(devLogPublisher, "Processing service connected to RabbitMQ");
 
-        // Register listeners BEFORE recovery so that any tasks published to RabbitMQ
-        // (by recovery or already sitting in the queue) are consumed by the listener
-        // instead of being ack'd into the void by the empty-listener fast path.
-        transcodeTaskBus.subscribe(ev -> runtime.submitTranscodeTask(ev, taskExecutor, storageClient, workersByThread, PROFILES));
-        statusEventBus.subscribeAll(runtime::onStatusEvent);
+            // Executor threads run one transcode task at a time. The executor's internal queue
+            // is now the local buffer between RabbitMQ intake and FFmpeg execution.
+            // Default: 3/4 of available processors (leaves headroom for uploaders, GC, OS).
+            int availableCpus = Runtime.getRuntime().availableProcessors();
+            int dynamicDefault = Math.max(1, (availableCpus * 3) / 4);
+            int poolSize = Integer.parseInt(getEnvOrDotenv(dotenv, "WORKER_POOL_SIZE", String.valueOf(dynamicDefault)));
+            LOGGER.info("Detected {} available CPU(s); transcoding worker pool size = {} (default would be {})",
+                    availableCpus, poolSize, dynamicDefault);
+            TranscodedSegmentStatusRepository transcodeStatusRepository = createTranscodeStatusRepository();
+            VideoProcessingRepository videoProcessingRepository = createVideoProcessingRepository();
+            ProcessingUploadTaskRepository processingUploadTaskRepository = createProcessingUploadTaskRepository();
+            ProcessingTaskClaimRepository processingTaskClaimRepository = createProcessingTaskClaimRepository();
+            Path localUploadSpoolRoot = initializeSpoolRoot(getEnvOrDotenv(dotenv, "PROCESSING_SPOOL_ROOT", "processing-spool"));
+            String processorInstanceId = getEnvOrDotenv(dotenv, "HOSTNAME", "processing-service");
+            ProcessingRuntime runtime = new ProcessingRuntime(
+                    transcodeStatusRepository,
+                    videoProcessingRepository,
+                    processingUploadTaskRepository,
+                    processingTaskClaimRepository,
+                    statusEventBus,
+                    transcodeTaskBus,
+                    manifestService,
+                    manifestExecutor,
+                    localUploadSpoolRoot,
+                    processorInstanceId
+            );
+            runtimeRef = runtime;
+            if (videoProcessingRepository != null) {
+                try {
+                    videoProcessingRepository.findVideoIdsByStatus("FAILED").forEach(runtime::markVideoFailed);
+                } catch (Exception e) {
+                    LOGGER.warn("Failed to preload failed videos into processing runtime", e);
+                }
+            }
+            List<Worker> workers = createWorkers(poolSize);
+            Map<Thread, Worker> workersByThread = new ConcurrentHashMap<>();
+            ThreadPoolExecutor taskExecutor = createTaskExecutor(poolSize, workers, workersByThread);
+            taskExecutor.prestartAllCoreThreads();
+            LOGGER.info("Started {} transcoding worker(s)", poolSize);
+
+            if (processingUploadTaskRepository == null) {
+                throw new IllegalStateException("Processing upload queue requires Postgres configuration");
+            }
+            if (localUploadSpoolRoot == null) {
+                throw new IllegalStateException("Processing upload spool could not be initialized");
+            }
+            int resetUploads = processingUploadTaskRepository.resetUploadingTasks();
+            if (resetUploads > 0) {
+                LOGGER.info("Reset {} local upload task(s) from UPLOADING to PENDING during startup", resetUploads);
+            }
+
+            // Register listeners BEFORE recovery so that any tasks published to RabbitMQ
+            // (by recovery or already sitting in the queue) are consumed by the listener
+            // instead of being ack'd into the void by the empty-listener fast path.
+            transcodeTaskBus.subscribe(ev -> runtime.submitTranscodeTask(ev, taskExecutor, storageClient, workersByThread, PROFILES));
+            statusEventBus.subscribeAll(runtime::onStatusEvent);
 
         // --- Startup recovery: re-queue orphaned spool files and incomplete videos ---
         // Phase 1: Scan the local spool directory for transcoded segments whose
@@ -179,52 +163,56 @@ public class ProcessingServiceApplication {
         //          This creates PENDING upload tasks so the upload workers pick them up.
         // Phase 2: Re-publish transcode tasks for any segments that are neither DONE
         //          nor have an open upload task (covers segments that need re-transcoding).
-        StartupRecoveryService startupRecovery = new StartupRecoveryService(PROFILES, runtime);
-        startupRecovery.recoverOrphanedSpoolFiles(storageClient, localUploadSpoolRoot);
-        startupRecovery.recoverIncompleteVideos(storageClient);
+            StartupRecoveryService startupRecovery = new StartupRecoveryService(PROFILES, runtime);
+            startupRecovery.recoverOrphanedSpoolFiles(storageClient, localUploadSpoolRoot);
+            startupRecovery.recoverIncompleteVideos(storageClient);
 
-        int pendingUploads = processingUploadTaskRepository.countByState("PENDING");
-        if (pendingUploads > 0) {
-            LOGGER.info("Upload queue has {} PENDING task(s) ready for upload workers", pendingUploads);
+            int pendingUploads = processingUploadTaskRepository.countByState("PENDING");
+            if (pendingUploads > 0) {
+                LOGGER.info("Upload queue has {} PENDING task(s) ready for upload workers", pendingUploads);
+            }
+
+            int uploadWorkerCount = Integer.parseInt(getEnvOrDotenv(dotenv, "LOCAL_UPLOAD_WORKER_COUNT", "2"));
+            long uploadPollMillis = Long.parseLong(getEnvOrDotenv(dotenv, "LOCAL_UPLOAD_POLL_MILLIS", "500"));
+            long uploadClaimTimeoutMillis = Long.parseLong(getEnvOrDotenv(dotenv, "LOCAL_UPLOAD_CLAIM_TIMEOUT_MILLIS", "60000"));
+            ExecutorService uploadExecutor = new LocalSpoolUploadWorkerPool(PROFILES, runtime, devLogPublisher).startUploadWorkers(
+                    uploadWorkerCount,
+                    uploadPollMillis,
+                    uploadClaimTimeoutMillis,
+                    storageClient
+            );
+            uploadExecutorRef = uploadExecutor;
+
+
+            LOGGER.info("Processing service ready — waiting for transcode tasks...");
+            publishDevLogInfo(devLogPublisher, "Processing service ready for transcode tasks");
+
+            int port = Integer.parseInt(getEnvOrDotenv(dotenv, "PROCESSING_PORT", "8082"));
+            startApp(port, workers, taskExecutor);
+
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                LOGGER.info("Shutdown: stopping workers...");
+                taskExecutor.shutdownNow();
+                workers.forEach(worker -> worker.setStatus(WorkerStatus.OFFLINE));
+                manifestExecutor.shutdownNow();
+                if (uploadExecutorRef != null) {
+                    uploadExecutorRef.shutdownNow();
+                    uploadExecutorRef = null;
+                }
+                resetState();
+                try { transcodeTaskBus.close(); } catch (Exception e) { LOGGER.warn("Error closing transcode task bus", e); }
+                try { statusEventBus.close(); } catch (Exception e) { LOGGER.warn("Error closing status event bus", e); }
+                try { storageClient.close(); } catch (Exception e) { LOGGER.warn("Error closing storage client", e); }
+                closeDevLogPublisher(devLogPublisher);
+            }));
+            devLogPublisherOwnedByShutdownHook = true;
+
+            Thread.currentThread().join();
+        } finally {
+            if (!devLogPublisherOwnedByShutdownHook) {
+                closeDevLogPublisher(devLogPublisher);
+            }
         }
-
-        int uploadWorkerCount = Integer.parseInt(getEnvOrDotenv(dotenv, "LOCAL_UPLOAD_WORKER_COUNT", "2"));
-        long uploadPollMillis = Long.parseLong(getEnvOrDotenv(dotenv, "LOCAL_UPLOAD_POLL_MILLIS", "500"));
-        long uploadClaimTimeoutMillis = Long.parseLong(getEnvOrDotenv(dotenv, "LOCAL_UPLOAD_CLAIM_TIMEOUT_MILLIS", "60000"));
-        ExecutorService uploadExecutor = new LocalSpoolUploadWorkerPool(PROFILES, runtime).startUploadWorkers(
-                uploadWorkerCount,
-                uploadPollMillis,
-                uploadClaimTimeoutMillis,
-                storageClient
-        );
-        uploadExecutorRef = uploadExecutor;
-
-
-        LOGGER.info("Processing service ready — waiting for transcode tasks...");
-
-        int port = Integer.parseInt(getEnvOrDotenv(dotenv, "PROCESSING_PORT", "8082"));
-        startApp(port, workers, taskExecutor);
-
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            LOGGER.info("Shutdown: stopping workers...");
-            taskExecutor.shutdownNow();
-            workers.forEach(worker -> worker.setStatus(WorkerStatus.OFFLINE));
-            manifestExecutor.shutdownNow();
-            if (uploadExecutorRef != null) {
-                uploadExecutorRef.shutdownNow();
-                uploadExecutorRef = null;
-            }
-            resetState();
-            try { transcodeTaskBus.close(); } catch (Exception e) { LOGGER.warn("Error closing transcode task bus", e); }
-            try { statusEventBus.close(); } catch (Exception e) { LOGGER.warn("Error closing status event bus", e); }
-            if (bucketEnsureThread != null) {
-                bucketEnsureThread.interrupt();
-                bucketEnsureThread = null;
-            }
-            try { storageClient.close(); } catch (Exception e) { LOGGER.warn("Error closing storage client", e); }
-        }));
-
-        Thread.currentThread().join();
     }
 
     /**
@@ -272,6 +260,48 @@ public class ProcessingServiceApplication {
             java.nio.file.Files.createDirectories(java.nio.file.Path.of("logs"));
         } catch (java.io.IOException e) {
             LOGGER.warn("Failed to create logs directory", e);
+        }
+    }
+
+    private static RabbitMQDevLogPublisher createDevLogPublisher() {
+        try {
+            return RabbitMQDevLogPublisher.fromEnv();
+        } catch (RuntimeException e) {
+            LOGGER.warn("Failed to initialize dev log publisher", e);
+            return null;
+        }
+    }
+
+    private static void publishDevLogInfo(RabbitMQDevLogPublisher publisher, String message) {
+        if (publisher == null) {
+            return;
+        }
+        try {
+            publisher.publishInfo(DEV_LOG_SERVICE, message);
+        } catch (RuntimeException e) {
+            LOGGER.warn("Failed to publish processing dev log info message={}", message, e);
+        }
+    }
+
+    private static void publishDevLogError(RabbitMQDevLogPublisher publisher, String message) {
+        if (publisher == null) {
+            return;
+        }
+        try {
+            publisher.publishError(DEV_LOG_SERVICE, message);
+        } catch (RuntimeException e) {
+            LOGGER.warn("Failed to publish processing dev log error message={}", message, e);
+        }
+    }
+
+    private static void closeDevLogPublisher(RabbitMQDevLogPublisher publisher) {
+        if (publisher == null) {
+            return;
+        }
+        try {
+            publisher.close();
+        } catch (Exception e) {
+            LOGGER.warn("Error closing dev log publisher", e);
         }
     }
 

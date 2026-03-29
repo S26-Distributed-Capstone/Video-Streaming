@@ -3,6 +3,7 @@ package com.distributed26.videostreaming.streaming.streaming;
 import com.distributed26.videostreaming.shared.config.StorageConfig;
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
 import com.distributed26.videostreaming.shared.storage.S3StorageClient;
+import com.distributed26.videostreaming.shared.upload.RabbitMQDevLogPublisher;
 import com.distributed26.videostreaming.streaming.db.VideoStatusRepository;
 import com.distributed26.videostreaming.streaming.service.PlaylistService;
 import com.distributed26.videostreaming.streaming.service.StreamingReadinessService;
@@ -16,36 +17,55 @@ import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 
 public class StreamingServiceApplication {
     private static final Logger LOGGER = LogManager.getLogger(StreamingServiceApplication.class);
+    private static final String DEV_LOG_SERVICE = "Streaming-service";
 
     public static void main(String[] args) {
         StreamingServiceConfig config = StreamingServiceConfig.fromEnv();
-        Javalin app = createStreamingApp(config);
+        RabbitMQDevLogPublisher devLogPublisher = createDevLogPublisher();
+        Javalin app = createStreamingApp(config, devLogPublisher);
+        publishDevLogInfo(devLogPublisher, "Streaming service started");
         LOGGER.info("Starting streaming service on port {}", config.port());
         app.start(config.port());
     }
 
     static Javalin createStreamingApp() {
-        return createStreamingApp(StreamingServiceConfig.fromEnv());
+        return createStreamingApp(StreamingServiceConfig.fromEnv(), null);
     }
 
     static Javalin createStreamingApp(StreamingServiceConfig config) {
+        return createStreamingApp(config, null);
+    }
+
+    static Javalin createStreamingApp(StreamingServiceConfig config, RabbitMQDevLogPublisher devLogPublisher) {
         StorageConfig storageConfig = config.storageConfig();
         if (storageConfig.getPublicEndpointUrl().equals(storageConfig.getEndpointUrl())) {
             LOGGER.warn("MINIO_PUBLIC_ENDPOINT is not set; presigned URLs will use internal endpoint '{}'.",
                     storageConfig.getEndpointUrl());
+            publishDevLogWarn(devLogPublisher, "MINIO_PUBLIC_ENDPOINT is not set; streaming URLs are using the internal endpoint");
         } else {
             LOGGER.info("Presigned URLs will use public endpoint: {}", storageConfig.getPublicEndpointUrl());
         }
         ObjectStorageClient storageClient = new S3StorageClient(storageConfig);
-        return createStreamingApp(storageClient, createVideoStatusRepository());
+        return createStreamingApp(storageClient, createVideoStatusRepository(devLogPublisher), devLogPublisher);
     }
 
     static Javalin createStreamingApp(ObjectStorageClient storageClient, VideoStatusRepository videoStatusRepository) {
+        return createStreamingApp(storageClient, videoStatusRepository, null);
+    }
+
+    static Javalin createStreamingApp(
+            ObjectStorageClient storageClient,
+            VideoStatusRepository videoStatusRepository,
+            RabbitMQDevLogPublisher devLogPublisher
+    ) {
         StreamingReadinessService readinessService = new StreamingReadinessService(videoStatusRepository, storageClient);
         PlaylistService playlistService = new PlaylistService(storageClient);
 
         Javalin app = Javalin.create(config -> config.http.prefer405over404 = true);
-        app.events(event -> event.serverStopped(() -> closeStorageClient(storageClient)));
+        app.events(event -> event.serverStopped(() -> {
+            closeStorageClient(storageClient);
+            closeDevLogPublisher(devLogPublisher);
+        }));
 
         app.before(ctx -> {
             ctx.header("Access-Control-Allow-Origin", "*");
@@ -149,12 +169,55 @@ public class StreamingServiceApplication {
         }
     }
 
-    private static VideoStatusRepository createVideoStatusRepository() {
+    private static VideoStatusRepository createVideoStatusRepository(RabbitMQDevLogPublisher devLogPublisher) {
         try {
             return VideoStatusRepository.fromEnv();
         } catch (IllegalStateException e) {
             LOGGER.warn("Postgres not configured; streaming status checks disabled: {}", e.getMessage());
+            publishDevLogWarn(devLogPublisher, "Streaming status checks are disabled because Postgres is not configured");
             return null;
+        }
+    }
+
+    private static RabbitMQDevLogPublisher createDevLogPublisher() {
+        try {
+            return RabbitMQDevLogPublisher.fromEnv();
+        } catch (RuntimeException e) {
+            LOGGER.warn("Failed to initialize dev log publisher", e);
+            return null;
+        }
+    }
+
+    private static void publishDevLogInfo(RabbitMQDevLogPublisher publisher, String message) {
+        if (publisher == null) {
+            return;
+        }
+        try {
+            publisher.publishInfo(DEV_LOG_SERVICE, message);
+        } catch (RuntimeException e) {
+            LOGGER.warn("Failed to publish streaming dev log info message={}", message, e);
+        }
+    }
+
+    private static void publishDevLogWarn(RabbitMQDevLogPublisher publisher, String message) {
+        if (publisher == null) {
+            return;
+        }
+        try {
+            publisher.publishWarn(DEV_LOG_SERVICE, message);
+        } catch (RuntimeException e) {
+            LOGGER.warn("Failed to publish streaming dev log warning message={}", message, e);
+        }
+    }
+
+    private static void closeDevLogPublisher(RabbitMQDevLogPublisher publisher) {
+        if (publisher == null) {
+            return;
+        }
+        try {
+            publisher.close();
+        } catch (Exception e) {
+            LOGGER.warn("Error closing dev log publisher", e);
         }
     }
 }
