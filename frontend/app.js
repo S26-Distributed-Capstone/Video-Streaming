@@ -900,12 +900,14 @@ async function deleteSingleVideo(video) {
       method: "DELETE"
     });
     if (!resp.ok) {
+      await refreshReadyList();
       setPlayerStatus(`Failed to delete video (${resp.status})`, { success: false });
       return;
     }
     applyReadyVideoRemoval([video.videoId]);
     renderReadyList(readyVideosState);
   } catch (_) {
+    await refreshReadyList();
     setPlayerStatus("Failed to delete video.", { success: false });
   } finally {
     setReadyListBusy(false);
@@ -933,12 +935,14 @@ async function deleteSelectedVideos() {
       body: JSON.stringify({ videoIds })
     });
     if (!resp.ok) {
+      await refreshReadyList();
       setPlayerStatus(`Failed to delete videos (${resp.status})`, { success: false });
       return;
     }
     applyReadyVideoRemoval(videoIds);
     renderReadyList(readyVideosState);
   } catch (_) {
+    await refreshReadyList();
     setPlayerStatus("Failed to delete videos.", { success: false });
   } finally {
     setReadyListBusy(false);

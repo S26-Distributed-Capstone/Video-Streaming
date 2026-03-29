@@ -82,15 +82,20 @@ public final class StreamingReadinessService {
         if (videoStatusRepository == null) {
             throw new IllegalStateException("Streaming status checks are not configured");
         }
-        List<String> objectKeys = new ArrayList<>(storageClient.listFiles(videoId + "/"));
-        boolean deleted = videoStatusRepository.deleteByVideoId(videoId);
-        if (!deleted) {
+        if (videoStatusRepository.findStatusByVideoId(videoId).isEmpty()) {
             return false;
         }
-        for (String objectKey : objectKeys) {
-            storageClient.deleteFile(objectKey);
+        videoStatusRepository.updateStatus(videoId, "DELETING");
+        try {
+            List<String> objectKeys = new ArrayList<>(storageClient.listFiles(videoId + "/"));
+            for (String objectKey : objectKeys) {
+                storageClient.deleteFile(objectKey);
+            }
+            return videoStatusRepository.deleteByVideoId(videoId);
+        } catch (RuntimeException e) {
+            videoStatusRepository.updateStatus(videoId, "DELETE_FAILED");
+            throw e;
         }
-        return true;
     }
 
     public record ReadyVideoResponse(String videoId, String videoName) {
