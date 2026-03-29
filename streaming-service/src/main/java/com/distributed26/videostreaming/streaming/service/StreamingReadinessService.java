@@ -3,6 +3,7 @@ package com.distributed26.videostreaming.streaming.service;
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
 import com.distributed26.videostreaming.streaming.db.VideoStatusRepository;
 import io.javalin.http.Context;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -75,6 +76,26 @@ public final class StreamingReadinessService {
                         video.videoName() == null || video.videoName().isBlank() ? video.videoId() : video.videoName()
                 ))
                 .toList();
+    }
+
+    public boolean deleteVideo(String videoId) {
+        if (videoStatusRepository == null) {
+            throw new IllegalStateException("Streaming status checks are not configured");
+        }
+        if (videoStatusRepository.findStatusByVideoId(videoId).isEmpty()) {
+            return false;
+        }
+        videoStatusRepository.updateStatus(videoId, "DELETING");
+        try {
+            List<String> objectKeys = new ArrayList<>(storageClient.listFiles(videoId + "/"));
+            for (String objectKey : objectKeys) {
+                storageClient.deleteFile(objectKey);
+            }
+            return videoStatusRepository.deleteByVideoId(videoId);
+        } catch (RuntimeException e) {
+            videoStatusRepository.updateStatus(videoId, "DELETE_FAILED");
+            throw e;
+        }
     }
 
     public record ReadyVideoResponse(String videoId, String videoName) {

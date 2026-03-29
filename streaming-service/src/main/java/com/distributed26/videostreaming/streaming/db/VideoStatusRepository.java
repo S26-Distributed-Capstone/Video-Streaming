@@ -93,6 +93,54 @@ public class VideoStatusRepository {
         }
     }
 
+    public void updateStatus(String videoId, String status) {
+        String sql = "UPDATE video_upload SET status = ? WHERE video_id = ?";
+        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, status);
+            ps.setObject(2, UUID.fromString(videoId));
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to update video_upload status", e);
+        }
+    }
+
+    public List<String> findVideoIdsByStatuses(List<String> statuses, int limit) {
+        if (statuses == null || statuses.isEmpty()) {
+            return List.of();
+        }
+        String placeholders = String.join(", ", java.util.Collections.nCopies(statuses.size(), "?"));
+        String sql = "SELECT video_id FROM video_upload WHERE status IN (" + placeholders + ") ORDER BY id ASC LIMIT ?";
+        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            int index = 1;
+            for (String status : statuses) {
+                ps.setString(index++, status);
+            }
+            ps.setInt(index, limit);
+            try (ResultSet rs = ps.executeQuery()) {
+                List<String> results = new ArrayList<>();
+                while (rs.next()) {
+                    results.add(rs.getString("video_id"));
+                }
+                return results;
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to query videos by status", e);
+        }
+    }
+
+    public boolean deleteByVideoId(String videoId) {
+        String sql = "DELETE FROM video_upload WHERE video_id = ?";
+        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setObject(1, UUID.fromString(videoId));
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to delete video_upload", e);
+        }
+    }
+
     public record ReadyVideoRecord(String videoId, String videoName) {
     }
 }

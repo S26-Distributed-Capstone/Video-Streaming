@@ -8,9 +8,14 @@ import com.distributed26.videostreaming.streaming.db.VideoStatusRepository;
 import com.distributed26.videostreaming.streaming.service.PlaylistService;
 import com.distributed26.videostreaming.streaming.service.StreamingReadinessService;
 import com.distributed26.videostreaming.streaming.service.StreamingServiceConfig;
+import com.distributed26.videostreaming.streaming.service.VideoDeletionRetryWorker;
 import io.javalin.Javalin;
 import io.javalin.http.HttpStatus;
 import java.io.IOException;
+import java.util.List;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
@@ -18,6 +23,7 @@ import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 public class StreamingServiceApplication {
     private static final Logger LOGGER = LogManager.getLogger(StreamingServiceApplication.class);
     private static final String DEV_LOG_SERVICE = "Streaming-service";
+    private static final int DEFAULT_DELETE_RETRY_INTERVAL_SECONDS = 120;
 
     public static void main(String[] args) {
         StreamingServiceConfig config = StreamingServiceConfig.fromEnv();
@@ -46,11 +52,16 @@ public class StreamingServiceApplication {
             LOGGER.info("Presigned URLs will use public endpoint: {}", storageConfig.getPublicEndpointUrl());
         }
         ObjectStorageClient storageClient = new S3StorageClient(storageConfig);
-        return createStreamingApp(storageClient, createVideoStatusRepository(devLogPublisher), devLogPublisher);
+        return createStreamingApp(
+                storageClient,
+                createVideoStatusRepository(devLogPublisher),
+                devLogPublisher,
+                config.deleteRetryIntervalSeconds()
+        );
     }
 
     static Javalin createStreamingApp(ObjectStorageClient storageClient, VideoStatusRepository videoStatusRepository) {
-        return createStreamingApp(storageClient, videoStatusRepository, null);
+        return createStreamingApp(storageClient, videoStatusRepository, null, DEFAULT_DELETE_RETRY_INTERVAL_SECONDS);
     }
 
     static Javalin createStreamingApp(
@@ -58,18 +69,39 @@ public class StreamingServiceApplication {
             VideoStatusRepository videoStatusRepository,
             RabbitMQDevLogPublisher devLogPublisher
     ) {
+        return createStreamingApp(
+                storageClient,
+                videoStatusRepository,
+                devLogPublisher,
+                DEFAULT_DELETE_RETRY_INTERVAL_SECONDS
+        );
+    }
+
+    static Javalin createStreamingApp(
+            ObjectStorageClient storageClient,
+            VideoStatusRepository videoStatusRepository,
+            RabbitMQDevLogPublisher devLogPublisher,
+            int deleteRetryIntervalSeconds
+    ) {
         StreamingReadinessService readinessService = new StreamingReadinessService(videoStatusRepository, storageClient);
         PlaylistService playlistService = new PlaylistService(storageClient);
+        ScheduledExecutorService deletionRetryExecutor = startDeletionRetryWorker(
+                videoStatusRepository,
+                readinessService,
+                playlistService,
+                deleteRetryIntervalSeconds
+        );
 
         Javalin app = Javalin.create(config -> config.http.prefer405over404 = true);
         app.events(event -> event.serverStopped(() -> {
+            deletionRetryExecutor.shutdownNow();
             closeStorageClient(storageClient);
             closeDevLogPublisher(devLogPublisher);
         }));
 
         app.before(ctx -> {
             ctx.header("Access-Control-Allow-Origin", "*");
-            ctx.header("Access-Control-Allow-Methods", "GET,OPTIONS");
+            ctx.header("Access-Control-Allow-Methods", "GET,DELETE,OPTIONS");
             ctx.header("Access-Control-Allow-Headers", "Content-Type,Range");
         });
         app.options("/*", ctx -> ctx.status(204));
@@ -147,6 +179,66 @@ public class StreamingServiceApplication {
             ctx.status(HttpStatus.OK).json(readinessService.readyVideos(parseReadyLimit(ctx.queryParam("limit"))));
         });
 
+        app.delete("/stream/{videoId}", ctx -> {
+            if (!readinessService.validateVideoId(ctx)) {
+                return;
+            }
+            String videoId = ctx.pathParam("videoId");
+            try {
+                boolean deleted = readinessService.deleteVideo(videoId);
+                if (!deleted) {
+                    ctx.status(HttpStatus.NOT_FOUND).result("Video not found");
+                    return;
+                }
+                playlistService.invalidateVideo(videoId);
+                ctx.status(HttpStatus.OK).json(new DeleteVideosResponse(List.of(videoId)));
+            } catch (Exception e) {
+                LOGGER.error("Failed to delete videoId={}", videoId, e);
+                ctx.status(HttpStatus.INTERNAL_SERVER_ERROR).result("Failed to delete video");
+            }
+        });
+
+        app.delete("/stream", ctx -> {
+            DeleteVideosRequest request;
+            try {
+                request = ctx.bodyAsClass(DeleteVideosRequest.class);
+            } catch (Exception e) {
+                ctx.status(HttpStatus.BAD_REQUEST).result("Invalid delete request");
+                return;
+            }
+            if (request == null || request.videoIds() == null || request.videoIds().isEmpty()) {
+                ctx.status(HttpStatus.BAD_REQUEST).result("No video IDs provided");
+                return;
+            }
+
+            for (String videoId : request.videoIds()) {
+                try {
+                    java.util.UUID.fromString(videoId);
+                } catch (IllegalArgumentException e) {
+                    ctx.status(HttpStatus.BAD_REQUEST).result("Invalid video ID");
+                    return;
+                }
+            }
+
+            for (String videoId : request.videoIds()) {
+                if (videoStatusRepository.findStatusByVideoId(videoId).isEmpty()) {
+                    ctx.status(HttpStatus.NOT_FOUND).result("Video not found");
+                    return;
+                }
+            }
+
+            try {
+                for (String videoId : request.videoIds()) {
+                    readinessService.deleteVideo(videoId);
+                    playlistService.invalidateVideo(videoId);
+                }
+                ctx.status(HttpStatus.OK).json(new DeleteVideosResponse(request.videoIds()));
+            } catch (Exception e) {
+                LOGGER.error("Failed to delete videoIds={}", request.videoIds(), e);
+                ctx.status(HttpStatus.INTERNAL_SERVER_ERROR).result("Failed to delete videos");
+            }
+        });
+
         return app;
     }
 
@@ -219,5 +311,34 @@ public class StreamingServiceApplication {
         } catch (Exception e) {
             LOGGER.warn("Error closing dev log publisher", e);
         }
+    }
+
+    private static ScheduledExecutorService startDeletionRetryWorker(
+            VideoStatusRepository videoStatusRepository,
+            StreamingReadinessService readinessService,
+            PlaylistService playlistService,
+            int intervalSeconds
+    ) {
+        ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread thread = new Thread(r, "stream-delete-retry");
+            thread.setDaemon(true);
+            return thread;
+        });
+        if (videoStatusRepository == null) {
+            return executor;
+        }
+        VideoDeletionRetryWorker worker = new VideoDeletionRetryWorker(
+                videoStatusRepository,
+                readinessService,
+                playlistService
+        );
+        executor.scheduleWithFixedDelay(worker, intervalSeconds, intervalSeconds, TimeUnit.SECONDS);
+        return executor;
+    }
+
+    private record DeleteVideosRequest(List<String> videoIds) {
+    }
+
+    private record DeleteVideosResponse(List<String> deletedVideoIds) {
     }
 }
