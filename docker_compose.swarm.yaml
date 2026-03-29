@@ -220,6 +220,8 @@ services:
       RABBITMQ_TASK_BINDING: ${RABBITMQ_TASK_BINDING}
       SERVICE_MODE: processing
       PROCESSING_PORT: ${PROCESSING_PORT}
+      WORKER_POOL_SIZE: ${WORKER_POOL_SIZE}
+      THREADS_PER_WORKER: ${THREADS_PER_WORKER}
     command:
       - /bin/sh
       - -c
@@ -260,18 +262,104 @@ services:
     deploy:
       replicas: 3
 
-  rabbitmq:
+  # ── RabbitMQ 3-node cluster ───────────────────────────────
+  rabbitmq1:
     image: rabbitmq:3-management
+    hostname: rabbitmq1
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS}
+      RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE}
+      RABBITMQ_NODENAME: rabbit@rabbitmq1
+    configs:
+      - source: rabbitmq_conf
+        target: /etc/rabbitmq/rabbitmq.conf
+      - source: rabbitmq_plugins
+        target: /etc/rabbitmq/enabled_plugins
     volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
+      - rabbitmq1_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+
+  rabbitmq2:
+    image: rabbitmq:3-management
+    hostname: rabbitmq2
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS}
+      RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE}
+      RABBITMQ_NODENAME: rabbit@rabbitmq2
+    configs:
+      - source: rabbitmq_conf
+        target: /etc/rabbitmq/rabbitmq.conf
+      - source: rabbitmq_plugins
+        target: /etc/rabbitmq/enabled_plugins
+    volumes:
+      - rabbitmq2_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+
+  rabbitmq3:
+    image: rabbitmq:3-management
+    hostname: rabbitmq3
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS}
+      RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE}
+      RABBITMQ_NODENAME: rabbit@rabbitmq3
+    configs:
+      - source: rabbitmq_conf
+        target: /etc/rabbitmq/rabbitmq.conf
+      - source: rabbitmq_plugins
+        target: /etc/rabbitmq/enabled_plugins
+    volumes:
+      - rabbitmq3_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+
+  # HAProxy load-balancer — keeps DNS name "rabbitmq" so
+  # RABBITMQ_HOST=rabbitmq works without any app code changes.
+  rabbitmq:
+    image: haproxy:2.8-alpine
+    configs:
+      - source: haproxy_cfg
+        target: /usr/local/etc/haproxy/haproxy.cfg
     ports:
       - "5672:5672"
       - "15672:15672"
     deploy:
       replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
 
   minio:
     image: quay.io/minio/minio
@@ -345,8 +433,18 @@ services:
     deploy:
       mode: global
 
+configs:
+  rabbitmq_conf:
+    file: ./rabbitmq/rabbitmq.conf
+  rabbitmq_plugins:
+    file: ./rabbitmq/enabled_plugins
+  haproxy_cfg:
+    file: ./rabbitmq/haproxy.cfg
+
 volumes:
-  rabbitmq_data:
+  rabbitmq1_data:
+  rabbitmq2_data:
+  rabbitmq3_data:
   minio_data:
   postgres_data:
 

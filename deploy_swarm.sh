@@ -49,4 +49,19 @@ docker service scale "${STACK_NAME}_upload-service=3"
 echo "Scaling processing-service to 3 replicas..."
 docker service scale "${STACK_NAME}_processing-service=3"
 
+echo "Waiting for RabbitMQ cluster to be ready..."
+for i in $(seq 1 60); do
+  if curl -sf -u "${RABBITMQ_USER}:${RABBITMQ_PASS}" http://localhost:15672/api/overview > /dev/null 2>&1; then
+    echo "RabbitMQ management API reachable."
+    break
+  fi
+  sleep 2
+done
+
+echo "Setting HA queue-mirroring policy (ha-all)..."
+curl -sf -u "${RABBITMQ_USER}:${RABBITMQ_PASS}" -X PUT \
+  -H "Content-Type: application/json" \
+  -d '{"pattern":".*","definition":{"ha-mode":"all","ha-sync-mode":"automatic"},"apply-to":"queues"}' \
+  "http://localhost:15672/api/policies/%2F/ha-all" && echo " OK" || echo " (will retry on next deploy)"
+
 echo "Done."

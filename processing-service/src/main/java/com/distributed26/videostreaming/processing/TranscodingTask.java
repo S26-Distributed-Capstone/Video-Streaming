@@ -6,13 +6,14 @@ import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicLong;
-import net.bramp.ffmpeg.FFmpeg;
-import net.bramp.ffmpeg.FFmpegExecutor;
-import net.bramp.ffmpeg.FFprobe;
 import net.bramp.ffmpeg.builder.FFmpegBuilder;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -87,25 +88,6 @@ public class TranscodingTask extends Task {
     public TranscodingProfile getProfile() { return profile; }
     public String getChunkKey() { return chunkKey; }
     public String getOutputKey() { return outputKey; }
-
-    /**
-     * FFmpeg / FFprobe are initialized once (lazily on first real execute) via the
-     * initialization-on-demand holder pattern.  This avoids running `ffmpeg -version`
-     * on every task and keeps the unit tests fast (they mock fileExists → true so the
-     * holder is never triggered in test runs).
-     */
-    private static final class FfmpegHolder {
-        static final FFmpeg  FFMPEG;
-        static final FFprobe FFPROBE;
-        static {
-            try {
-                FFMPEG  = new FFmpeg("ffmpeg");
-                FFPROBE = new FFprobe("ffprobe");
-            } catch (IOException e) {
-                throw new ExceptionInInitializerError(e);
-            }
-        }
-    }
 
     /**
      * Download source, transcode, upload result. Idempotent — skips if outputKey already exists.
@@ -218,7 +200,7 @@ public class TranscodingTask extends Task {
                     .addExtraArgs("-muxdelay", "0")
                     .done();
 
-        new FFmpegExecutor(FfmpegHolder.FFMPEG, FfmpegHolder.FFPROBE).createJob(builder).run();
+        runFfmpegWithDiagnostics(builder);
         return new CompletedTranscode(outputTemp, outputKey, Files.size(outputTemp), effectiveOutputTsOffsetSeconds);
     }
 
@@ -229,6 +211,81 @@ public class TranscodingTask extends Task {
                 : segmentNumber >= 0
                 ? (double) segmentNumber * Math.max(1, CHUNK_DURATION_SECONDS)
                 : 0d;
+    }
+
+    /**
+     * Runs the FFmpeg command built by the given {@link FFmpegBuilder} using a
+     * {@link ProcessBuilder} so that both stdout and stderr are fully captured.
+     * On a non-zero exit code the captured output is logged at ERROR level before
+     * throwing an {@link IOException} — this replaces the opaque
+     * "Check stdout" message from the bramp FFmpegExecutor.
+     */
+    private void runFfmpegWithDiagnostics(FFmpegBuilder builder) throws IOException {
+        List<String> command = new ArrayList<>();
+        command.add("ffmpeg");
+        command.addAll(builder.build());
+
+        LOGGER.debug("FFmpeg command: {}", () -> String.join(" ", command));
+
+        ProcessBuilder pb = new ProcessBuilder(command);
+        pb.redirectErrorStream(false);
+        Process process;
+        try {
+            process = pb.start();
+        } catch (IOException e) {
+            throw new IOException("Failed to start FFmpeg process for chunk=" + chunkKey
+                    + " profile=" + profile.getName() + ": " + e.getMessage(), e);
+        }
+
+        // Read stdout and stderr in parallel to prevent pipe buffer deadlocks
+        CompletableFuture<String> stdoutFuture = CompletableFuture.supplyAsync(() -> {
+            try { return new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8); }
+            catch (IOException e) { return "[failed to read stdout: " + e.getMessage() + "]"; }
+        });
+        CompletableFuture<String> stderrFuture = CompletableFuture.supplyAsync(() -> {
+            try { return new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8); }
+            catch (IOException e) { return "[failed to read stderr: " + e.getMessage() + "]"; }
+        });
+
+        int exitCode;
+        try {
+            exitCode = process.waitFor();
+        } catch (InterruptedException e) {
+            process.destroyForcibly();
+            Thread.currentThread().interrupt();
+            throw new IOException("FFmpeg process interrupted for chunk=" + chunkKey
+                    + " profile=" + profile.getName(), e);
+        }
+
+        String stdout = stdoutFuture.join();
+        String stderr = stderrFuture.join();
+
+        if (exitCode != 0) {
+            // Truncate very long output to keep logs manageable
+            String stderrTrunc = stderr.length() > 4000
+                    ? "…(truncated)…\n" + stderr.substring(stderr.length() - 4000)
+                    : stderr;
+            String stdoutTrunc = stdout.length() > 2000
+                    ? "…(truncated)…\n" + stdout.substring(stdout.length() - 2000)
+                    : stdout;
+
+            LOGGER.error("FFmpeg exited with code {} for chunk={} profile={}.\n--- stderr ---\n{}\n--- stdout ---\n{}",
+                    exitCode, chunkKey, profile.getName(), stderrTrunc, stdoutTrunc);
+
+            // Build a concise exception message with the last 500 chars of stderr
+            String detail = stderr.length() > 500
+                    ? stderr.substring(stderr.length() - 500)
+                    : stderr;
+            throw new IOException("FFmpeg returned exit code " + exitCode
+                    + " for chunk=" + chunkKey + " profile=" + profile.getName()
+                    + ". stderr: " + detail.strip());
+        }
+
+        if (!stderr.isBlank()) {
+            LOGGER.debug("FFmpeg stderr (exit 0) for chunk={} profile={}:\n{}",
+                    chunkKey, profile.getName(),
+                    stderr.length() > 2000 ? stderr.substring(stderr.length() - 2000) : stderr);
+        }
     }
 
     public record CompletedTranscode(Path localPath, String outputKey, long sizeBytes, double outputTsOffsetSeconds) {
