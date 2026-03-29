@@ -92,7 +92,7 @@ public class TerminalFailureHandlerTest {
     }
 
     @Test
-    void returnsConflictWhenVideoIsAlreadyCompleted() {
+    void returnsConflictWhenVideoIsAlreadyFailed() {
         StubVideoUploadRepository repository = new StubVideoUploadRepository();
         StubStatusEventBus statusEventBus = new StubStatusEventBus();
         TerminalFailureHandler handler = new TerminalFailureHandler(repository, statusEventBus, "test-machine", "test-container");

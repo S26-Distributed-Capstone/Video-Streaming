@@ -29,6 +29,7 @@ const transcodeHighTrack = document.getElementById("transcodeHighTrack");
 const doneMessage = document.getElementById("doneMessage");
 const processingRouteBanner = document.getElementById("processingRouteBanner");
 const processingRouteLabel = document.getElementById("processingRouteLabel");
+const cancelProcessingBtn = document.getElementById("cancelProcessingBtn");
 const player = document.getElementById("player");
 const playerStatus = document.getElementById("playerStatus");
 const playBtn = document.getElementById("playBtn");
@@ -142,6 +143,10 @@ function enterProcessingRoute(videoId) {
       ? `Processing video: ${currentUploadName}`
       : "Processing video\u2026";
   }
+  if (cancelProcessingBtn) {
+    cancelProcessingBtn.classList.remove("hidden");
+    cancelProcessingBtn.disabled = false;
+  }
   uploadBar.style.width = "100%";
   uploadPercent.textContent = "100%";
   if (processingBlock) {
@@ -219,6 +224,51 @@ function resetUploadRetryState() {
   uploadRetryCount = 0;
 }
 
+function hideCancelButton() {
+  if (cancelProcessingBtn) {
+    cancelProcessingBtn.classList.add("hidden");
+    cancelProcessingBtn.disabled = true;
+  }
+}
+
+function restoreCancelButton() {
+  if (cancelProcessingBtn) {
+    cancelProcessingBtn.disabled = false;
+    cancelProcessingBtn.textContent = "Cancel";
+    cancelProcessingBtn.classList.remove("hidden");
+  }
+}
+
+async function cancelProcessing() {
+  if (!currentVideoId) {
+    return;
+  }
+  if (cancelProcessingBtn) {
+    cancelProcessingBtn.disabled = true;
+    cancelProcessingBtn.textContent = "Cancelling…";
+  }
+  const videoId = currentVideoId;
+  const baseUrl = resolveBaseUrl();
+  try {
+    const resp = await fetch(`${baseUrl}/upload/${videoId}/fail?reason=user_cancelled`, { method: "POST" });
+    if (resp.ok || resp.status === 204) {
+      appendLog(`Processing cancelled for video ${videoId}`);
+      setDoneMessage("Processing cancelled.", { success: false });
+      hideCancelButton();
+    } else if (resp.status === 409) {
+      appendLog("Video is no longer in an active processing state.", "error");
+      setDoneMessage("Video is already completed or failed.", { success: false });
+      hideCancelButton();
+    } else {
+      appendLog(`Cancel request returned ${resp.status}`, "error");
+      restoreCancelButton();
+    }
+  } catch (err) {
+    appendLog("Failed to cancel processing.", "error");
+    restoreCancelButton();
+  }
+}
+
 function isUploadRetryableFailure(payload) {
   if (!payload || payload.type !== "failed") {
     return false;
@@ -242,7 +292,7 @@ async function persistTerminalUploadFailure(videoId) {
   const failUrl = `${baseUrl}/upload/${videoId}/fail`;
   try {
     const resp = await fetch(failUrl, { method: "POST" });
-    if (!resp.ok) {
+    if (!resp.ok && resp.status !== 409) {
       appendLog(`Failed to persist terminal upload failure (${resp.status})`, "error");
     }
   } catch (err) {
@@ -250,15 +300,18 @@ async function persistTerminalUploadFailure(videoId) {
   }
 }
 
-async function exhaustUploadRetries(message) {
+async function exhaustUploadRetries(message, { skipPersist = false } = {}) {
   const failedVideoId = currentVideoId;
   processingComplete = true;
+  hideCancelButton();
   resetWsReconnectState();
   disconnectWebSocket();
   uploadBtn.disabled = false;
   uploadInFlight = false;
   resetStateForNextUpload();
-  await persistTerminalUploadFailure(failedVideoId);
+  if (!skipPersist) {
+    await persistTerminalUploadFailure(failedVideoId);
+  }
   if (doneMessage) {
     setDoneMessage(message || "Upload failed.", { success: false });
   }
@@ -482,6 +535,7 @@ function tryFinalizeSuccess() {
     return;
   }
   processingComplete = true;
+  hideCancelButton();
   updateStorageRetryUi({ retrying: false });
   resetUploadRetryState();
   setDoneMessage("Upload, chunking, and transcoding complete.", { success: true });
@@ -1128,6 +1182,10 @@ function connectWebSocket(wsUrl, videoId, { isReconnect = false } = {}) {
         return;
       }
       if (payload && payload.type === "failed") {
+        if (payload.reason === "user_cancelled") {
+          void exhaustUploadRetries("Processing cancelled.", { skipPersist: true });
+          return;
+        }
         if (isUploadRetryableFailure(payload)) {
           if (shouldIgnoreUploadRetryableFailure(payload)) {
             appendLog("Upload-service interruption detected after source upload completed. Continuing to monitor transcoding.");
@@ -1341,6 +1399,9 @@ function uploadFile({ preserveLog, isRetry } = {}) {
 }
 
 uploadBtn.addEventListener("click", uploadFile);
+if (cancelProcessingBtn) {
+  cancelProcessingBtn.addEventListener("click", cancelProcessing);
+}
 if (fileInput) {
   fileInput.addEventListener("change", () => {
     const file = fileInput.files && fileInput.files[0];
