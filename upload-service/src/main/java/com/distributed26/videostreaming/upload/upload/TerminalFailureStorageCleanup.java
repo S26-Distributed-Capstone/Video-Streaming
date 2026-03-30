@@ -11,6 +11,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -48,17 +49,23 @@ public final class TerminalFailureStorageCleanup implements JobEventListener, Au
             LOGGER.debug("Cleanup already queued for failed videoId={}", videoId);
             return;
         }
-        cleanupExecutor.submit(() -> {
-            try {
-                deleteVideoObjects(videoId, failed.getReason());
-            } finally {
-                queuedVideoIds.remove(videoId);
-            }
-        });
+        try {
+            cleanupExecutor.submit(() -> {
+                try {
+                    deleteVideoObjects(videoId, failed.getReason());
+                } finally {
+                    queuedVideoIds.remove(videoId);
+                }
+            });
+        } catch (RejectedExecutionException e) {
+            queuedVideoIds.remove(videoId);
+            LOGGER.info("Skipping object storage cleanup submission for videoId={} because shutdown is in progress", videoId);
+        }
     }
 
     private boolean shouldDeleteStorage(String videoId, String reason) {
-        if (USER_CANCELLED_REASON.equalsIgnoreCase(reason)) {
+        String normalizedReason = reason == null ? "" : reason;
+        if (USER_CANCELLED_REASON.equalsIgnoreCase(normalizedReason)) {
             return true;
         }
         if (videoUploadRepository == null) {
