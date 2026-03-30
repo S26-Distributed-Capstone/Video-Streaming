@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
+data:
+  MINIO_ENDPOINT: "http://{{ .Release.Name }}-minio:9000"
+  MINIO_PUBLIC_ENDPOINT: {{ .Values.config.minioPublicEndpoint | quote }}
+  MINIO_BUCKET_NAME: {{ .Values.config.minioBucketName | quote }}
+  MINIO_REGION: {{ .Values.config.minioRegion | quote }}
+  CHUNK_DURATION_SECONDS: {{ .Values.config.chunkDuration | quote }}
+  PG_DB: {{ .Values.config.pgDb | quote }}
+  PG_URL: "jdbc:postgresql://{{ .Release.Name }}-postgres:5432/{{ .Values.config.pgDb }}"
+  RABBITMQ_HOST: "{{ .Release.Name }}-rabbitmq"
+  RABBITMQ_PORT: {{ .Values.config.rabbitmqPort | quote }}
+  RABBITMQ_VHOST: {{ .Values.config.rabbitmqVhost | quote }}
+  RABBITMQ_EXCHANGE: {{ .Values.config.rabbitmqExchange | quote }}
+  RABBITMQ_STATUS_QUEUE: {{ .Values.config.rabbitmqStatusQueue | quote }}
+  RABBITMQ_STATUS_BINDING: {{ .Values.config.rabbitmqStatusBinding | quote }}
+  RABBITMQ_STATUS_QUEUE_PROCESSING: {{ .Values.config.rabbitmqStatusQueueProcessing | quote }}
+  RABBITMQ_TASK_QUEUE: {{ .Values.config.rabbitmqTaskQueue | quote }}
+  RABBITMQ_TASK_BINDING: {{ .Values.config.rabbitmqTaskBinding | quote }}
+  STATUS_PORT: {{ .Values.config.statusPort | quote }}
+  PROCESSING_PORT: {{ .Values.config.processingPort | quote }}
+  STREAMING_PORT: {{ .Values.config.streamingPort | quote }}
+  WORKER_POOL_SIZE: {{ .Values.config.workerPoolSize | quote }}
+  THREADS_PER_WORKER: {{ .Values.config.threadsPerWorker | quote }}
+  FFMPEG_PRESET: {{ .Values.config.ffmpegPreset | quote }}
+  PROCESSING_SPOOL_ROOT: {{ .Values.config.processingSpoolRoot | quote }}
+  STORAGE_RETRY_INITIAL_DELAY_MS: {{ .Values.config.storageRetryInitialDelayMs | quote }}
+  STORAGE_RETRY_MAX_DELAY_MS: {{ .Values.config.storageRetryMaxDelayMs | quote }}
+  STORAGE_RETRY_MAX_ATTEMPTS: {{ .Values.config.storageRetryMaxAttempts | quote }}
+  DEV_LOG_MAX_PEEK: {{ .Values.config.devLogMaxPeek | quote }}
+

@@ -1,0 +1,94 @@
+# ─── App image ──────────────────────────────────────────────────
+image:
+  repository: video-streaming-app
+  tag: latest
+  pullPolicy: Never            # minikube local build; change for a registry
+
+# ─── Replica counts ────────────────────────────────────────────
+uploadService:
+  replicas: 2
+  resources:
+    requests: { memory: "512Mi", cpu: "250m" }
+    limits:   { memory: "1Gi",   cpu: "1000m" }
+
+statusService:
+  replicas: 2
+  resources:
+    requests: { memory: "512Mi", cpu: "250m" }
+    limits:   { memory: "1Gi",   cpu: "1000m" }
+
+processingService:
+  replicas: 2
+  spoolStorageSize: 5Gi
+  resources:
+    requests: { memory: "1Gi",  cpu: "500m" }
+    limits:   { memory: "2Gi",  cpu: "2000m" }
+
+streamingService:
+  replicas: 2
+  resources:
+    requests: { memory: "512Mi", cpu: "250m" }
+    limits:   { memory: "1Gi",   cpu: "1000m" }
+
+# ─── Infrastructure ────────────────────────────────────────────
+postgres:
+  storageSize: 5Gi
+
+rabbitmq:
+  replicas: 3
+  storageSize: 2Gi
+
+minio:
+  storageSize: 10Gi
+
+# ─── Credentials ────────────────────────────────────────────────
+# DO NOT put real secrets here — this file is committed to git.
+# Override via: helm install vs ./helm/video-streaming -f helm/video-streaming/values.secret.yaml
+# Or inline:   helm install vs ./helm/video-streaming --set secrets.pgPassword=xxx
+secrets:
+  pgUser: "CHANGE_ME"
+  pgPassword: "CHANGE_ME"
+  rabbitmqUser: "CHANGE_ME"
+  rabbitmqPass: "CHANGE_ME"
+  rabbitmqErlangCookie: "CHANGE_ME"
+  minioAccessKey: "CHANGE_ME"
+  minioSecretKey: "CHANGE_ME"
+
+# ─── App config ─────────────────────────────────────────────────
+config:
+  minioEndpoint: "http://minio:9000"
+  minioPublicEndpoint: "http://localhost:9000"
+  minioBucketName: "uploads"
+  minioRegion: "us-east-1"
+  chunkDuration: "6"
+  pgDb: "video_streaming"
+  rabbitmqHost: "rabbitmq"
+  rabbitmqPort: "5672"
+  rabbitmqVhost: "/"
+  rabbitmqExchange: "upload.events"
+  rabbitmqStatusQueue: "upload.status.queue"
+  rabbitmqStatusBinding: "upload.status.*"
+  rabbitmqStatusQueueProcessing: "processing.events.queue"
+  rabbitmqTaskQueue: "upload.task.transcode"
+  rabbitmqTaskBinding: "upload.task.transcode"
+  statusPort: "8081"
+  processingPort: "8082"
+  streamingPort: "8083"
+  workerPoolSize: "2"
+  threadsPerWorker: "2"
+  ffmpegPreset: "veryfast"
+  processingSpoolRoot: "/app/processing-spool"
+  storageRetryInitialDelayMs: "500"
+  storageRetryMaxDelayMs: "5000"
+  storageRetryMaxAttempts: "3"
+  devLogMaxPeek: "100"
+
+# ─── Service exposure ──────────────────────────────────────────
+# LoadBalancer + "minikube tunnel" exposes services on localhost at their
+# real ports (8080, 8081, 8083) — no port-forward needed.
+service:
+  type: LoadBalancer
+  uploadNodePort: 30080       # only used when type=NodePort
+  statusNodePort: 30081
+  streamingNodePort: 30083
+

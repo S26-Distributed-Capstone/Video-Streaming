@@ -11,6 +11,7 @@ import com.rabbitmq.client.DeliverCallback;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
@@ -53,7 +54,8 @@ public class RabbitMQTranscodeTaskBus implements TranscodeTaskBus {
             this.channel = connection.createChannel();
 
             channel.exchangeDeclare(this.exchange, BuiltinExchangeType.TOPIC, true);
-            channel.queueDeclare(config.taskQueue(), true, false, false, null);
+            channel.queueDeclare(config.taskQueue(), true, false, false,
+                    Map.of("x-queue-type", "quorum"));
             channel.queueBind(config.taskQueue(), this.exchange, config.taskBinding());
 
             if (consumeTasks) {

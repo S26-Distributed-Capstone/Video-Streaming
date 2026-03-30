@@ -2,6 +2,7 @@
 *.class
 .env
 AGENTS.md
+values.secret.yaml
 
 # Log file
 *.log
