@@ -6,6 +6,7 @@ import com.distributed26.videostreaming.upload.db.SegmentUploadRepository;
 import com.distributed26.videostreaming.upload.db.TranscodedSegmentStatusRepository;
 import io.javalin.http.Context;
 import java.util.Optional;
+import java.util.UUID;
 
 public class UploadInfoHandler {
     private final VideoUploadRepository videoUploadRepository;
@@ -24,6 +25,12 @@ public class UploadInfoHandler {
 
     public void getInfo(Context ctx) {
         String videoId = ctx.pathParam("videoId");
+        try {
+            UUID.fromString(videoId);
+        } catch (IllegalArgumentException e) {
+            ctx.status(400).result("Invalid videoId");
+            return;
+        }
         if (videoUploadRepository == null) {
             ctx.status(500).result("Upload info store not configured");
             return;

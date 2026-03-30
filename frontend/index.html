@@ -38,6 +38,14 @@
         </div>
 
         <div id="doneMessage" class="status-banner hidden">Upload complete.</div>
+        <section id="processingRouteState" class="route-state hidden" aria-live="polite">
+          <h2 id="processingRouteStateTitle"></h2>
+          <p id="processingRouteStateBody"></p>
+          <div class="route-state-actions">
+            <a href="/" class="route-link">Start another upload</a>
+            <button id="processingRouteStateStreamBtn" type="button" class="secondary hidden">Open Stream Library</button>
+          </div>
+        </section>
 
         <div class="stage-grid">
           <article class="stage-card" id="uploadStage">

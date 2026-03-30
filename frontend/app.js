@@ -30,6 +30,10 @@ const doneMessage = document.getElementById("doneMessage");
 const processingRouteBanner = document.getElementById("processingRouteBanner");
 const processingRouteLabel = document.getElementById("processingRouteLabel");
 const cancelProcessingBtn = document.getElementById("cancelProcessingBtn");
+const processingRouteState = document.getElementById("processingRouteState");
+const processingRouteStateTitle = document.getElementById("processingRouteStateTitle");
+const processingRouteStateBody = document.getElementById("processingRouteStateBody");
+const processingRouteStateStreamBtn = document.getElementById("processingRouteStateStreamBtn");
 const player = document.getElementById("player");
 const playerStatus = document.getElementById("playerStatus");
 const playBtn = document.getElementById("playBtn");
@@ -71,12 +75,17 @@ const transcodeProfiles = {
   medium: { done: 0, transcoding: 0, uploading: 0, failed: 0, segments: new Map() },
   high: { done: 0, transcoding: 0, uploading: 0, failed: 0, segments: new Map() }
 };
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function setPlayerVisible(visible) {
   if (!player) {
     return;
   }
   player.classList.toggle("hidden", !visible);
+}
+
+function isValidVideoId(videoId) {
+  return typeof videoId === "string" && uuidPattern.test(videoId);
 }
 
 function getProcessingRouteVideoId() {
@@ -136,6 +145,7 @@ function enterProcessingRoute(videoId) {
     return;
   }
   document.body.classList.add("processing-route");
+  document.body.classList.remove("processing-route-terminal");
   if (processingRouteBanner) {
     processingRouteBanner.classList.remove("hidden");
   }
@@ -157,6 +167,43 @@ function enterProcessingRoute(videoId) {
     transcodeBlock.classList.remove("hidden");
   }
   setDoneMessage("", { success: true, hidden: true });
+  hideRouteState();
+}
+
+function hideRouteState() {
+  if (processingRouteState) {
+    processingRouteState.classList.add("hidden");
+    processingRouteState.classList.remove("error");
+  }
+  if (processingRouteStateTitle) {
+    processingRouteStateTitle.textContent = "";
+  }
+  if (processingRouteStateBody) {
+    processingRouteStateBody.textContent = "";
+  }
+  if (processingRouteStateStreamBtn) {
+    processingRouteStateStreamBtn.classList.add("hidden");
+  }
+}
+
+function showRouteState(title, body, { tone = "", showStreamButton = false } = {}) {
+  document.body.classList.add("processing-route-terminal");
+  hideCancelButton();
+  disconnectWebSocket();
+  if (processingRouteState) {
+    processingRouteState.classList.remove("hidden");
+    processingRouteState.classList.toggle("error", tone === "error");
+  }
+  if (processingRouteStateTitle) {
+    processingRouteStateTitle.textContent = title;
+  }
+  if (processingRouteStateBody) {
+    processingRouteStateBody.textContent = body;
+  }
+  if (processingRouteStateStreamBtn) {
+    processingRouteStateStreamBtn.classList.toggle("hidden", !showStreamButton);
+  }
+  setDoneMessage("", { hidden: true });
 }
 
 function setActiveTab(tab) {
@@ -537,6 +584,7 @@ function tryFinalizeSuccess() {
     return;
   }
   processingComplete = true;
+  hideRouteState();
   hideCancelButton();
   updateStorageRetryUi({ retrying: false });
   resetUploadRetryState();
@@ -1244,18 +1292,86 @@ async function fetchUploadInfo(baseUrl, videoId, uploadStatusUrl) {
       if (infoBox) {
         infoBox.textContent = `${resp.status} ${text}`;
       }
-      return;
+      return { ok: false, status: resp.status, text };
     }
     const payload = JSON.parse(text);
     if (infoBox) {
       renderJson(infoBox, payload);
     }
     applyUploadInfoSnapshot(payload);
+    return { ok: true, status: resp.status, payload };
   } catch (err) {
     if (infoBox) {
       infoBox.textContent = `Upload info error: ${err}`;
     }
+    return { ok: false, status: 0, text: String(err) };
   }
+}
+
+function handleProcessingRouteLoadFailure(videoId, result) {
+  const status = result ? result.status : 0;
+  if (status === 400 || !isValidVideoId(videoId)) {
+    showRouteState(
+      "Invalid video ID",
+      "This processing link is malformed. Check the URL and try again.",
+      { tone: "error" }
+    );
+    return;
+  }
+  if (status === 404) {
+    showRouteState(
+      "Video not found",
+      "No video exists for this processing link. It may have been deleted or never created.",
+      { tone: "error" }
+    );
+    return;
+  }
+  showRouteState(
+    "Processing status unavailable",
+    "The page could not load the current video state. Try refreshing when the status service is available.",
+    { tone: "error" }
+  );
+}
+
+function handleProcessingRouteStatus(payload) {
+  const status = String(payload.status || "").toUpperCase();
+  if (status === "FAILED") {
+    processingComplete = true;
+    showRouteState(
+      "Processing failed",
+      "This video is in a terminal failed state and cannot continue processing from this page.",
+      { tone: "error" }
+    );
+    return false;
+  }
+  hideRouteState();
+  return true;
+}
+
+async function bootProcessingRoute(routeVideoId) {
+  currentVideoId = routeVideoId;
+  setActiveTab("upload");
+  enterProcessingRoute(routeVideoId);
+
+  if (!isValidVideoId(routeVideoId)) {
+    handleProcessingRouteLoadFailure(routeVideoId, { status: 400 });
+    return;
+  }
+
+  const routeStatusUrl = getProcessingRouteStatusUrl(routeVideoId);
+  const baseUrl = resolveBaseUrl();
+  const wsUrl = routeStatusUrl || deriveWsUrl(baseUrl, routeVideoId);
+  const result = await fetchUploadInfo(baseUrl, routeVideoId, wsUrl);
+  if (!result || !result.ok) {
+    handleProcessingRouteLoadFailure(routeVideoId, result);
+    return;
+  }
+
+  if (!handleProcessingRouteStatus(result.payload)) {
+    return;
+  }
+
+  connectWebSocket(wsUrl, routeVideoId);
 }
 
 function uploadFile({ preserveLog, isRetry } = {}) {
@@ -1439,18 +1555,16 @@ if (refreshReadyBtn) {
 if (deleteSelectedBtn) {
   deleteSelectedBtn.addEventListener("click", deleteSelectedVideos);
 }
+if (processingRouteStateStreamBtn) {
+  processingRouteStateStreamBtn.addEventListener("click", () => setActiveTab("stream"));
+}
 
 refreshReadyList();
 const routeVideoId = getProcessingRouteVideoId();
 if (routeVideoId) {
-  currentVideoId = routeVideoId;
-  setActiveTab("upload");
-  enterProcessingRoute(routeVideoId);
-  const routeStatusUrl = getProcessingRouteStatusUrl(routeVideoId);
-  const baseUrl = resolveBaseUrl();
-  const wsUrl = routeStatusUrl || deriveWsUrl(baseUrl, routeVideoId);
-  fetchUploadInfo(baseUrl, routeVideoId, wsUrl).catch(() => {});
-  connectWebSocket(wsUrl, routeVideoId);
+  bootProcessingRoute(routeVideoId).catch(() => {
+    handleProcessingRouteLoadFailure(routeVideoId, { status: 0 });
+  });
 } else {
   setActiveTab("upload");
 }

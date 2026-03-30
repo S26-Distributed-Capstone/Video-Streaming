@@ -249,6 +249,42 @@ button:disabled {
   border-color: rgba(79, 138, 120, 0.15);
 }
 
+.route-state {
+  margin-bottom: 18px;
+  padding: 18px 20px;
+  border-radius: 22px;
+  background: linear-gradient(180deg, #fff, #fbf4ea);
+  border: 1px solid var(--line);
+}
+
+.route-state h2 {
+  margin: 0 0 8px;
+  font-family: var(--serif);
+  font-size: 1.6rem;
+  font-weight: 600;
+}
+
+.route-state p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.route-state-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.route-state.error {
+  border-color: rgba(201, 109, 68, 0.25);
+  background: linear-gradient(180deg, #fff7f3, #fbeadd);
+}
+
+body.processing-route.processing-route-terminal .stage-grid {
+  display: none;
+}
+
 .stage-grid {
   display: grid;
   gap: 14px;
