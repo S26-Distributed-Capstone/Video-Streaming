@@ -2,6 +2,8 @@
 
 This document provides step-by-step instructions for installing, configuring, and running the system for the first time.
 
+For the Kubernetes deployment path, see [docs/k8s-deployment.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/k8s-deployment.md).
+
 ## Prerequisites
 
 Install the following before starting:
@@ -156,6 +158,17 @@ To stop the swarm stack:
 docker stack rm video
 ```
 
+## Optional: Run With Kubernetes
+
+If you want to run the replicated Kubernetes version instead of Docker Compose or Swarm, follow the Helm-based workflow in [docs/k8s-deployment.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/k8s-deployment.md).
+
+Kubernetes notes:
+
+- the chart deploys Postgres, RabbitMQ, and MinIO as stateful infrastructure
+- the chart deploys upload, status, processing, and streaming as scalable application Deployments
+- external access is provided through `LoadBalancer` Services plus `minikube tunnel`
+- app startup does not rely only on pod ordering; the Java RabbitMQ clients also retry broker initialization during startup
+
 ## Optional: Run Against External Shared Infrastructure
 
 If you want the application services to use external Postgres, RabbitMQ, and MinIO instead of the in-stack containers:
@@ -209,3 +222,4 @@ docker stack rm video-external
 - [docs/api.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/api.md)
 - [docs/architecture.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/architecture.md)
 - [docs/challenges.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/challenges.md)
+- [docs/k8s-deployment.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/k8s-deployment.md)

@@ -5,6 +5,8 @@ This project has two main failure-handling paths:
 - `node-watcher` detects upload or processing containers that die while a video is still in progress.
 - `processing-service` performs startup recovery for videos that were left incomplete after a restart.
 
+For Kubernetes-specific deployment mechanics, see [docs/k8s-deployment.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/k8s-deployment.md).
+
 Related BPMN workflow diagrams:
 
 - [docs/diagrams/bpmn-processing-failure-recovery.bpmn](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/diagrams/bpmn-processing-failure-recovery.bpmn)
@@ -45,6 +47,23 @@ This prevents videos from being stuck forever in `PROCESSING` after a container 
 
 1. Processing Service fails / dies mid-transcoding a segment - needs to be downloaded again from S3 and retranscoded. (Never acked from RabbitMQ)
 2. Processing Service fails / dies mid-uploading a segment - checks local DB for previously transcoded segments and uploads them with the local queue. Tried to sping up for ~10 seconds. If it can't spin it up, have another processing service instance pick it up using RabbitMQ ack timeout
+
+### RabbitMQ Startup Ordering
+
+In Kubernetes, RabbitMQ may still be booting or forming its cluster when upload-service, status-service, or processing-service begin starting.
+
+The system now handles that in two layers:
+
+1. The Helm chart uses init containers that wait for the RabbitMQ service port before starting the Java process.
+2. The Java RabbitMQ clients also retry connection and topology initialization with exponential backoff, so a slow broker startup does not immediately crash the app process.
+
+The RabbitMQ startup retry loop is configurable with:
+
+- `RABBITMQ_RETRY_INITIAL_DELAY_MS` (default 1000)
+- `RABBITMQ_RETRY_MAX_DELAY_MS` (default 30000)
+- `RABBITMQ_RETRY_MAX_ATTEMPTS` (default 0 = unlimited)
+
+This reduces `CrashLoopBackOff` risk during cluster startup and makes the services less dependent on perfect pod ordering.
 
 #### Mid-Upload Recovery Details
 

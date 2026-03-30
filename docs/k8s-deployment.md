@@ -79,7 +79,7 @@ The deploy script reads these automatically. No secrets are stored in the Helm c
 
 This runs `helm install` and injects your `.env` secrets via `--set` flags.
 
-> **Note:** After deploying, it may take up to 30 seconds before the frontend is accessible. The 3-node RabbitMQ cluster needs to form first, and the app services wait for it before starting.
+> **Note:** After deploying, it may take up to 30 seconds before the frontend is accessible. The 3-node RabbitMQ cluster needs to form first. The chart uses init containers to wait for dependencies, and the Java RabbitMQ clients also retry broker initialization during startup, which reduces early `CrashLoopBackOff` failures while the broker is still warming up.
 
 ## 5. Start the Network Tunnel
 
@@ -225,3 +225,9 @@ Running `./deploy_k8s.sh` creates the following in your cluster:
 | Services show `EXTERNAL-IP: <pending>` | `minikube tunnel` is not running |
 | RabbitMQ nodes not clustering | `kubectl delete pvc -l app=vs-rabbitmq` and redeploy |
 
+## Related Documents
+
+- [docs/installation.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/installation.md)
+- [docs/api.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/api.md)
+- [docs/architecture.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/architecture.md)
+- [docs/challenges.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/challenges.md)

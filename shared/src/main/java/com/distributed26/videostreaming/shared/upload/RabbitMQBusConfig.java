@@ -1,5 +1,6 @@
 package com.distributed26.videostreaming.shared.upload;
 
+import com.rabbitmq.client.ConnectionFactory;
 import io.github.cdimascio.dotenv.Dotenv;
 
 record RabbitMQBusConfig(
@@ -34,6 +35,16 @@ record RabbitMQBusConfig(
                 getEnvOrDotenv(dotenv, "RABBITMQ_DEV_LOG_QUEUE", "dev.logs.queue"),
                 getEnvOrDotenv(dotenv, "RABBITMQ_DEV_LOG_BINDING", "dev.log")
         );
+    }
+
+    ConnectionFactory createConnectionFactory() {
+        ConnectionFactory factory = new ConnectionFactory();
+        factory.setHost(host);
+        factory.setPort(port);
+        factory.setUsername(username);
+        factory.setPassword(password);
+        factory.setVirtualHost(vhost);
+        return factory;
     }
 
     private static String getEnvOrDotenv(Dotenv dotenv, String key, String defaultValue) {

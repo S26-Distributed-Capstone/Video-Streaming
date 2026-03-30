@@ -10,7 +10,6 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Objects;
-import java.util.concurrent.TimeoutException;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -39,22 +38,29 @@ public final class RabbitMQDevLogPublisher implements AutoCloseable {
     public RabbitMQDevLogPublisher(RabbitMQBusConfig config) {
         this.exchange = Objects.requireNonNull(config.exchange(), "exchange is null");
         this.routingKey = Objects.requireNonNull(config.devLogBinding(), "devLogBinding is null");
-        try {
-            ConnectionFactory factory = new ConnectionFactory();
-            factory.setHost(config.host());
-            factory.setPort(config.port());
-            factory.setUsername(config.username());
-            factory.setPassword(config.password());
-            factory.setVirtualHost(config.vhost());
-            this.connection = factory.newConnection("dev-log-publisher");
-            this.channel = connection.createChannel();
-
-            channel.exchangeDeclare(this.exchange, BuiltinExchangeType.TOPIC, true);
-            channel.queueDeclare(config.devLogQueue(), true, false, false, null);
-            channel.queueBind(config.devLogQueue(), this.exchange, this.routingKey);
-        } catch (IOException | TimeoutException e) {
-            throw new RuntimeException("Failed to initialize RabbitMQDevLogPublisher", e);
-        }
+        RabbitMQResources resources = RabbitMQRetrySupport.retry(
+                "initialize RabbitMQ dev log publisher",
+                () -> {
+                    ConnectionFactory factory = config.createConnectionFactory();
+                    Connection connection = factory.newConnection("dev-log-publisher");
+                    try {
+                        Channel channel = connection.createChannel();
+                        channel.exchangeDeclare(this.exchange, BuiltinExchangeType.TOPIC, true);
+                        channel.queueDeclare(config.devLogQueue(), true, false, false, null);
+                        channel.queueBind(config.devLogQueue(), this.exchange, this.routingKey);
+                        return new RabbitMQResources(connection, channel);
+                    } catch (IOException | RuntimeException e) {
+                        try {
+                            connection.close();
+                        } catch (Exception closeError) {
+                            LOGGER.warn("Failed to close RabbitMQ connection after dev log publisher init error", closeError);
+                        }
+                        throw e;
+                    }
+                }
+        );
+        this.connection = resources.connection();
+        this.channel = resources.channel();
     }
 
     public void publishInfo(String serviceName, String message) {
