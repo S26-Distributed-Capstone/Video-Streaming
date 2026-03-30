@@ -81,6 +81,8 @@ This runs `helm install` and injects your `.env` secrets via `--set` flags.
 
 > **Note:** After deploying, it may take up to 30 seconds before the frontend is accessible. The 3-node RabbitMQ cluster needs to form first. The chart uses init containers to wait for dependencies, and the Java RabbitMQ clients also retry broker initialization during startup, which reduces early `CrashLoopBackOff` failures while the broker is still warming up.
 
+> **Processing workload note:** `processing-service` is deployed as a `StatefulSet` on this branch, not a `Deployment`. Each replica gets a stable pod identity plus its own `processing-spool` persistent volume, so rollout, scaling, and storage behavior differ from the stateless services.
+
 ## 5. Start the Network Tunnel
 
 In a **separate terminal**, run:
@@ -117,14 +119,15 @@ docker build -t video-streaming-app:latest .
 ./deploy_k8s.sh upgrade
 
 # Restart pods to pick up new image/config
-kubectl rollout restart deployment vs-upload vs-status vs-processing vs-streaming
+kubectl rollout restart deployment vs-upload vs-status vs-streaming
+kubectl rollout restart statefulset vs-processing
 ```
 
 ### Scale a service
 
 ```bash
 # Scale processing workers to 5
-kubectl scale deployment vs-processing --replicas=5
+kubectl scale statefulset vs-processing --replicas=5
 
 # Or change it permanently in values.yaml and upgrade
 ./deploy_k8s.sh upgrade
@@ -193,7 +196,7 @@ helm/video-streaming/
     ├── minio.yaml               # StatefulSet + Service
     ├── upload-service.yaml      # Deployment + LoadBalancer Service (port 8080)
     ├── status-service.yaml      # Deployment + LoadBalancer Service (port 8081)
-    ├── processing-service.yaml  # Deployment + PVC + ClusterIP Service (port 8082)
+    ├── processing-service.yaml  # StatefulSet + per-replica PVC + ClusterIP Service (port 8082)
     └── streaming-service.yaml   # Deployment + LoadBalancer Service (port 8083)
 ```
 
@@ -206,11 +209,11 @@ Running `./deploy_k8s.sh` creates the following in your cluster:
 | StatefulSet | vs-postgres (1 replica) | Postgres database with schema auto-init |
 | StatefulSet | vs-rabbitmq (3 replicas) | Clustered RabbitMQ message broker |
 | StatefulSet | vs-minio (1 replica) | S3-compatible object storage |
-| Deployment | vs-upload (2 replicas) | Accepts video uploads, segments into chunks |
-| Deployment | vs-status (2 replicas) | WebSocket status updates to the browser |
-| Deployment | vs-processing (2 replicas) | FFmpeg transcoding workers |
-| Deployment | vs-streaming (2 replicas) | Serves HLS manifests and presigned URLs |
-| PVC | processing-spool | Local spool for transcoded segments |
+| Deployment | vs-upload (from `uploadService.replicas`) | Accepts video uploads, segments into chunks |
+| Deployment | vs-status (from `statusService.replicas`) | WebSocket status updates to the browser |
+| StatefulSet | vs-processing (from `processingService.replicas`) | FFmpeg transcoding workers with stable identities and persistent local spool storage |
+| Deployment | vs-streaming (from `streamingService.replicas`) | Serves HLS manifests and presigned URLs |
+| PVC | `processing-spool` claims created by the `vs-processing` StatefulSet | One local spool volume per processing replica |
 | ConfigMap | vs-config | Shared app configuration |
 | Secret | vs-secrets | Database, RabbitMQ, and MinIO credentials |
 
