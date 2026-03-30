@@ -104,6 +104,31 @@ public class ProcessingTaskClaimRepository {
         }
     }
 
+    public boolean heartbeat(String videoId, String profile, int segmentNumber, String stage, String claimedBy) {
+        String sql = """
+            UPDATE processing_task_claim
+            SET stage = ?,
+                updated_at = NOW()
+            WHERE video_id = ?
+              AND profile = ?
+              AND segment_number = ?
+              AND claimed_by = ?
+            """;
+        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, stage);
+            ps.setObject(2, UUID.fromString(videoId));
+            ps.setString(3, profile);
+            ps.setInt(4, segmentNumber);
+            ps.setString(5, claimedBy);
+            return ps.executeUpdate() > 0;
+        } catch (SQLException | RuntimeException e) {
+            LOGGER.warn("Failed to heartbeat processing_task_claim videoId={} profile={} segment={} stage={} claimedBy={}",
+                    videoId, profile, segmentNumber, stage, claimedBy, e);
+            return false;
+        }
+    }
+
     public java.util.Set<Integer> findClaimedSegmentNumbers(String videoId, String profile, long staleMillis) {
         String sql = """
             SELECT segment_number

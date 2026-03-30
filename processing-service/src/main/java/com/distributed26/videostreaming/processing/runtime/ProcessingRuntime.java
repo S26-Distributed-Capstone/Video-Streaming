@@ -30,6 +30,7 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -330,6 +331,13 @@ public final class ProcessingRuntime {
         return claimStaleMillis;
     }
 
+    public long claimHeartbeatMillis() {
+        if (claimStaleMillis <= 0L) {
+            return 5_000L;
+        }
+        return Math.max(1_000L, claimStaleMillis / 2L);
+    }
+
     public VideoProcessingRepository videoProcessingRepository() {
         return videoProcessingRepository;
     }
@@ -471,33 +479,41 @@ public final class ProcessingRuntime {
                     task.getChunkKey(),
                     task.getProfile().getName());
             emitState(task, TranscodeSegmentState.TRANSCODING, profiles);
-            CompletedTranscode completed = task.transcodeToSpool(storageClient, localUploadSpoolRoot);
-            if (completed == null) {
-                task.setStatus(Status.SUCCEEDED);
-                emitState(task, TranscodeSegmentState.DONE, profiles);
-                LOGGER.info("Task {} skipped because output already exists", task.getId());
-                return true;
-            }
-            if (isVideoFailed(task.getJobId())) {
-                Files.deleteIfExists(completed.localPath());
-                LOGGER.info("Discarded transcoded spool for failed videoId={} profile={} segment={}",
-                        task.getJobId(), task.getProfile().getName(), parseSegmentNumber(task.getChunkKey()));
-                return false;
-            }
-            processingUploadTaskRepository.upsertPending(
+            int segmentNumber = parseSegmentNumber(task.getChunkKey());
+            try (ClaimHeartbeat ignored = startClaimHeartbeat(
                     task.getJobId(),
                     task.getProfile().getName(),
-                    parseSegmentNumber(task.getChunkKey()),
-                    task.getChunkKey(),
-                    completed.outputKey(),
-                    completed.localPath().toString(),
-                    completed.sizeBytes(),
-                    completed.outputTsOffsetSeconds()
-            );
-            emitState(task, TranscodeSegmentState.TRANSCODED, profiles);
-            task.setStatus(Status.SUCCEEDED);
-            LOGGER.info("Task {} succeeded", task.getId());
-            return true;
+                    segmentNumber,
+                    "TRANSCODING"
+            )) {
+                CompletedTranscode completed = task.transcodeToSpool(storageClient, localUploadSpoolRoot);
+                if (completed == null) {
+                    task.setStatus(Status.SUCCEEDED);
+                    emitState(task, TranscodeSegmentState.DONE, profiles);
+                    LOGGER.info("Task {} skipped because output already exists", task.getId());
+                    return true;
+                }
+                if (isVideoFailed(task.getJobId())) {
+                    Files.deleteIfExists(completed.localPath());
+                    LOGGER.info("Discarded transcoded spool for failed videoId={} profile={} segment={}",
+                            task.getJobId(), task.getProfile().getName(), segmentNumber);
+                    return false;
+                }
+                processingUploadTaskRepository.upsertPending(
+                        task.getJobId(),
+                        task.getProfile().getName(),
+                        segmentNumber,
+                        task.getChunkKey(),
+                        completed.outputKey(),
+                        completed.localPath().toString(),
+                        completed.sizeBytes(),
+                        completed.outputTsOffsetSeconds()
+                );
+                emitState(task, TranscodeSegmentState.TRANSCODED, profiles);
+                task.setStatus(Status.SUCCEEDED);
+                LOGGER.info("Task {} succeeded", task.getId());
+                return true;
+            }
         } catch (Exception e) {
             task.setStatus(Status.FAILED);
             emitState(task, TranscodeSegmentState.FAILED, profiles);
@@ -565,6 +581,86 @@ public final class ProcessingRuntime {
         } catch (Exception e) {
             LOGGER.warn("Failed processing-claim lookup videoId={} profile={} segment={}", videoId, profile, segmentNumber, e);
             return false;
+        }
+    }
+
+    public AutoCloseable startUploadClaimHeartbeat(String videoId, String profile, int segmentNumber) {
+        return startClaimHeartbeat(videoId, profile, segmentNumber, "UPLOADING");
+    }
+
+    private ClaimHeartbeat startClaimHeartbeat(String videoId, String profile, int segmentNumber, String stage) {
+        if (segmentNumber < 0 || processingTaskClaimRepository == null) {
+            return ClaimHeartbeat.NOOP;
+        }
+        ClaimHeartbeat heartbeat = new ClaimHeartbeat(
+                videoId,
+                profile,
+                segmentNumber,
+                stage,
+                processorInstanceId,
+                processingTaskClaimRepository,
+                claimHeartbeatMillis()
+        );
+        heartbeat.start();
+        return heartbeat;
+    }
+
+    private static final class ClaimHeartbeat implements AutoCloseable {
+        private static final ClaimHeartbeat NOOP = new ClaimHeartbeat();
+
+        private final AtomicBoolean running;
+        private final Thread thread;
+
+        private ClaimHeartbeat() {
+            this.running = null;
+            this.thread = null;
+        }
+
+        private ClaimHeartbeat(
+                String videoId,
+                String profile,
+                int segmentNumber,
+                String stage,
+                String claimedBy,
+                ProcessingTaskClaimRepository repository,
+                long intervalMillis
+        ) {
+            this.running = new AtomicBoolean(true);
+            this.thread = new Thread(() -> {
+                while (running.get() && !Thread.currentThread().isInterrupted()) {
+                    try {
+                        Thread.sleep(intervalMillis);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                    if (!running.get()) {
+                        return;
+                    }
+                    repository.heartbeat(videoId, profile, segmentNumber, stage, claimedBy);
+                }
+            }, "processing-claim-heartbeat-" + profile + "-" + segmentNumber);
+            this.thread.setDaemon(true);
+        }
+
+        private void start() {
+            if (thread != null) {
+                thread.start();
+            }
+        }
+
+        @Override
+        public void close() {
+            if (running == null || thread == null) {
+                return;
+            }
+            running.set(false);
+            thread.interrupt();
+            try {
+                thread.join(200L);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 

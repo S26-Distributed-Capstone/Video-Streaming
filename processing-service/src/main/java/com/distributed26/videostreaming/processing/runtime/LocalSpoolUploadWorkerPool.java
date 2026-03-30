@@ -118,7 +118,7 @@ public final class LocalSpoolUploadWorkerPool {
                     runtime.claimStaleMillis()
             );
         }
-        try {
+        try (AutoCloseable ignored = runtime.startUploadClaimHeartbeat(task.videoId(), task.profile(), task.segmentNumber())) {
             if (runtime.isVideoFailed(task.videoId())) {
                 LOGGER.info("Dropping local upload task {} for failed videoId={}", task.id(), task.videoId());
                 discardUploadTask(task, spoolPath);
