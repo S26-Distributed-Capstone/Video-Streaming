@@ -9,6 +9,7 @@ import org.apache.logging.log4j.Logger;
 
 final class RabbitMQRetrySupport {
     private static final Logger LOGGER = LogManager.getLogger(RabbitMQRetrySupport.class);
+    private static final Dotenv DOTENV = Dotenv.configure().directory("./").ignoreIfMissing().load();
     private static final long DEFAULT_INITIAL_DELAY_MILLIS = 1_000L;
     private static final long DEFAULT_MAX_DELAY_MILLIS = 30_000L;
     private static final long DEFAULT_MAX_ATTEMPTS = 0L;
@@ -62,11 +63,7 @@ final class RabbitMQRetrySupport {
             value = System.getenv(key);
         }
         if (value == null || value.isBlank()) {
-            try {
-                Dotenv dotenv = Dotenv.configure().directory("./").ignoreIfMissing().load();
-                value = dotenv.get(key);
-            } catch (RuntimeException ignored) {
-            }
+            value = DOTENV.get(key);
         }
         if (value == null || value.isBlank()) {
             return defaultValue;

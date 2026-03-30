@@ -78,8 +78,8 @@ The following settings are expected to be configured by the user.
 - `FFMPEG_PRESET`: FFmpeg encoding preset
 - `CHUNK_DURATION_SECONDS`: upload chunk duration
 - `MACHINE_ID`: identifier recorded in DB and failure events
-- `STORAGE_RETRY_INITIAL_DELAY_MS`: initial upload-service backoff delay when MinIO is unavailable
-- `STORAGE_RETRY_MAX_DELAY_MS`: maximum upload-service backoff delay when MinIO is unavailable
+- `STORAGE_RETRY_INITIAL_DELAY_MILLIS`: initial upload-service backoff delay when MinIO is unavailable
+- `STORAGE_RETRY_MAX_DELAY_MILLIS`: maximum upload-service backoff delay when MinIO is unavailable
 
 ### Failure Detection
 

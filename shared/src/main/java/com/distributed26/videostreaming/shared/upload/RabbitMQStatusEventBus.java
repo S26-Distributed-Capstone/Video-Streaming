@@ -44,7 +44,7 @@ public class RabbitMQStatusEventBus implements StatusEventBus {
         RabbitMQResources resources = RabbitMQRetrySupport.retry(
                 "initialize RabbitMQ status event bus",
                 () -> {
-                    ConnectionFactory factory = createConnectionFactory(config);
+                    ConnectionFactory factory = config.createConnectionFactory();
                     Connection connection = factory.newConnection("upload-status-event-bus");
                     try {
                         Channel channel = connection.createChannel();
@@ -81,16 +81,6 @@ public class RabbitMQStatusEventBus implements StatusEventBus {
         } catch (IOException e) {
             throw new RuntimeException("Failed to initialize RabbitMQStatusEventBus", e);
         }
-    }
-
-    private static ConnectionFactory createConnectionFactory(RabbitMQBusConfig config) {
-        ConnectionFactory factory = new ConnectionFactory();
-        factory.setHost(config.host());
-        factory.setPort(config.port());
-        factory.setUsername(config.username());
-        factory.setPassword(config.password());
-        factory.setVirtualHost(config.vhost());
-        return factory;
     }
 
     @Override

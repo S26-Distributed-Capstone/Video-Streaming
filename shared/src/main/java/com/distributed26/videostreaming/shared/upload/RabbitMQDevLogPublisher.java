@@ -41,7 +41,7 @@ public final class RabbitMQDevLogPublisher implements AutoCloseable {
         RabbitMQResources resources = RabbitMQRetrySupport.retry(
                 "initialize RabbitMQ dev log publisher",
                 () -> {
-                    ConnectionFactory factory = createConnectionFactory(config);
+                    ConnectionFactory factory = config.createConnectionFactory();
                     Connection connection = factory.newConnection("dev-log-publisher");
                     try {
                         Channel channel = connection.createChannel();
@@ -61,16 +61,6 @@ public final class RabbitMQDevLogPublisher implements AutoCloseable {
         );
         this.connection = resources.connection();
         this.channel = resources.channel();
-    }
-
-    private static ConnectionFactory createConnectionFactory(RabbitMQBusConfig config) {
-        ConnectionFactory factory = new ConnectionFactory();
-        factory.setHost(config.host());
-        factory.setPort(config.port());
-        factory.setUsername(config.username());
-        factory.setPassword(config.password());
-        factory.setVirtualHost(config.vhost());
-        return factory;
     }
 
     public void publishInfo(String serviceName, String message) {

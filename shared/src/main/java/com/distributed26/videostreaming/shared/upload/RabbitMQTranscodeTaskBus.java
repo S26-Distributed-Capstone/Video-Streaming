@@ -45,7 +45,7 @@ public class RabbitMQTranscodeTaskBus implements TranscodeTaskBus {
         RabbitMQResources resources = RabbitMQRetrySupport.retry(
                 "initialize RabbitMQ transcode task bus",
                 () -> {
-                    ConnectionFactory factory = createConnectionFactory(config);
+                    ConnectionFactory factory = config.createConnectionFactory();
                     Connection connection = factory.newConnection("upload-transcode-task-bus");
                     try {
                         Channel channel = connection.createChannel();
@@ -77,16 +77,6 @@ public class RabbitMQTranscodeTaskBus implements TranscodeTaskBus {
         } catch (IOException e) {
             throw new RuntimeException("Failed to initialize RabbitMQTranscodeTaskBus", e);
         }
-    }
-
-    private static ConnectionFactory createConnectionFactory(RabbitMQBusConfig config) {
-        ConnectionFactory factory = new ConnectionFactory();
-        factory.setHost(config.host());
-        factory.setPort(config.port());
-        factory.setUsername(config.username());
-        factory.setPassword(config.password());
-        factory.setVirtualHost(config.vhost());
-        return factory;
     }
 
     @Override
