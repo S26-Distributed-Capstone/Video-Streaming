@@ -10,7 +10,7 @@ final class UploadStatusPresenter {
 
     static String statusMessage(String status) {
         if ("WAITING_FOR_STORAGE".equalsIgnoreCase(status)) {
-            return "Retrying MinIO connection";
+            return "MinIO is down. Waiting for it to come back up.";
         }
         if ("PROCESSING".equalsIgnoreCase(status)) {
             return "Processing upload";

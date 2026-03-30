@@ -334,6 +334,10 @@ public final class ProcessingRuntime {
         return videoProcessingRepository;
     }
 
+    public StatusEventBus statusBus() {
+        return statusBus;
+    }
+
     public TranscodedSegmentStatusRepository transcodeStatusRepository() {
         return transcodeStatusRepository;
     }

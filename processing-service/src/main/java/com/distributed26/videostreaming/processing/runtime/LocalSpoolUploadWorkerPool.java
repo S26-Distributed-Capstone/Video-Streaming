@@ -24,6 +24,7 @@ public final class LocalSpoolUploadWorkerPool {
     private final TranscodingProfile[] profiles;
     private final ProcessingRuntime runtime;
     private final RabbitMQDevLogPublisher devLogPublisher;
+    private final ProcessingStorageStateTracker storageStateTracker;
     private final AtomicBoolean storageDegraded = new AtomicBoolean(false);
 
     public LocalSpoolUploadWorkerPool(TranscodingProfile[] profiles, ProcessingRuntime runtime) {
@@ -38,6 +39,11 @@ public final class LocalSpoolUploadWorkerPool {
         this.profiles = profiles;
         this.runtime = runtime;
         this.devLogPublisher = devLogPublisher;
+        this.storageStateTracker = new ProcessingStorageStateTracker(
+                runtime.videoProcessingRepository(),
+                runtime.statusBus(),
+                devLogPublisher
+        );
     }
 
     public ExecutorService startUploadWorkers(
@@ -161,6 +167,9 @@ public final class LocalSpoolUploadWorkerPool {
             if (storageDegraded.compareAndSet(true, false)) {
                 publishDevLogInfo("MinIO recovered; processing service resumed local spool uploads");
             }
+            if (storageStateTracker.isVideoWaiting(task.videoId())) {
+                storageStateTracker.endStorageWait(task.videoId());
+            }
             completeUploadTask(task, spoolPath);
         } catch (Exception e) {
             LOGGER.warn("Failed local upload task {} videoId={} profile={} segment={} attempt={}",
@@ -168,6 +177,7 @@ public final class LocalSpoolUploadWorkerPool {
             if (storageDegraded.compareAndSet(false, true)) {
                 publishDevLogWarn("MinIO is down, continuing to process and polling for restart");
             }
+            storageStateTracker.beginStorageWait(task.videoId(), e.getMessage());
             runtime.processingUploadTaskRepository().markPending(task.id());
             if (runtime.processingTaskClaimRepository() != null) {
                 runtime.processingTaskClaimRepository().release(task.videoId(), task.profile(), task.segmentNumber());

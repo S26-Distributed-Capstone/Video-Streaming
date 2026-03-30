@@ -6,26 +6,26 @@ image:
 
 # ─── Replica counts ────────────────────────────────────────────
 uploadService:
-  replicas: 2
+  replicas: 1
   resources:
     requests: { memory: "512Mi", cpu: "250m" }
     limits:   { memory: "1Gi",   cpu: "1000m" }
 
 statusService:
-  replicas: 2
+  replicas: 1
   resources:
     requests: { memory: "512Mi", cpu: "250m" }
     limits:   { memory: "1Gi",   cpu: "1000m" }
 
 processingService:
-  replicas: 2
+  replicas: 3
   spoolStorageSize: 5Gi
   resources:
     requests: { memory: "1Gi",  cpu: "500m" }
     limits:   { memory: "2Gi",  cpu: "2000m" }
 
 streamingService:
-  replicas: 2
+  replicas: 1
   resources:
     requests: { memory: "512Mi", cpu: "250m" }
     limits:   { memory: "1Gi",   cpu: "1000m" }
@@ -35,7 +35,7 @@ postgres:
   storageSize: 5Gi
 
 rabbitmq:
-  replicas: 3
+  replicas: 1
   storageSize: 2Gi
 
 minio:
@@ -74,8 +74,8 @@ config:
   statusPort: "8081"
   processingPort: "8082"
   streamingPort: "8083"
-  workerPoolSize: "2"
-  threadsPerWorker: "2"
+  workerPoolSize: "1"
+  threadsPerWorker: "1"
   ffmpegPreset: "veryfast"
   processingSpoolRoot: "/app/processing-spool"
   storageRetryInitialDelayMs: "500"
