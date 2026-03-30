@@ -1,0 +1,47 @@
+# ConfigMap: non-sensitive configuration shared across services
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: video-streaming-config
+data:
+  # MinIO
+  MINIO_ENDPOINT: "http://minio:9000"
+  MINIO_PUBLIC_ENDPOINT: "http://localhost:9000"
+  MINIO_BUCKET_NAME: "uploads"
+  MINIO_REGION: "us-east-1"
+  CHUNK_DURATION_SECONDS: "6"
+
+  # Postgres (non-secret parts)
+  PG_DB: "video_streaming"
+  PG_URL: "jdbc:postgresql://postgres:5432/video_streaming"
+
+  # RabbitMQ (non-secret parts)
+  RABBITMQ_HOST: "rabbitmq"
+  RABBITMQ_PORT: "5672"
+  RABBITMQ_VHOST: "/"
+  RABBITMQ_EXCHANGE: "upload.events"
+  RABBITMQ_STATUS_QUEUE: "upload.status.queue"
+  RABBITMQ_STATUS_BINDING: "upload.status.*"
+  RABBITMQ_STATUS_QUEUE_PROCESSING: "processing.events.queue"
+  RABBITMQ_TASK_QUEUE: "upload.task.transcode"
+  RABBITMQ_TASK_BINDING: "upload.task.transcode"
+
+  # Service ports
+  STATUS_PORT: "8081"
+  PROCESSING_PORT: "8082"
+  STREAMING_PORT: "8083"
+
+  # Processing tuning
+  WORKER_POOL_SIZE: "2"
+  THREADS_PER_WORKER: "2"
+  FFMPEG_PRESET: "veryfast"
+  PROCESSING_SPOOL_ROOT: "/app/processing-spool"
+
+  # Storage retry
+  STORAGE_RETRY_INITIAL_DELAY_MS: "500"
+  STORAGE_RETRY_MAX_DELAY_MS: "5000"
+  STORAGE_RETRY_MAX_ATTEMPTS: "3"
+
+  # Dev
+  DEV_LOG_MAX_PEEK: "100"
+

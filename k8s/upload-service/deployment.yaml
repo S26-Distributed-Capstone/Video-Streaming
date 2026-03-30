@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: upload-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: upload-service
+  template:
+    metadata:
+      labels:
+        app: upload-service
+    spec:
+      containers:
+        - name: upload-service
+          image: video-streaming-app:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+          command: ["/bin/sh", "-c"]
+          args:
+            - >
+              mvn -pl upload-service -DskipTests exec:java
+              -Dexec.mainClass=com.distributed26.videostreaming.upload.upload.UploadServiceApplication
+          env:
+            - name: SERVICE_MODE
+              value: "upload"
+          envFrom:
+            - configMapRef:
+                name: video-streaming-config
+            - secretRef:
+                name: video-streaming-secrets
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            failureThreshold: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
