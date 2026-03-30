@@ -54,6 +54,8 @@ public class ProcessingServiceApplication {
     private static final Logger LOGGER = LogManager.getLogger(ProcessingServiceApplication.class);
     private static final String DEV_LOG_SERVICE = "Processing-service";
     private static final String MANIFEST_PROCESSOR_EXECUTOR_NAME = "AbrManifestGenerator";
+    private static final long DEFAULT_CLAIM_STALE_MILLIS = 10_000L;
+    private static final long DEFAULT_RECOVERY_RECONCILIATION_MILLIS = 10_000L;
     private static volatile ExecutorService uploadExecutorRef;
     private static volatile ProcessingRuntime runtimeRef;
     private static volatile Thread bucketEnsureThread;
@@ -105,7 +107,16 @@ public class ProcessingServiceApplication {
             ProcessingTaskClaimRepository processingTaskClaimRepository = createProcessingTaskClaimRepository();
             Path localUploadSpoolRoot = initializeSpoolRoot(getEnvOrDotenv(dotenv, "PROCESSING_SPOOL_ROOT", "processing-spool"));
             String processorInstanceId = getEnvOrDotenv(dotenv, "HOSTNAME", "processing-service");
-            long claimStaleMillis = Long.parseLong(getEnvOrDotenv(dotenv, "PROCESSING_TASK_CLAIM_STALE_MILLIS", "60000"));
+            long claimStaleMillis = Long.parseLong(getEnvOrDotenv(
+                    dotenv,
+                    "PROCESSING_TASK_CLAIM_STALE_MILLIS",
+                    String.valueOf(DEFAULT_CLAIM_STALE_MILLIS)
+            ));
+            long recoveryReconciliationMillis = Long.parseLong(getEnvOrDotenv(
+                    dotenv,
+                    "PROCESSING_RECOVERY_RECONCILIATION_MILLIS",
+                    String.valueOf(DEFAULT_RECOVERY_RECONCILIATION_MILLIS)
+            ));
             ProcessingRuntime runtime = new ProcessingRuntime(
                     transcodeStatusRepository,
                     videoProcessingRepository,
@@ -151,7 +162,13 @@ public class ProcessingServiceApplication {
             statusEventBus.subscribeAll(runtime::onStatusEvent);
 
             StartupRecoveryService startupRecovery = new StartupRecoveryService(PROFILES, runtime);
-            startBucketEnsureThread(storageClient, startupRecovery, localUploadSpoolRoot, devLogPublisher);
+            startBucketEnsureThread(
+                    storageClient,
+                    startupRecovery,
+                    localUploadSpoolRoot,
+                    devLogPublisher,
+                    recoveryReconciliationMillis
+            );
 
             int pendingUploads = processingUploadTaskRepository.countByState("PENDING");
             if (pendingUploads > 0) {
@@ -257,7 +274,8 @@ public class ProcessingServiceApplication {
             ObjectStorageClient storageClient,
             StartupRecoveryService startupRecovery,
             Path localUploadSpoolRoot,
-            RabbitMQDevLogPublisher devLogPublisher
+            RabbitMQDevLogPublisher devLogPublisher,
+            long recoveryReconciliationMillis
     ) {
         Thread priorThread = bucketEnsureThread;
         if (priorThread != null && priorThread.isAlive()) {
@@ -268,7 +286,8 @@ public class ProcessingServiceApplication {
                 storageClient,
                 startupRecovery,
                 localUploadSpoolRoot,
-                devLogPublisher
+                devLogPublisher,
+                recoveryReconciliationMillis
         ), "processing-bucket-ensure");
         thread.setDaemon(true);
         bucketEnsureThread = thread;
@@ -279,28 +298,35 @@ public class ProcessingServiceApplication {
             ObjectStorageClient storageClient,
             StartupRecoveryService startupRecovery,
             Path localUploadSpoolRoot,
-            RabbitMQDevLogPublisher devLogPublisher
+            RabbitMQDevLogPublisher devLogPublisher,
+            long recoveryReconciliationMillis
     ) {
         long delayMillis = 500L;
-        boolean waiting = false;
+        long normalizedRecoveryReconciliationMillis = Math.max(1_000L, recoveryReconciliationMillis);
+        boolean waitingForStorage = false;
+        boolean storageReady = false;
         while (!Thread.currentThread().isInterrupted()) {
             try {
                 storageClient.ensureBucketExists();
-                LOGGER.info("Storage ready — bucket ensure completed");
-                if (waiting) {
+                if (!storageReady) {
+                    LOGGER.info("Storage ready — bucket ensure completed");
+                }
+                if (waitingForStorage) {
                     publishDevLogInfo(devLogPublisher, "MinIO recovered; processing service resumed startup recovery");
-                } else {
+                } else if (!storageReady) {
                     publishDevLogInfo(devLogPublisher, "Processing service storage ready");
                 }
+                waitingForStorage = false;
+                storageReady = true;
+                delayMillis = 500L;
 
-                // Run startup recovery only after object storage becomes reachable.
                 startupRecovery.recoverOrphanedSpoolFiles(storageClient, localUploadSpoolRoot);
                 startupRecovery.recoverIncompleteVideos(storageClient);
-                bucketEnsureThread = null;
-                return;
+                Thread.sleep(normalizedRecoveryReconciliationMillis);
             } catch (RuntimeException e) {
-                if (!waiting) {
-                    waiting = true;
+                storageReady = false;
+                if (!waitingForStorage) {
+                    waitingForStorage = true;
                     LOGGER.warn("MinIO unavailable during processing startup; continuing and retrying bucket ensure", e);
                     publishDevLogWarn(devLogPublisher, "MinIO is down, continuing to process and polling for restart");
                 } else {
@@ -314,10 +340,19 @@ public class ProcessingServiceApplication {
                     return;
                 }
                 delayMillis = Math.min(30_000L, delayMillis * 2);
-            } catch (Exception e) {
-                LOGGER.warn("Unexpected failure in processing startup bucket ensure loop", e);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
                 bucketEnsureThread = null;
                 return;
+            } catch (Exception e) {
+                LOGGER.warn("Unexpected failure in processing startup recovery/reconciliation loop", e);
+                try {
+                    Thread.sleep(normalizedRecoveryReconciliationMillis);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    bucketEnsureThread = null;
+                    return;
+                }
             }
         }
         bucketEnsureThread = null;

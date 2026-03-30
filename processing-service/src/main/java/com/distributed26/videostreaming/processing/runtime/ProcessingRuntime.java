@@ -29,14 +29,19 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 public final class ProcessingRuntime {
     private static final Logger LOGGER = LogManager.getLogger(ProcessingRuntime.class);
     private static final java.util.regex.Pattern SEGMENT_NUMBER_PATTERN = java.util.regex.Pattern.compile("(\\d+)");
-    private static final long DEFAULT_CLAIM_STALE_MILLIS = 60_000L;
+    private static final long DEFAULT_CLAIM_STALE_MILLIS = 10_000L;
     private final Set<String> manifestsInFlight = ConcurrentHashMap.newKeySet();
 
     private TranscodedSegmentStatusRepository transcodeStatusRepository;
@@ -51,6 +56,7 @@ public final class ProcessingRuntime {
     private FailedVideoRegistry failedVideoRegistry;
     private final String processorInstanceId;
     private final long claimStaleMillis;
+    private final ScheduledExecutorService claimHeartbeatExecutor;
 
     public ProcessingRuntime(
             TranscodedSegmentStatusRepository transcodeStatusRepository,
@@ -104,6 +110,11 @@ public final class ProcessingRuntime {
         this.failedVideoRegistry = new FailedVideoRegistry();
         this.processorInstanceId = processorInstanceId;
         this.claimStaleMillis = Math.max(0L, claimStaleMillis);
+        this.claimHeartbeatExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread thread = new Thread(r, "processing-claim-heartbeat");
+            thread.setDaemon(true);
+            return thread;
+        });
     }
 
     public void resetForTests() {
@@ -118,6 +129,7 @@ public final class ProcessingRuntime {
         manifestExecutorRef = null;
         localUploadSpoolRoot = null;
         failedVideoRegistry = new FailedVideoRegistry();
+        claimHeartbeatExecutor.shutdownNow();
     }
 
     public void setTranscodeStatusRepository(TranscodedSegmentStatusRepository repository) {
@@ -252,23 +264,6 @@ public final class ProcessingRuntime {
         if (task == null) {
             return CompletableFuture.completedFuture(true);
         }
-        if (processingTaskClaimRepository != null) {
-            ProcessingTaskClaimRepository.ClaimResult claimResult = processingTaskClaimRepository.claim(
-                    task.getJobId(),
-                    task.getProfile().getName(),
-                    parseSegmentNumber(task.getChunkKey()),
-                    "TRANSCODING",
-                    processorInstanceId,
-                    claimStaleMillis
-            );
-            if (claimResult != ProcessingTaskClaimRepository.ClaimResult.ACQUIRED) {
-                if (claimResult == ProcessingTaskClaimRepository.ClaimResult.HELD_BY_OTHER) {
-                    LOGGER.info("Skipping submitted transcode task already claimed elsewhere videoId={} profile={} chunk={}",
-                            task.getJobId(), task.getProfile().getName(), task.getChunkKey());
-                }
-                return CompletableFuture.completedFuture(true);
-            }
-        }
         return CompletableFuture.supplyAsync(
                 () -> executeTranscodingTask(task, storageClient, workersByThread, profiles),
                 taskExecutor
@@ -276,14 +271,6 @@ public final class ProcessingRuntime {
             LOGGER.error("Transcode task execution crashed jobId={} chunk={} profile={}",
                     task.getJobId(), task.getChunkKey(), task.getProfile().getName(), e);
             return false;
-        }).whenComplete((ignored, error) -> {
-            if (processingTaskClaimRepository != null) {
-                processingTaskClaimRepository.release(
-                        task.getJobId(),
-                        task.getProfile().getName(),
-                        parseSegmentNumber(task.getChunkKey())
-                );
-            }
         });
     }
 
@@ -328,6 +315,13 @@ public final class ProcessingRuntime {
 
     public long claimStaleMillis() {
         return claimStaleMillis;
+    }
+
+    public long claimHeartbeatMillis() {
+        if (claimStaleMillis <= 0L) {
+            return 5_000L;
+        }
+        return Math.max(1_000L, claimStaleMillis / 2L);
     }
 
     public VideoProcessingRepository videoProcessingRepository() {
@@ -455,6 +449,8 @@ public final class ProcessingRuntime {
             TranscodingProfile[] profiles
     ) {
         Worker worker = workersByThread.get(Thread.currentThread());
+        int segmentNumber = parseSegmentNumber(task.getChunkKey());
+        boolean claimAcquired = false;
         try {
             if (worker != null) {
                 worker.setStatus(WorkerStatus.BUSY);
@@ -464,6 +460,24 @@ public final class ProcessingRuntime {
                         task.getJobId(), task.getProfile().getName(), task.getChunkKey());
                 return false;
             }
+            if (processingTaskClaimRepository != null) {
+                ProcessingTaskClaimRepository.ClaimResult claimResult = processingTaskClaimRepository.claim(
+                        task.getJobId(),
+                        task.getProfile().getName(),
+                        segmentNumber,
+                        "TRANSCODING",
+                        processorInstanceId,
+                        claimStaleMillis
+                );
+                if (claimResult != ProcessingTaskClaimRepository.ClaimResult.ACQUIRED) {
+                    if (claimResult == ProcessingTaskClaimRepository.ClaimResult.HELD_BY_OTHER) {
+                        LOGGER.info("Skipping execution of transcode task already claimed elsewhere videoId={} profile={} chunk={}",
+                                task.getJobId(), task.getProfile().getName(), task.getChunkKey());
+                    }
+                    return false;
+                }
+                claimAcquired = true;
+            }
             task.setStatus(Status.RUNNING);
             LOGGER.info("Worker {} picked up task {} (chunk={} profile={})",
                     worker == null ? "unknown" : worker.getId(),
@@ -471,39 +485,53 @@ public final class ProcessingRuntime {
                     task.getChunkKey(),
                     task.getProfile().getName());
             emitState(task, TranscodeSegmentState.TRANSCODING, profiles);
-            CompletedTranscode completed = task.transcodeToSpool(storageClient, localUploadSpoolRoot);
-            if (completed == null) {
-                task.setStatus(Status.SUCCEEDED);
-                emitState(task, TranscodeSegmentState.DONE, profiles);
-                LOGGER.info("Task {} skipped because output already exists", task.getId());
-                return true;
-            }
-            if (isVideoFailed(task.getJobId())) {
-                Files.deleteIfExists(completed.localPath());
-                LOGGER.info("Discarded transcoded spool for failed videoId={} profile={} segment={}",
-                        task.getJobId(), task.getProfile().getName(), parseSegmentNumber(task.getChunkKey()));
-                return false;
-            }
-            processingUploadTaskRepository.upsertPending(
+            try (ClaimHeartbeat ignored = startClaimHeartbeat(
                     task.getJobId(),
                     task.getProfile().getName(),
-                    parseSegmentNumber(task.getChunkKey()),
-                    task.getChunkKey(),
-                    completed.outputKey(),
-                    completed.localPath().toString(),
-                    completed.sizeBytes(),
-                    completed.outputTsOffsetSeconds()
-            );
-            emitState(task, TranscodeSegmentState.TRANSCODED, profiles);
-            task.setStatus(Status.SUCCEEDED);
-            LOGGER.info("Task {} succeeded", task.getId());
-            return true;
+                    segmentNumber,
+                    "TRANSCODING"
+            )) {
+                CompletedTranscode completed = task.transcodeToSpool(storageClient, localUploadSpoolRoot);
+                if (completed == null) {
+                    task.setStatus(Status.SUCCEEDED);
+                    emitState(task, TranscodeSegmentState.DONE, profiles);
+                    LOGGER.info("Task {} skipped because output already exists", task.getId());
+                    return true;
+                }
+                if (isVideoFailed(task.getJobId())) {
+                    Files.deleteIfExists(completed.localPath());
+                    LOGGER.info("Discarded transcoded spool for failed videoId={} profile={} segment={}",
+                            task.getJobId(), task.getProfile().getName(), segmentNumber);
+                    return false;
+                }
+                processingUploadTaskRepository.upsertPending(
+                        task.getJobId(),
+                        task.getProfile().getName(),
+                        segmentNumber,
+                        task.getChunkKey(),
+                        completed.outputKey(),
+                        completed.localPath().toString(),
+                        completed.sizeBytes(),
+                        completed.outputTsOffsetSeconds()
+                );
+                emitState(task, TranscodeSegmentState.TRANSCODED, profiles);
+                task.setStatus(Status.SUCCEEDED);
+                LOGGER.info("Task {} succeeded", task.getId());
+                return true;
+            }
         } catch (Exception e) {
             task.setStatus(Status.FAILED);
             emitState(task, TranscodeSegmentState.FAILED, profiles);
             LOGGER.error("Task {} failed: {}", task.getId(), e.getMessage(), e);
             return false;
         } finally {
+            if (claimAcquired && processingTaskClaimRepository != null) {
+                processingTaskClaimRepository.release(
+                        task.getJobId(),
+                        task.getProfile().getName(),
+                        segmentNumber
+                );
+            }
             if (worker != null) {
                 worker.setStatus(WorkerStatus.IDLE);
                 worker.heartbeat();
@@ -565,6 +593,72 @@ public final class ProcessingRuntime {
         } catch (Exception e) {
             LOGGER.warn("Failed processing-claim lookup videoId={} profile={} segment={}", videoId, profile, segmentNumber, e);
             return false;
+        }
+    }
+
+    public AutoCloseable startUploadClaimHeartbeat(String videoId, String profile, int segmentNumber) {
+        return startClaimHeartbeat(videoId, profile, segmentNumber, "UPLOADING");
+    }
+
+    private ClaimHeartbeat startClaimHeartbeat(String videoId, String profile, int segmentNumber, String stage) {
+        if (segmentNumber < 0 || processingTaskClaimRepository == null) {
+            return ClaimHeartbeat.NOOP;
+        }
+        ClaimHeartbeat heartbeat = new ClaimHeartbeat(
+                videoId,
+                profile,
+                segmentNumber,
+                stage,
+                processorInstanceId,
+                processingTaskClaimRepository,
+                claimHeartbeatExecutor,
+                claimHeartbeatMillis()
+        );
+        heartbeat.start();
+        return heartbeat;
+    }
+
+    private static final class ClaimHeartbeat implements AutoCloseable {
+        private static final ClaimHeartbeat NOOP = new ClaimHeartbeat();
+
+        private final AtomicBoolean running;
+        private final ScheduledFuture<?> future;
+
+        private ClaimHeartbeat() {
+            this.running = null;
+            this.future = null;
+        }
+
+        private ClaimHeartbeat(
+                String videoId,
+                String profile,
+                int segmentNumber,
+                String stage,
+                String claimedBy,
+                ProcessingTaskClaimRepository repository,
+                ScheduledExecutorService scheduler,
+                long intervalMillis
+        ) {
+            this.running = new AtomicBoolean(true);
+            this.future = scheduler.scheduleAtFixedRate(() -> {
+                if (!running.get()) {
+                    return;
+                }
+                repository.heartbeat(videoId, profile, segmentNumber, stage, claimedBy);
+            }, intervalMillis, intervalMillis, TimeUnit.MILLISECONDS);
+        }
+
+        private void start() {
+            // Scheduled on construction.
+        }
+
+        @Override
+        public void close() {
+            if (running == null || future == null) {
+                return;
+            }
+            running.set(false);
+            future.cancel(false);
         }
     }
 

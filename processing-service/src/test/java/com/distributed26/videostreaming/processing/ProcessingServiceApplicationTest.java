@@ -232,16 +232,16 @@ class ProcessingServiceApplicationTest {
     @Test
     void activeClaim_isSkipped() {
         ProcessingServiceApplication.runtime().setProcessingTaskClaimRepository(processingTaskClaimRepository);
-        when(processingTaskClaimRepository.hasActiveClaim("vid1", "low", 0, 60000L)).thenReturn(true);
-        when(processingTaskClaimRepository.hasActiveClaim("vid1", "medium", 0, 60000L)).thenReturn(false);
-        when(processingTaskClaimRepository.hasActiveClaim("vid1", "high", 0, 60000L)).thenReturn(false);
+        when(processingTaskClaimRepository.hasActiveClaim("vid1", "low", 0, 10000L)).thenReturn(true);
+        when(processingTaskClaimRepository.hasActiveClaim("vid1", "medium", 0, 10000L)).thenReturn(false);
+        when(processingTaskClaimRepository.hasActiveClaim("vid1", "high", 0, 10000L)).thenReturn(false);
 
         sendChunks("vid1", "vid1/chunks/seg0.ts");
 
         assertEquals(2, taskQueue.size(), "One profile should be skipped because another instance already claimed it");
-        verify(processingTaskClaimRepository).hasActiveClaim("vid1", "low", 0, 60000L);
-        verify(processingTaskClaimRepository).hasActiveClaim("vid1", "medium", 0, 60000L);
-        verify(processingTaskClaimRepository).hasActiveClaim("vid1", "high", 0, 60000L);
+        verify(processingTaskClaimRepository).hasActiveClaim("vid1", "low", 0, 10000L);
+        verify(processingTaskClaimRepository).hasActiveClaim("vid1", "medium", 0, 10000L);
+        verify(processingTaskClaimRepository).hasActiveClaim("vid1", "high", 0, 10000L);
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────
