@@ -1344,10 +1344,7 @@ function handleProcessingRouteStatus(payload) {
     );
     return false;
   }
-  if (status === "COMPLETED") {
-    hideRouteState();
-    return false;
-  }
+  hideRouteState();
   return true;
 }
 
