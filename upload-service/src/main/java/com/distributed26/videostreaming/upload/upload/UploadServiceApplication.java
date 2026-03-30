@@ -1,6 +1,7 @@
 package com.distributed26.videostreaming.upload.upload;
 
 import com.distributed26.videostreaming.shared.config.StorageConfig;
+import com.distributed26.videostreaming.shared.storage.ResilientStorageClient;
 import com.distributed26.videostreaming.shared.upload.FailedVideoRegistry;
 import com.distributed26.videostreaming.shared.upload.RabbitMQDevLogReader;
 import com.distributed26.videostreaming.shared.upload.RabbitMQDevLogPublisher;
@@ -184,9 +185,13 @@ public class UploadServiceApplication {
 
     static Javalin createStatusApp(StatusEventBus statusEventBus) {
         ensureLogsDirectory();
+        ObjectStorageClient storageClient = new ResilientStorageClient(new S3StorageClient(loadStorageConfig()));
         VideoUploadRepository videoUploadRepository = createVideoUploadRepository();
         SegmentUploadRepository segmentUploadRepository = createSegmentUploadRepository();
         TranscodedSegmentStatusRepository transcodedSegmentStatusRepository = createTranscodedSegmentStatusRepository();
+        TerminalFailureStorageCleanup terminalFailureStorageCleanup =
+                new TerminalFailureStorageCleanup(storageClient, videoUploadRepository);
+        statusEventBus.subscribeAll(terminalFailureStorageCleanup);
         UploadStatusWebSocket uploadStatusWebSocket =
             new UploadStatusWebSocket(statusEventBus, segmentUploadRepository, transcodedSegmentStatusRepository);
         UploadInfoHandler uploadInfoHandler = new UploadInfoHandler(
@@ -240,7 +245,19 @@ public class UploadServiceApplication {
             }
             ctx.html(devLogsHtml);
         });
-        app.events(event -> event.serverStopped(() -> closeDevLogReader(devLogReader)));
+        app.events(event -> event.serverStopped(() -> {
+            try {
+                terminalFailureStorageCleanup.close();
+            } catch (Exception e) {
+                logger.warn("Error closing terminal failure storage cleanup", e);
+            }
+            try {
+                storageClient.close();
+            } catch (Exception e) {
+                logger.warn("Error closing status storage client", e);
+            }
+            closeDevLogReader(devLogReader);
+        }));
         return app;
     }
 
