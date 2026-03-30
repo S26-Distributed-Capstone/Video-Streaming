@@ -334,6 +334,51 @@ class StartupRecoveryServiceTest {
         }
 
         @Test
+        void queuedState_preventsRequeueForThatSegment() {
+            String videoId = UUID.randomUUID().toString();
+
+            when(videoProcessingRepo.findVideoIdsByStatus("PROCESSING")).thenReturn(List.of(videoId));
+            when(storageClient.listFiles(videoId + "/chunks/")).thenReturn(List.of(
+                    videoId + "/chunks/output0.ts",
+                    videoId + "/chunks/output1.ts"
+            ));
+            when(transcodeStatusRepo.findSegmentNumbersByState(videoId, "low", TranscodeSegmentState.DONE)).thenReturn(Set.of());
+            when(transcodeStatusRepo.findSegmentNumbersByState(videoId, "medium", TranscodeSegmentState.DONE)).thenReturn(Set.of());
+            when(transcodeStatusRepo.findSegmentNumbersByState(videoId, "high", TranscodeSegmentState.DONE)).thenReturn(Set.of());
+            when(transcodeStatusRepo.findSegmentNumbersByState(videoId, "low", TranscodeSegmentState.QUEUED)).thenReturn(Set.of(0));
+            when(transcodeStatusRepo.findSegmentNumbersByState(videoId, "medium", TranscodeSegmentState.QUEUED)).thenReturn(Set.of());
+            when(transcodeStatusRepo.findSegmentNumbersByState(videoId, "high", TranscodeSegmentState.QUEUED)).thenReturn(Set.of());
+            when(transcodeStatusRepo.findSegmentNumbersByState(videoId, "low", TranscodeSegmentState.TRANSCODING)).thenReturn(Set.of());
+            when(transcodeStatusRepo.findSegmentNumbersByState(videoId, "medium", TranscodeSegmentState.TRANSCODING)).thenReturn(Set.of());
+            when(transcodeStatusRepo.findSegmentNumbersByState(videoId, "high", TranscodeSegmentState.TRANSCODING)).thenReturn(Set.of());
+            when(transcodeStatusRepo.findSegmentNumbersByState(videoId, "low", TranscodeSegmentState.TRANSCODED)).thenReturn(Set.of());
+            when(transcodeStatusRepo.findSegmentNumbersByState(videoId, "medium", TranscodeSegmentState.TRANSCODED)).thenReturn(Set.of());
+            when(transcodeStatusRepo.findSegmentNumbersByState(videoId, "high", TranscodeSegmentState.TRANSCODED)).thenReturn(Set.of());
+            when(transcodeStatusRepo.findSegmentNumbersByState(videoId, "low", TranscodeSegmentState.UPLOADING)).thenReturn(Set.of());
+            when(transcodeStatusRepo.findSegmentNumbersByState(videoId, "medium", TranscodeSegmentState.UPLOADING)).thenReturn(Set.of());
+            when(transcodeStatusRepo.findSegmentNumbersByState(videoId, "high", TranscodeSegmentState.UPLOADING)).thenReturn(Set.of());
+            when(uploadTaskRepo.findOpenSegmentNumbers(videoId, "low")).thenReturn(Set.of());
+            when(uploadTaskRepo.findOpenSegmentNumbers(videoId, "medium")).thenReturn(Set.of());
+            when(uploadTaskRepo.findOpenSegmentNumbers(videoId, "high")).thenReturn(Set.of());
+            when(claimRepo.findClaimedSegmentNumbers(videoId, "low", runtime.claimStaleMillis())).thenReturn(Set.of());
+            when(claimRepo.findClaimedSegmentNumbers(videoId, "medium", runtime.claimStaleMillis())).thenReturn(Set.of());
+            when(claimRepo.findClaimedSegmentNumbers(videoId, "high", runtime.claimStaleMillis())).thenReturn(Set.of());
+
+            recoveryService.recoverIncompleteVideos(storageClient);
+
+            verify(transcodeTaskBus, never()).publish(argThat((TranscodeTaskEvent ev) ->
+                    videoId.equals(ev.getJobId())
+                            && "low".equals(ev.getProfile())
+                            && ev.getSegmentNumber() == 0
+            ));
+            verify(transcodeTaskBus).publish(argThat((TranscodeTaskEvent ev) ->
+                    videoId.equals(ev.getJobId())
+                            && "low".equals(ev.getProfile())
+                            && ev.getSegmentNumber() == 1
+            ));
+        }
+
+        @Test
         void staleClaim_isRequeuedOnLaterRecoveryPass() {
             String videoId = UUID.randomUUID().toString();
 

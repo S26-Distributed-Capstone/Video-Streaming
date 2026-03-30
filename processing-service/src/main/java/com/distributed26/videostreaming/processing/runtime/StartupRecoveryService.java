@@ -219,7 +219,7 @@ public final class StartupRecoveryService {
 
             int totalSegments = Math.max(runtime.findTotalSegments(videoId), chunkKeys.size());
             Map<String, Set<Integer>> doneSegmentsByProfile = loadDoneSegmentsByProfile(videoId);
-            Map<String, Set<Integer>> openUploadSegmentsByProfile = loadOpenUploadSegmentsByProfile(videoId);
+            Map<String, Set<Integer>> inFlightSegmentsByProfile = loadInFlightSegmentsByProfile(videoId);
             int republished = 0;
             Set<String> touchedProfiles = new HashSet<>();
 
@@ -233,10 +233,12 @@ public final class StartupRecoveryService {
                 }
                 for (TranscodingProfile profile : profiles) {
                     Set<Integer> doneSegments = doneSegmentsByProfile.getOrDefault(profile.getName(), Set.of());
-                    Set<Integer> openSegments = openUploadSegmentsByProfile.getOrDefault(profile.getName(), Set.of());
-                    if (doneSegments.contains(segmentNumber) || openSegments.contains(segmentNumber)) {
+                    Set<Integer> inFlightSegments = inFlightSegmentsByProfile.getOrDefault(profile.getName(), Set.of());
+                    if (doneSegments.contains(segmentNumber) || inFlightSegments.contains(segmentNumber)) {
                         continue;
                     }
+                    runtime.publishTranscodeState(videoId, profile.getName(), segmentNumber,
+                            TranscodeSegmentState.QUEUED, profiles);
                     runtime.transcodeTaskBusRef().publish(new TranscodeTaskEvent(
                             videoId,
                             chunkKey,
@@ -293,21 +295,33 @@ public final class StartupRecoveryService {
         return doneSegmentsByProfile;
     }
 
-    private Map<String, Set<Integer>> loadOpenUploadSegmentsByProfile(String videoId) {
-        Map<String, Set<Integer>> openSegmentsByProfile = new HashMap<>();
-        if (runtime.processingUploadTaskRepository() == null && runtime.processingTaskClaimRepository() == null) {
-            return openSegmentsByProfile;
+    private Map<String, Set<Integer>> loadInFlightSegmentsByProfile(String videoId) {
+        Map<String, Set<Integer>> inFlightSegmentsByProfile = new HashMap<>();
+        if (runtime.processingUploadTaskRepository() == null
+                && runtime.processingTaskClaimRepository() == null
+                && runtime.transcodeStatusRepository() == null) {
+            return inFlightSegmentsByProfile;
         }
         for (TranscodingProfile profile : profiles) {
-            Set<Integer> claimedOrOpenSegments = new HashSet<>();
+            Set<Integer> inFlightSegments = new HashSet<>();
             try {
+                if (runtime.transcodeStatusRepository() != null) {
+                    inFlightSegments.addAll(runtime.transcodeStatusRepository()
+                            .findSegmentNumbersByState(videoId, profile.getName(), TranscodeSegmentState.QUEUED));
+                    inFlightSegments.addAll(runtime.transcodeStatusRepository()
+                            .findSegmentNumbersByState(videoId, profile.getName(), TranscodeSegmentState.TRANSCODING));
+                    inFlightSegments.addAll(runtime.transcodeStatusRepository()
+                            .findSegmentNumbersByState(videoId, profile.getName(), TranscodeSegmentState.TRANSCODED));
+                    inFlightSegments.addAll(runtime.transcodeStatusRepository()
+                            .findSegmentNumbersByState(videoId, profile.getName(), TranscodeSegmentState.UPLOADING));
+                }
                 if (runtime.processingUploadTaskRepository() != null) {
-                    claimedOrOpenSegments.addAll(
+                    inFlightSegments.addAll(
                             runtime.processingUploadTaskRepository().findOpenSegmentNumbers(videoId, profile.getName())
                     );
                 }
                 if (runtime.processingTaskClaimRepository() != null) {
-                    claimedOrOpenSegments.addAll(
+                    inFlightSegments.addAll(
                             runtime.processingTaskClaimRepository().findClaimedSegmentNumbers(
                                     videoId,
                                     profile.getName(),
@@ -315,13 +329,13 @@ public final class StartupRecoveryService {
                             )
                     );
                 }
-                openSegmentsByProfile.put(profile.getName(), claimedOrOpenSegments);
+                inFlightSegmentsByProfile.put(profile.getName(), inFlightSegments);
             } catch (Exception e) {
-                LOGGER.warn("Startup recovery failed to load open processing work videoId={} profile={}",
+                LOGGER.warn("Startup recovery failed to load in-flight processing work videoId={} profile={}",
                         videoId, profile.getName(), e);
             }
         }
-        return openSegmentsByProfile;
+        return inFlightSegmentsByProfile;
     }
 
     private Map<Integer, Double> loadSourceSegmentOffsets(String videoId, ObjectStorageClient storageClient) {
