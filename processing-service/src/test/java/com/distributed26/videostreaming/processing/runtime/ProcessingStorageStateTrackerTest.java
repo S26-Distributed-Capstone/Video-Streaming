@@ -36,7 +36,7 @@ class ProcessingStorageStateTrackerTest {
     }
 
     @Test
-    void keepsWaitingUntilAllOutstandingOperationsFinish() {
+    void repeatedWaitSignalsForSameVideoDoNotAccumulate() {
         RecordingVideoProcessingRepository repository = new RecordingVideoProcessingRepository();
         RecordingStatusEventBus statusEventBus = new RecordingStatusEventBus();
         ProcessingStorageStateTracker tracker = new ProcessingStorageStateTracker(repository, statusEventBus, null);
@@ -45,15 +45,10 @@ class ProcessingStorageStateTrackerTest {
         tracker.beginStorageWait("video-1", "storage still down");
         tracker.endStorageWait("video-1");
 
-        assertTrue(tracker.isVideoWaiting("video-1"));
-        assertFalse(tracker.isServiceReady());
-        assertEquals(1, repository.countStatus("video-1:WAITING_FOR_STORAGE"));
-        assertEquals(1, statusEventBus.states.stream().filter("WAITING"::equals).count());
-
-        tracker.endStorageWait("video-1");
-
         assertFalse(tracker.isVideoWaiting("video-1"));
         assertTrue(tracker.isServiceReady());
+        assertEquals(1, repository.countStatus("video-1:WAITING_FOR_STORAGE"));
+        assertEquals(1, statusEventBus.states.stream().filter("WAITING"::equals).count());
         assertEquals(1, repository.countStatus("video-1:PROCESSING"));
         assertEquals(1, statusEventBus.states.stream().filter("AVAILABLE"::equals).count());
     }
