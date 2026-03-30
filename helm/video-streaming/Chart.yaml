@@ -1,0 +1,6 @@
+apiVersion: v2
+name: video-streaming
+description: Video streaming platform — upload, process, and stream HLS video
+version: 0.1.0
+appVersion: "1.0.0"
+

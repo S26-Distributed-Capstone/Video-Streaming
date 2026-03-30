@@ -1,16 +1,11 @@
-# Postgres StatefulSet + Service
-# StatefulSet gives stable network identity (postgres-0) and persistent storage.
-# This replaces the "postgres" service in docker-compose.yaml.
----
 apiVersion: v1
 kind: Service
 metadata:
-  name: postgres
+  name: {{ .Release.Name }}-postgres
 spec:
-  # ClusterIP = internal only, same as a Compose service with no "ports:" exposed
   type: ClusterIP
   selector:
-    app: postgres
+    app: {{ .Release.Name }}-postgres
   ports:
     - port: 5432
       targetPort: 5432
@@ -18,17 +13,17 @@ spec:
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: postgres
+  name: {{ .Release.Name }}-postgres
 spec:
-  serviceName: postgres
+  serviceName: {{ .Release.Name }}-postgres
   replicas: 1
   selector:
     matchLabels:
-      app: postgres
+      app: {{ .Release.Name }}-postgres
   template:
     metadata:
       labels:
-        app: postgres
+        app: {{ .Release.Name }}-postgres
     spec:
       containers:
         - name: postgres
@@ -39,41 +34,38 @@ spec:
             - name: POSTGRES_USER
               valueFrom:
                 secretKeyRef:
-                  name: video-streaming-secrets
+                  name: {{ .Release.Name }}-secrets
                   key: POSTGRES_USER
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: video-streaming-secrets
+                  name: {{ .Release.Name }}-secrets
                   key: POSTGRES_PASSWORD
             - name: POSTGRES_DB
               valueFrom:
                 configMapKeyRef:
-                  name: video-streaming-config
+                  name: {{ .Release.Name }}-config
                   key: PG_DB
           volumeMounts:
             - name: postgres-data
               mountPath: /var/lib/postgresql/data
-            # Mount the schema file so it runs on first boot
             - name: init-schema
               mountPath: /docker-entrypoint-initdb.d
               readOnly: true
-          # Same healthcheck as your docker-compose.yaml
           readinessProbe:
             exec:
-              command: ["pg_isready", "-U", "admin"]
+              command: ["pg_isready", "-U", {{ .Values.secrets.pgUser | quote }}]
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             exec:
-              command: ["pg_isready", "-U", "admin"]
+              command: ["pg_isready", "-U", {{ .Values.secrets.pgUser | quote }}]
             initialDelaySeconds: 15
             periodSeconds: 20
       volumes:
         - name: init-schema
           configMap:
-            name: postgres-init-schema
-  # Each replica gets its own PVC — data persists across restarts
+            name: {{ .Release.Name }}-postgres-init
   volumeClaimTemplates:
     - metadata:
         name: postgres-data
@@ -81,5 +73,5 @@ spec:
         accessModes: ["ReadWriteOnce"]
         resources:
           requests:
-            storage: 5Gi
+            storage: {{ .Values.postgres.storageSize }}
 

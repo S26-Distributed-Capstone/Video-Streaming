@@ -1,14 +1,11 @@
-# MinIO StatefulSet + Service
-# Provides S3-compatible object storage for video chunks and transcoded segments.
----
 apiVersion: v1
 kind: Service
 metadata:
-  name: minio
+  name: {{ .Release.Name }}-minio
 spec:
-  type: ClusterIP
+  type: {{ .Values.service.type }}
   selector:
-    app: minio
+    app: {{ .Release.Name }}-minio
   ports:
     - name: api
       port: 9000
@@ -20,17 +17,17 @@ spec:
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: minio
+  name: {{ .Release.Name }}-minio
 spec:
-  serviceName: minio
+  serviceName: {{ .Release.Name }}-minio
   replicas: 1
   selector:
     matchLabels:
-      app: minio
+      app: {{ .Release.Name }}-minio
   template:
     metadata:
       labels:
-        app: minio
+        app: {{ .Release.Name }}-minio
     spec:
       containers:
         - name: minio
@@ -43,12 +40,12 @@ spec:
             - name: MINIO_ROOT_USER
               valueFrom:
                 secretKeyRef:
-                  name: video-streaming-secrets
+                  name: {{ .Release.Name }}-secrets
                   key: MINIO_ACCESS_KEY
             - name: MINIO_ROOT_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: video-streaming-secrets
+                  name: {{ .Release.Name }}-secrets
                   key: MINIO_SECRET_KEY
           volumeMounts:
             - name: minio-data
@@ -72,5 +69,5 @@ spec:
         accessModes: ["ReadWriteOnce"]
         resources:
           requests:
-            storage: 10Gi
+            storage: {{ .Values.minio.storageSize }}
 

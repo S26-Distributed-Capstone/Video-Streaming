@@ -106,6 +106,8 @@ public class StreamingServiceApplication {
         });
         app.options("/*", ctx -> ctx.status(204));
 
+        app.get("/health", ctx -> ctx.json(java.util.Map.of("status", "ok")));
+
         app.get("/stream/{videoId}/manifest", ctx -> {
             if (!readinessService.validateVideoId(ctx) || !readinessService.requireCompleted(ctx)) {
                 return;

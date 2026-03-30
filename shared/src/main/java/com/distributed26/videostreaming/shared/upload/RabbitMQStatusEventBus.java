@@ -151,7 +151,8 @@ public class RabbitMQStatusEventBus implements StatusEventBus {
             LOGGER.info("Declared replica-local status queue={} exchange={}", queueName, exchange);
             return queueName;
         }
-        channel.queueDeclare(config.statusQueue(), true, false, false, null);
+        channel.queueDeclare(config.statusQueue(), true, false, false,
+                Map.of("x-queue-type", "quorum"));
         return config.statusQueue();
     }
 

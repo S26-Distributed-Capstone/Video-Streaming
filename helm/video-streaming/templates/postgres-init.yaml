@@ -1,13 +1,7 @@
-# ConfigMap to mount the Postgres init schema.
-# In Docker Compose this was done via:
-#   volumes:
-#     - ./upload-service/docs/db/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
-#
-# In K8s, we embed the SQL into a ConfigMap and mount it into the container.
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: postgres-init-schema
+  name: {{ .Release.Name }}-postgres-init
 data:
   schema.sql: |
     CREATE TABLE IF NOT EXISTS video_upload (
@@ -19,12 +13,8 @@ data:
         machine_id VARCHAR(128),
         container_id VARCHAR(128)
     );
-
-    ALTER TABLE video_upload
-        ADD COLUMN IF NOT EXISTS container_id VARCHAR(128);
-
-    ALTER TABLE video_upload
-        ADD COLUMN IF NOT EXISTS video_name VARCHAR(256) NOT NULL DEFAULT '';
+    ALTER TABLE video_upload ADD COLUMN IF NOT EXISTS container_id VARCHAR(128);
+    ALTER TABLE video_upload ADD COLUMN IF NOT EXISTS video_name VARCHAR(256) NOT NULL DEFAULT '';
 
     CREATE TABLE IF NOT EXISTS segment_upload (
         id SERIAL PRIMARY KEY,
@@ -32,9 +22,7 @@ data:
         segment_number INTEGER NOT NULL,
         UNIQUE (video_id, segment_number)
     );
-
-    CREATE INDEX IF NOT EXISTS idx_segment_upload_video_id
-        ON segment_upload(video_id);
+    CREATE INDEX IF NOT EXISTS idx_segment_upload_video_id ON segment_upload(video_id);
 
     CREATE TABLE IF NOT EXISTS transcoded_segment_status (
         id SERIAL PRIMARY KEY,
@@ -45,7 +33,6 @@ data:
         updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
         UNIQUE (video_id, profile, segment_number)
     );
-
     CREATE INDEX IF NOT EXISTS idx_transcoded_segment_status_video_profile_state
         ON transcoded_segment_status(video_id, profile, state);
 
@@ -65,7 +52,6 @@ data:
         updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
         UNIQUE (video_id, profile, segment_number)
     );
-
     CREATE INDEX IF NOT EXISTS idx_processing_upload_task_state_updated
         ON processing_upload_task(state, updated_at);
 
@@ -79,7 +65,6 @@ data:
         updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
         UNIQUE (video_id, profile, segment_number)
     );
-
     CREATE INDEX IF NOT EXISTS idx_processing_task_claim_claimed_by
         ON processing_task_claim(claimed_by, updated_at);
 

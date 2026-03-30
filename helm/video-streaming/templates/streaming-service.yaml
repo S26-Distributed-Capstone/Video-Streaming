@@ -1,0 +1,75 @@
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-streaming
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    app: {{ .Release.Name }}-streaming
+  ports:
+    - port: 8083
+      targetPort: 8083
+      {{- if eq .Values.service.type "NodePort" }}
+      nodePort: {{ .Values.service.streamingNodePort }}
+      {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-streaming
+spec:
+  replicas: {{ .Values.streamingService.replicas }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-streaming
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-streaming
+    spec:
+      initContainers:
+        {{- include "video-streaming.wait-for" (dict "name" "postgres" "host" (printf "%s-postgres" .Release.Name) "port" "5432") | nindent 8 }}
+        {{- include "video-streaming.wait-for" (dict "name" "minio" "host" (printf "%s-minio" .Release.Name) "port" "9000") | nindent 8 }}
+      containers:
+        - name: streaming-service
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 8083
+          command: ["/bin/sh", "-c"]
+          args:
+            - >
+              mvn -pl streaming-service -DskipTests exec:java
+              -Dexec.mainClass=com.distributed26.videostreaming.streaming.streaming.StreamingServiceApplication
+          envFrom:
+            - configMapRef:
+                name: {{ .Release.Name }}-config
+            - secretRef:
+                name: {{ .Release.Name }}-secrets
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8083
+            failureThreshold: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8083
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8083
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              memory: {{ .Values.streamingService.resources.requests.memory | quote }}
+              cpu: {{ .Values.streamingService.resources.requests.cpu | quote }}
+            limits:
+              memory: {{ .Values.streamingService.resources.limits.memory | quote }}
+              cpu: {{ .Values.streamingService.resources.limits.cpu | quote }}
+
