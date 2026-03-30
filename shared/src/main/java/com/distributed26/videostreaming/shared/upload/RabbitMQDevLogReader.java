@@ -10,7 +10,6 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
-import java.util.concurrent.TimeoutException;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -46,22 +45,39 @@ public final class RabbitMQDevLogReader implements AutoCloseable {
         this.queueName = Objects.requireNonNull(config.devLogQueue(), "devLogQueue is null");
         this.bindingKey = Objects.requireNonNull(config.devLogBinding(), "devLogBinding is null");
         this.maxPeekLimit = Math.max(1, maxPeekLimit);
-        try {
-            ConnectionFactory factory = new ConnectionFactory();
-            factory.setHost(config.host());
-            factory.setPort(config.port());
-            factory.setUsername(config.username());
-            factory.setPassword(config.password());
-            factory.setVirtualHost(config.vhost());
-            this.connection = factory.newConnection("dev-log-reader");
-            this.channel = connection.createChannel();
+        RabbitMQResources resources = RabbitMQRetrySupport.retry(
+                "initialize RabbitMQ dev log reader",
+                () -> {
+                    ConnectionFactory factory = createConnectionFactory(config);
+                    Connection connection = factory.newConnection("dev-log-reader");
+                    try {
+                        Channel channel = connection.createChannel();
+                        channel.exchangeDeclare(config.exchange(), BuiltinExchangeType.TOPIC, true);
+                        channel.queueDeclare(this.queueName, true, false, false, null);
+                        channel.queueBind(this.queueName, config.exchange(), this.bindingKey);
+                        return new RabbitMQResources(connection, channel);
+                    } catch (IOException | RuntimeException e) {
+                        try {
+                            connection.close();
+                        } catch (Exception closeError) {
+                            LOGGER.warn("Failed to close RabbitMQ connection after dev log reader init error", closeError);
+                        }
+                        throw e;
+                    }
+                }
+        );
+        this.connection = resources.connection();
+        this.channel = resources.channel();
+    }
 
-            channel.exchangeDeclare(config.exchange(), BuiltinExchangeType.TOPIC, true);
-            channel.queueDeclare(this.queueName, true, false, false, null);
-            channel.queueBind(this.queueName, config.exchange(), this.bindingKey);
-        } catch (IOException | TimeoutException e) {
-            throw new RuntimeException("Failed to initialize RabbitMQDevLogReader", e);
-        }
+    private static ConnectionFactory createConnectionFactory(RabbitMQBusConfig config) {
+        ConnectionFactory factory = new ConnectionFactory();
+        factory.setHost(config.host());
+        factory.setPort(config.port());
+        factory.setUsername(config.username());
+        factory.setPassword(config.password());
+        factory.setVirtualHost(config.vhost());
+        return factory;
     }
 
     public int maxPeekLimit() {

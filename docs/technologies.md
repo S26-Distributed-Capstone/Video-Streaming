@@ -120,6 +120,20 @@ Chosen because:
 - Docker Swarm is lighter-weight than Kubernetes and easier to integrate into the existing Docker-based workflow
 - it is enough to demonstrate multi-node deployment and redundancy
 
+### Kubernetes And Helm
+
+Chosen because:
+
+- the project needs a standard orchestration path for replicated services, stateful infrastructure, and declarative deployment
+- Kubernetes provides native `Deployment`, `StatefulSet`, `Service`, `ConfigMap`, `Secret`, and health-probe primitives that match the system architecture well
+- Helm keeps the multi-service deployment packaged as one chart with environment-specific values
+
+Why they were chosen in addition to Swarm:
+
+- Swarm remains the simpler demo path, but Kubernetes better represents the operational model used by modern clustered deployments
+- the RabbitMQ, Postgres, and MinIO dependencies map naturally onto Kubernetes stateful workloads
+- Kubernetes service discovery and readiness handling make the replica model explicit and inspectable
+
 ## Logging And Testing
 
 ### Log4j / SLF4J
