@@ -1,14 +1,4 @@
 apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-processing-spool
-spec:
-  accessModes: ["ReadWriteOnce"]
-  resources:
-    requests:
-      storage: {{ .Values.processingService.spoolStorageSize }}
----
-apiVersion: v1
 kind: Service
 metadata:
   name: {{ .Release.Name }}-processing
@@ -21,10 +11,11 @@ spec:
       targetPort: 8082
 ---
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: {{ .Release.Name }}-processing
 spec:
+  serviceName: {{ .Release.Name }}-processing
   replicas: {{ .Values.processingService.replicas }}
   selector:
     matchLabels:
@@ -84,8 +75,11 @@ spec:
             limits:
               memory: {{ .Values.processingService.resources.limits.memory | quote }}
               cpu: {{ .Values.processingService.resources.limits.cpu | quote }}
-      volumes:
-        - name: processing-spool
-          persistentVolumeClaim:
-            claimName: {{ .Release.Name }}-processing-spool
-
+  volumeClaimTemplates:
+    - metadata:
+        name: processing-spool
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.processingService.spoolStorageSize }}

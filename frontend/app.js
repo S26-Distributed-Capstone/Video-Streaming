@@ -564,7 +564,7 @@ function updateStorageRetryUi({ retrying, message } = {}) {
   if (typeof retrying !== "boolean") {
     return;
   }
-  const nextMessage = message || "Retrying MinIO connection";
+  const nextMessage = message || "MinIO is down. Waiting for it to come back up.";
   if (retrying === retryingMinioConnection) {
     if (retrying && doneMessage && !processingComplete) {
       setDoneMessage(nextMessage, { success: false });
@@ -1176,7 +1176,7 @@ function connectWebSocket(wsUrl, videoId, { isReconnect = false } = {}) {
       if (payload && payload.type === "storage_status") {
         updateStorageRetryUi({
           retrying: payload.state === "WAITING",
-          message: payload.state === "WAITING" ? "Retrying MinIO connection" : ""
+          message: payload.state === "WAITING" ? "MinIO is down. Waiting for it to come back up." : ""
         });
         scheduleProgressRefresh();
         return;
