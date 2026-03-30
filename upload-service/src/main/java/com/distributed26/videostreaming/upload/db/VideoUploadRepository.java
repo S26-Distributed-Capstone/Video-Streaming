@@ -89,7 +89,7 @@ public class VideoUploadRepository {
 
     public FailedTransitionResult markFailedIfProcessing(String videoId) {
         String selectSql = "SELECT status FROM video_upload WHERE video_id = ? FOR UPDATE";
-        String updateSql = "UPDATE video_upload SET status = 'FAILED' WHERE video_id = ? AND status = 'PROCESSING'";
+        String updateSql = "UPDATE video_upload SET status = 'FAILED' WHERE video_id = ? AND status IN ('PROCESSING', 'COMPLETED')";
         try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password)) {
             conn.setAutoCommit(false);
             try {
@@ -105,7 +105,8 @@ public class VideoUploadRepository {
                     }
                 }
 
-                if (!"PROCESSING".equalsIgnoreCase(currentStatus)) {
+                if (!"PROCESSING".equalsIgnoreCase(currentStatus)
+                        && !"COMPLETED".equalsIgnoreCase(currentStatus)) {
                     conn.commit();
                     return FailedTransitionResult.NOT_PROCESSING;
                 }

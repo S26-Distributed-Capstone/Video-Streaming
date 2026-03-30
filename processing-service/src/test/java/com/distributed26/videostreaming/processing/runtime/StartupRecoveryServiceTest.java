@@ -15,6 +15,8 @@ import com.distributed26.videostreaming.shared.upload.StatusEventBus;
 import com.distributed26.videostreaming.shared.upload.TranscodeTaskBus;
 import com.distributed26.videostreaming.shared.upload.events.TranscodeSegmentState;
 import com.distributed26.videostreaming.shared.upload.events.TranscodeTaskEvent;
+import com.distributed26.videostreaming.shared.upload.events.UploadStorageStatusEvent;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -330,6 +332,36 @@ class StartupRecoveryServiceTest {
                             && ev.getSegmentNumber() == 1
             ));
         }
+
+        @Test
+        void staleClaim_isRequeuedOnLaterRecoveryPass() {
+            String videoId = UUID.randomUUID().toString();
+
+            when(videoProcessingRepo.findVideoIdsByStatus("PROCESSING")).thenReturn(List.of(videoId));
+            when(storageClient.listFiles(videoId + "/chunks/")).thenReturn(List.of(
+                    videoId + "/chunks/output0.ts"
+            ));
+            when(transcodeStatusRepo.findSegmentNumbersByState(videoId, "low", TranscodeSegmentState.DONE)).thenReturn(Set.of());
+            when(transcodeStatusRepo.findSegmentNumbersByState(videoId, "medium", TranscodeSegmentState.DONE)).thenReturn(Set.of());
+            when(transcodeStatusRepo.findSegmentNumbersByState(videoId, "high", TranscodeSegmentState.DONE)).thenReturn(Set.of());
+            when(uploadTaskRepo.findOpenSegmentNumbers(videoId, "low")).thenReturn(Set.of());
+            when(uploadTaskRepo.findOpenSegmentNumbers(videoId, "medium")).thenReturn(Set.of());
+            when(uploadTaskRepo.findOpenSegmentNumbers(videoId, "high")).thenReturn(Set.of());
+            when(claimRepo.findClaimedSegmentNumbers(videoId, "low", runtime.claimStaleMillis()))
+                    .thenReturn(Set.of(0))
+                    .thenReturn(Set.of());
+            when(claimRepo.findClaimedSegmentNumbers(videoId, "medium", runtime.claimStaleMillis())).thenReturn(Set.of());
+            when(claimRepo.findClaimedSegmentNumbers(videoId, "high", runtime.claimStaleMillis())).thenReturn(Set.of());
+
+            recoveryService.recoverIncompleteVideos(storageClient);
+            recoveryService.recoverIncompleteVideos(storageClient);
+
+            verify(transcodeTaskBus, times(1)).publish(argThat((TranscodeTaskEvent ev) ->
+                    videoId.equals(ev.getJobId())
+                            && "low".equals(ev.getProfile())
+                            && ev.getSegmentNumber() == 0
+            ));
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -372,6 +404,48 @@ class StartupRecoveryServiceTest {
             verify(uploadTaskRepo).deleteById(1L);
             // Should publish DONE state
             verify(transcodeStatusRepo).upsertState(videoId, "low", 0, TranscodeSegmentState.DONE);
+        }
+
+        @Test
+        void recoveredTask_storageFailurePublishesWaitingAndRecovery() throws Exception {
+            String videoId = UUID.randomUUID().toString();
+            String content = "recovered segment data";
+            Path file = createSpoolFile(videoId, "low", "output0.ts", content);
+
+            LocalSpoolUploadTask task = new LocalSpoolUploadTask(
+                    11L, videoId, "low", 0,
+                    videoId + "/chunks/output0.ts",
+                    videoId + "/processed/low/output0.ts",
+                    file.toAbsolutePath().toString(),
+                    content.length(), 0d, 1
+            );
+
+            when(storageClient.fileExists(task.outputKey())).thenReturn(false);
+            doThrow(new RuntimeException("MinIO down"))
+                    .doNothing()
+                    .when(storageClient).uploadFile(eq(task.outputKey()), any(InputStream.class), eq((long) content.length()));
+
+            uploadWorkerPool.uploadSpoolTask(task, storageClient);
+
+            verify(uploadTaskRepo).markPending(11L);
+            verify(claimRepo, atLeastOnce()).release(videoId, "low", 0);
+            verify(videoProcessingRepo).updateStatus(videoId, "WAITING_FOR_STORAGE");
+            verify(statusBus).publish(argThat(event ->
+                    event instanceof UploadStorageStatusEvent storageEvent
+                            && videoId.equals(storageEvent.getJobId())
+                            && "WAITING".equals(storageEvent.getState())
+            ));
+
+            uploadWorkerPool.uploadSpoolTask(task, storageClient);
+
+            verify(videoProcessingRepo).updateStatus(videoId, "PROCESSING");
+            verify(statusBus).publish(argThat(event ->
+                    event instanceof UploadStorageStatusEvent storageEvent
+                            && videoId.equals(storageEvent.getJobId())
+                            && "AVAILABLE".equals(storageEvent.getState())
+            ));
+            verify(uploadTaskRepo).deleteById(11L);
+            assertFalse(Files.exists(file), "Spool file should be deleted after recovery upload succeeds");
         }
 
         @Test

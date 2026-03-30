@@ -1,0 +1,77 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-status
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    app: {{ .Release.Name }}-status
+  ports:
+    - port: 8081
+      targetPort: 8081
+      {{- if eq .Values.service.type "NodePort" }}
+      nodePort: {{ .Values.service.statusNodePort }}
+      {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-status
+spec:
+  replicas: {{ .Values.statusService.replicas }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-status
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-status
+    spec:
+      initContainers:
+        {{- include "video-streaming.wait-for" (dict "name" "rabbitmq" "host" (printf "%s-rabbitmq" .Release.Name) "port" "5672") | nindent 8 }}
+        {{- include "video-streaming.wait-for" (dict "name" "postgres" "host" (printf "%s-postgres" .Release.Name) "port" "5432") | nindent 8 }}
+      containers:
+        - name: status-service
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 8081
+          command: ["/bin/sh", "-c"]
+          args:
+            - >
+              mvn -pl upload-service -DskipTests exec:java
+              -Dexec.mainClass=com.distributed26.videostreaming.upload.upload.UploadServiceApplication
+          env:
+            - name: SERVICE_MODE
+              value: "status"
+          envFrom:
+            - configMapRef:
+                name: {{ .Release.Name }}-config
+            - secretRef:
+                name: {{ .Release.Name }}-secrets
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            failureThreshold: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              memory: {{ .Values.statusService.resources.requests.memory | quote }}
+              cpu: {{ .Values.statusService.resources.requests.cpu | quote }}
+            limits:
+              memory: {{ .Values.statusService.resources.limits.memory | quote }}
+              cpu: {{ .Values.statusService.resources.limits.cpu | quote }}
+

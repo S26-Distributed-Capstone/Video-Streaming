@@ -29,10 +29,16 @@ const transcodeHighTrack = document.getElementById("transcodeHighTrack");
 const doneMessage = document.getElementById("doneMessage");
 const processingRouteBanner = document.getElementById("processingRouteBanner");
 const processingRouteLabel = document.getElementById("processingRouteLabel");
+const cancelProcessingBtn = document.getElementById("cancelProcessingBtn");
+const processingRouteState = document.getElementById("processingRouteState");
+const processingRouteStateTitle = document.getElementById("processingRouteStateTitle");
+const processingRouteStateBody = document.getElementById("processingRouteStateBody");
+const processingRouteStateStreamBtn = document.getElementById("processingRouteStateStreamBtn");
 const player = document.getElementById("player");
 const playerStatus = document.getElementById("playerStatus");
 const playBtn = document.getElementById("playBtn");
 const refreshReadyBtn = document.getElementById("refreshReadyBtn");
+const deleteSelectedBtn = document.getElementById("deleteSelectedBtn");
 const readyList = document.getElementById("readyList");
 
 let ws = null;
@@ -51,12 +57,16 @@ let wsReconnectTimerId = null;
 let uploadRetryTimerId = null;
 let currentWsUrl = null;
 let reconnectAttempts = 0;
+let hasEverConnectedWebSocket = false;
 let retryingMinioConnection = false;
 const maxReconnectAttempts = 6;
 const reconnectBaseDelayMs = 1000;
 const maxUploadRetryAttempts = 5;
 let hlsInstance = null;
 let selectedVideoId = null;
+let readyVideosState = [];
+let selectedReadyVideoIds = new Set();
+let readyListBusy = false;
 let playbackAttemptToken = 0;
 let playbackRetryTimerId = null;
 const statusUrlStoragePrefix = "upload-status-url:";
@@ -65,12 +75,17 @@ const transcodeProfiles = {
   medium: { done: 0, transcoding: 0, uploading: 0, failed: 0, segments: new Map() },
   high: { done: 0, transcoding: 0, uploading: 0, failed: 0, segments: new Map() }
 };
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function setPlayerVisible(visible) {
   if (!player) {
     return;
   }
   player.classList.toggle("hidden", !visible);
+}
+
+function isValidVideoId(videoId) {
+  return typeof videoId === "string" && uuidPattern.test(videoId);
 }
 
 function getProcessingRouteVideoId() {
@@ -130,11 +145,18 @@ function enterProcessingRoute(videoId) {
     return;
   }
   document.body.classList.add("processing-route");
+  document.body.classList.remove("processing-route-terminal");
   if (processingRouteBanner) {
     processingRouteBanner.classList.remove("hidden");
   }
   if (processingRouteLabel) {
-    processingRouteLabel.textContent = `Processing video ${videoId}`;
+    processingRouteLabel.textContent = currentUploadName
+      ? `Processing video: ${currentUploadName}`
+      : "Processing video\u2026";
+  }
+  if (cancelProcessingBtn) {
+    cancelProcessingBtn.classList.remove("hidden");
+    cancelProcessingBtn.disabled = false;
   }
   uploadBar.style.width = "100%";
   uploadPercent.textContent = "100%";
@@ -144,7 +166,44 @@ function enterProcessingRoute(videoId) {
   if (transcodeBlock) {
     transcodeBlock.classList.remove("hidden");
   }
-  setDoneMessage("Upload accepted. Processing in progress.", { success: true });
+  setDoneMessage("", { success: true, hidden: true });
+  hideRouteState();
+}
+
+function hideRouteState() {
+  if (processingRouteState) {
+    processingRouteState.classList.add("hidden");
+    processingRouteState.classList.remove("error");
+  }
+  if (processingRouteStateTitle) {
+    processingRouteStateTitle.textContent = "";
+  }
+  if (processingRouteStateBody) {
+    processingRouteStateBody.textContent = "";
+  }
+  if (processingRouteStateStreamBtn) {
+    processingRouteStateStreamBtn.classList.add("hidden");
+  }
+}
+
+function showRouteState(title, body, { tone = "", showStreamButton = false } = {}) {
+  document.body.classList.add("processing-route-terminal");
+  hideCancelButton();
+  disconnectWebSocket();
+  if (processingRouteState) {
+    processingRouteState.classList.remove("hidden");
+    processingRouteState.classList.toggle("error", tone === "error");
+  }
+  if (processingRouteStateTitle) {
+    processingRouteStateTitle.textContent = title;
+  }
+  if (processingRouteStateBody) {
+    processingRouteStateBody.textContent = body;
+  }
+  if (processingRouteStateStreamBtn) {
+    processingRouteStateStreamBtn.classList.toggle("hidden", !showStreamButton);
+  }
+  setDoneMessage("", { hidden: true });
 }
 
 function setActiveTab(tab) {
@@ -213,6 +272,51 @@ function resetUploadRetryState() {
   uploadRetryCount = 0;
 }
 
+function hideCancelButton() {
+  if (cancelProcessingBtn) {
+    cancelProcessingBtn.classList.add("hidden");
+    cancelProcessingBtn.disabled = true;
+  }
+}
+
+function restoreCancelButton() {
+  if (cancelProcessingBtn) {
+    cancelProcessingBtn.disabled = false;
+    cancelProcessingBtn.textContent = "Cancel";
+    cancelProcessingBtn.classList.remove("hidden");
+  }
+}
+
+async function cancelProcessing() {
+  if (!currentVideoId) {
+    return;
+  }
+  if (cancelProcessingBtn) {
+    cancelProcessingBtn.disabled = true;
+    cancelProcessingBtn.textContent = "Cancelling…";
+  }
+  const videoId = currentVideoId;
+  const baseUrl = resolveBaseUrl();
+  try {
+    const resp = await fetch(`${baseUrl}/upload/${videoId}/fail?reason=user_cancelled`, { method: "POST" });
+    if (resp.ok || resp.status === 204) {
+      appendLog(`Processing cancelled for video ${videoId}`);
+      setDoneMessage("Processing cancelled.", { success: false });
+      hideCancelButton();
+    } else if (resp.status === 409) {
+      appendLog("Video is no longer in an active processing state.", "error");
+      setDoneMessage("Video is already completed or failed.", { success: false });
+      hideCancelButton();
+    } else {
+      appendLog(`Cancel request returned ${resp.status}`, "error");
+      restoreCancelButton();
+    }
+  } catch (err) {
+    appendLog("Failed to cancel processing.", "error");
+    restoreCancelButton();
+  }
+}
+
 function isUploadRetryableFailure(payload) {
   if (!payload || payload.type !== "failed") {
     return false;
@@ -236,7 +340,7 @@ async function persistTerminalUploadFailure(videoId) {
   const failUrl = `${baseUrl}/upload/${videoId}/fail`;
   try {
     const resp = await fetch(failUrl, { method: "POST" });
-    if (!resp.ok) {
+    if (!resp.ok && resp.status !== 409) {
       appendLog(`Failed to persist terminal upload failure (${resp.status})`, "error");
     }
   } catch (err) {
@@ -244,15 +348,18 @@ async function persistTerminalUploadFailure(videoId) {
   }
 }
 
-async function exhaustUploadRetries(message) {
+async function exhaustUploadRetries(message, { skipPersist = false } = {}) {
   const failedVideoId = currentVideoId;
   processingComplete = true;
+  hideCancelButton();
   resetWsReconnectState();
   disconnectWebSocket();
   uploadBtn.disabled = false;
   uploadInFlight = false;
   resetStateForNextUpload();
-  await persistTerminalUploadFailure(failedVideoId);
+  if (!skipPersist) {
+    await persistTerminalUploadFailure(failedVideoId);
+  }
   if (doneMessage) {
     setDoneMessage(message || "Upload failed.", { success: false });
   }
@@ -347,6 +454,7 @@ function resetStateForNextUpload() {
   completedSegments = 0;
   sourceSegmentsComplete = false;
   processingComplete = false;
+  hasEverConnectedWebSocket = false;
   retryingMinioConnection = false;
   clearProgressRefreshTimer();
   resetWsReconnectState();
@@ -406,6 +514,10 @@ function updateTranscodeProfileUi(profile) {
 function applyUploadInfoSnapshot(payload) {
   if (!payload || typeof payload !== "object") {
     return;
+  }
+
+  if (payload.videoName && processingRouteLabel) {
+    processingRouteLabel.textContent = `Processing video: ${payload.videoName}`;
   }
 
   updateStorageRetryUi({
@@ -472,6 +584,8 @@ function tryFinalizeSuccess() {
     return;
   }
   processingComplete = true;
+  hideRouteState();
+  hideCancelButton();
   updateStorageRetryUi({ retrying: false });
   resetUploadRetryState();
   setDoneMessage("Upload, chunking, and transcoding complete.", { success: true });
@@ -500,7 +614,7 @@ function updateStorageRetryUi({ retrying, message } = {}) {
   if (typeof retrying !== "boolean") {
     return;
   }
-  const nextMessage = message || "Retrying MinIO connection";
+  const nextMessage = message || "MinIO is down. Waiting for it to come back up.";
   if (retrying === retryingMinioConnection) {
     if (retrying && doneMessage && !processingComplete) {
       setDoneMessage(nextMessage, { success: false });
@@ -538,8 +652,13 @@ function setPlayerStatus(text, { success = false, hidden = false } = {}) {
   if (!playerStatus) {
     return;
   }
-  playerStatus.textContent = "";
-  playerStatus.classList.add("hidden");
+  playerStatus.textContent = text;
+  playerStatus.classList.toggle("success", success);
+  if (hidden || !text) {
+    playerStatus.classList.add("hidden");
+  } else {
+    playerStatus.classList.remove("hidden");
+  }
 }
 
 function deriveStreamingUrl(baseUrl, videoId) {
@@ -554,6 +673,20 @@ function deriveReadyListUrl(baseUrl) {
   const host = baseUrl.replace(/^https?:\/\//, "").replace(/:\d+$/, "");
   const streamingPort = "8083";
   return `${scheme}://${host}:${streamingPort}/stream/ready`;
+}
+
+function deriveDeleteVideoUrl(baseUrl, videoId) {
+  const scheme = baseUrl.startsWith("https://") ? "https" : "http";
+  const host = baseUrl.replace(/^https?:\/\//, "").replace(/:\d+$/, "");
+  const streamingPort = "8083";
+  return `${scheme}://${host}:${streamingPort}/stream/${encodeURIComponent(videoId)}`;
+}
+
+function deriveBulkDeleteUrl(baseUrl) {
+  const scheme = baseUrl.startsWith("https://") ? "https" : "http";
+  const host = baseUrl.replace(/^https?:\/\//, "").replace(/:\d+$/, "");
+  const streamingPort = "8083";
+  return `${scheme}://${host}:${streamingPort}/stream`;
 }
 
 function teardownPlayer() {
@@ -713,19 +846,44 @@ function setSelectedVideoId(videoId) {
   });
 }
 
-function renderReadyList(videos) {
+function setReadyListBusy(isBusy) {
+  readyListBusy = isBusy;
+  if (refreshReadyBtn) {
+    refreshReadyBtn.disabled = isBusy;
+  }
+  updateDeleteSelectedButton();
   if (!readyList) {
     return;
   }
-  readyList.textContent = "";
-  if (!Array.isArray(videos) || videos.length === 0) {
-    const empty = document.createElement("li");
-    empty.className = "muted";
-    empty.textContent = "No completed videos yet.";
-    readyList.appendChild(empty);
+  Array.from(readyList.querySelectorAll("input, button")).forEach((control) => {
+    control.disabled = isBusy;
+  });
+}
+
+function updateDeleteSelectedButton() {
+  if (!deleteSelectedBtn) {
     return;
   }
-  const normalized = videos.map((item) => {
+  const hasSelection = selectedReadyVideoIds.size > 0;
+  deleteSelectedBtn.classList.toggle("hidden", !hasSelection);
+  deleteSelectedBtn.disabled = readyListBusy || !hasSelection;
+}
+
+function createTrashIcon() {
+  const template = document.createElement("template");
+  template.innerHTML = `
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M9 3h6l1 2h4v2H4V5h4l1-2zm1 6h2v8h-2V9zm4 0h2v8h-2V9zM7 9h2v8H7V9zm1 12a2 2 0 0 1-2-2V8h12v11a2 2 0 0 1-2 2H8z"></path>
+    </svg>
+  `;
+  return template.content.firstElementChild;
+}
+
+function normalizeReadyVideos(videos) {
+  if (!Array.isArray(videos)) {
+    return [];
+  }
+  return videos.map((item) => {
     if (typeof item === "string") {
       return { videoId: item, videoName: item };
     }
@@ -734,21 +892,95 @@ function renderReadyList(videos) {
       videoName: item.videoName || item.video_name || item.name
     };
   }).filter((item) => item.videoId);
+}
 
-  normalized.forEach((video) => {
+function applyReadyVideoRemoval(videoIds) {
+  const removed = new Set(videoIds);
+  readyVideosState = readyVideosState.filter((video) => !removed.has(video.videoId));
+  selectedReadyVideoIds = new Set(Array.from(selectedReadyVideoIds).filter((videoId) => !removed.has(videoId)));
+  if (selectedVideoId && removed.has(selectedVideoId)) {
+    selectedVideoId = null;
+    teardownPlayer();
+  }
+}
+
+function renderReadyList(videos) {
+  if (!readyList) {
+    return;
+  }
+  readyVideosState = normalizeReadyVideos(videos);
+  selectedReadyVideoIds = new Set(Array.from(selectedReadyVideoIds)
+    .filter((videoId) => readyVideosState.some((video) => video.videoId === videoId)));
+  readyList.textContent = "";
+  if (readyVideosState.length === 0) {
+    const empty = document.createElement("li");
+    empty.className = "muted";
+    empty.textContent = "No completed videos yet.";
+    readyList.appendChild(empty);
+    updateDeleteSelectedButton();
+    return;
+  }
+
+  readyVideosState.forEach((video) => {
     const item = document.createElement("li");
     item.dataset.videoId = video.videoId;
-    item.textContent = video.videoName || video.videoId;
-    item.addEventListener("click", () => setSelectedVideoId(video.videoId));
+
+    const row = document.createElement("div");
+    row.className = "ready-list-row";
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.className = "ready-list-checkbox";
+    checkbox.checked = selectedReadyVideoIds.has(video.videoId);
+    checkbox.setAttribute("aria-label", `Select ${video.videoName || video.videoId}`);
+    checkbox.addEventListener("click", (event) => event.stopPropagation());
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) {
+        selectedReadyVideoIds.add(video.videoId);
+      } else {
+        selectedReadyVideoIds.delete(video.videoId);
+      }
+      updateDeleteSelectedButton();
+    });
+
+    const label = document.createElement("button");
+    label.type = "button";
+    label.className = "ready-list-label";
+    label.addEventListener("click", () => setSelectedVideoId(video.videoId));
+
+    const name = document.createElement("span");
+    name.className = "ready-list-name";
+    name.textContent = video.videoName || video.videoId;
+
+    label.appendChild(name);
+
+    const deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.className = "icon-button";
+    deleteBtn.setAttribute("aria-label", `Delete ${video.videoName || video.videoId}`);
+    deleteBtn.appendChild(createTrashIcon());
+    deleteBtn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      await deleteSingleVideo(video);
+    });
+
+    row.appendChild(checkbox);
+    row.appendChild(label);
+    row.appendChild(deleteBtn);
+    item.appendChild(row);
     readyList.appendChild(item);
   });
 
-  const ids = normalized.map((video) => video.videoId);
+  const ids = readyVideosState.map((video) => video.videoId);
   if (currentVideoId && ids.includes(currentVideoId)) {
     setSelectedVideoId(currentVideoId);
+  } else if (selectedVideoId && !ids.includes(selectedVideoId)) {
+    setSelectedVideoId(ids[0] || null);
   } else if (!selectedVideoId && ids.length > 0) {
     setSelectedVideoId(ids[0]);
   }
+  updateDeleteSelectedButton();
+  setReadyListBusy(readyListBusy);
 }
 
 async function refreshReadyList() {
@@ -764,6 +996,66 @@ async function refreshReadyList() {
     renderReadyList(videos);
   } catch (err) {
     setPlayerStatus("Failed to load ready videos.", { success: false });
+  }
+}
+
+async function deleteSingleVideo(video) {
+  const label = video.videoName || video.videoId;
+  if (!window.confirm(`Delete "${label}" from object storage?`)) {
+    return;
+  }
+  setReadyListBusy(true);
+  try {
+    const resp = await fetch(deriveDeleteVideoUrl(resolveBaseUrl(), video.videoId), {
+      method: "DELETE"
+    });
+    if (!resp.ok) {
+      await refreshReadyList();
+      setPlayerStatus(`Failed to delete video (${resp.status})`, { success: false });
+      return;
+    }
+    applyReadyVideoRemoval([video.videoId]);
+    renderReadyList(readyVideosState);
+  } catch (_) {
+    await refreshReadyList();
+    setPlayerStatus("Failed to delete video.", { success: false });
+  } finally {
+    setReadyListBusy(false);
+  }
+}
+
+async function deleteSelectedVideos() {
+  const videoIds = Array.from(selectedReadyVideoIds);
+  if (videoIds.length === 0) {
+    return;
+  }
+  const message = videoIds.length === 1
+    ? "Delete the selected video from object storage?"
+    : `Delete ${videoIds.length} selected videos from object storage?`;
+  if (!window.confirm(message)) {
+    return;
+  }
+  setReadyListBusy(true);
+  try {
+    const resp = await fetch(deriveBulkDeleteUrl(resolveBaseUrl()), {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ videoIds })
+    });
+    if (!resp.ok) {
+      await refreshReadyList();
+      setPlayerStatus(`Failed to delete videos (${resp.status})`, { success: false });
+      return;
+    }
+    applyReadyVideoRemoval(videoIds);
+    renderReadyList(readyVideosState);
+  } catch (_) {
+    await refreshReadyList();
+    setPlayerStatus("Failed to delete videos.", { success: false });
+  } finally {
+    setReadyListBusy(false);
   }
 }
 
@@ -846,6 +1138,7 @@ function scheduleWebSocketReconnect(wsUrl, videoId, token) {
   if (!wsUrl || !videoId) {
     return;
   }
+  const shouldNotifyUser = hasEverConnectedWebSocket;
   wsReconnectTimerId = scheduleRetry({
     activeToken: token,
     expectedToken: wsToken,
@@ -858,13 +1151,17 @@ function scheduleWebSocketReconnect(wsUrl, videoId, token) {
     onExhausted: () => {
       uploadBtn.disabled = false;
       uploadInFlight = false;
-      setDoneMessage("Status service unavailable. Please reconnect or retry.", { success: false });
+      if (shouldNotifyUser) {
+        setDoneMessage("Status service unavailable. Please reconnect or retry.", { success: false });
+      }
       appendLog("WebSocket reconnect exhausted", "error");
     },
     beforeSchedule: ({ attempt, maxAttempts, delayMs }) => {
       const retryWord = attempt === maxAttempts ? "final retry" : `retry ${attempt}/${maxAttempts}`;
       reconnectAttempts = attempt;
-      setDoneMessage(`Status service connection lost. Reconnecting (${retryWord})...`, { success: false });
+      if (shouldNotifyUser) {
+        setDoneMessage(`Status service connection lost. Reconnecting (${retryWord})...`, { success: false });
+      }
       appendLog(`WebSocket reconnect scheduled in ${Math.round(delayMs / 1000)}s`);
     },
     run: () => {
@@ -898,9 +1195,10 @@ function connectWebSocket(wsUrl, videoId, { isReconnect = false } = {}) {
     if (token !== wsToken) {
       return;
     }
+    hasEverConnectedWebSocket = true;
     resetWsReconnectState();
     appendLog("WebSocket connected");
-    setDoneMessage("Upload complete.", { success: true, hidden: true });
+    setDoneMessage("", { success: true, hidden: true });
     console.log("[upload-ui] ws open", { wsUrl, videoId, token });
     if (videoId) {
       ws.send(`job:${videoId}`);
@@ -934,12 +1232,16 @@ function connectWebSocket(wsUrl, videoId, { isReconnect = false } = {}) {
       if (payload && payload.type === "storage_status") {
         updateStorageRetryUi({
           retrying: payload.state === "WAITING",
-          message: payload.state === "WAITING" ? "Retrying MinIO connection" : ""
+          message: payload.state === "WAITING" ? "MinIO is down. Waiting for it to come back up." : ""
         });
         scheduleProgressRefresh();
         return;
       }
       if (payload && payload.type === "failed") {
+        if (payload.reason === "user_cancelled") {
+          void exhaustUploadRetries("Processing cancelled.", { skipPersist: true });
+          return;
+        }
         if (isUploadRetryableFailure(payload)) {
           if (shouldIgnoreUploadRetryableFailure(payload)) {
             appendLog("Upload-service interruption detected after source upload completed. Continuing to monitor transcoding.");
@@ -990,18 +1292,86 @@ async function fetchUploadInfo(baseUrl, videoId, uploadStatusUrl) {
       if (infoBox) {
         infoBox.textContent = `${resp.status} ${text}`;
       }
-      return;
+      return { ok: false, status: resp.status, text };
     }
     const payload = JSON.parse(text);
     if (infoBox) {
       renderJson(infoBox, payload);
     }
     applyUploadInfoSnapshot(payload);
+    return { ok: true, status: resp.status, payload };
   } catch (err) {
     if (infoBox) {
       infoBox.textContent = `Upload info error: ${err}`;
     }
+    return { ok: false, status: 0, text: String(err) };
   }
+}
+
+function handleProcessingRouteLoadFailure(videoId, result) {
+  const status = result ? result.status : 0;
+  if (status === 400 || !isValidVideoId(videoId)) {
+    showRouteState(
+      "Invalid video ID",
+      "This processing link is malformed. Check the URL and try again.",
+      { tone: "error" }
+    );
+    return;
+  }
+  if (status === 404) {
+    showRouteState(
+      "Video not found",
+      "No video exists for this processing link. It may have been deleted or never created.",
+      { tone: "error" }
+    );
+    return;
+  }
+  showRouteState(
+    "Processing status unavailable",
+    "The page could not load the current video state. Try refreshing when the status service is available.",
+    { tone: "error" }
+  );
+}
+
+function handleProcessingRouteStatus(payload) {
+  const status = String(payload.status || "").toUpperCase();
+  if (status === "FAILED") {
+    processingComplete = true;
+    showRouteState(
+      "Processing failed",
+      "This video is in a terminal failed state and cannot continue processing from this page.",
+      { tone: "error" }
+    );
+    return false;
+  }
+  hideRouteState();
+  return true;
+}
+
+async function bootProcessingRoute(routeVideoId) {
+  currentVideoId = routeVideoId;
+  setActiveTab("upload");
+  enterProcessingRoute(routeVideoId);
+
+  if (!isValidVideoId(routeVideoId)) {
+    handleProcessingRouteLoadFailure(routeVideoId, { status: 400 });
+    return;
+  }
+
+  const routeStatusUrl = getProcessingRouteStatusUrl(routeVideoId);
+  const baseUrl = resolveBaseUrl();
+  const wsUrl = routeStatusUrl || deriveWsUrl(baseUrl, routeVideoId);
+  const result = await fetchUploadInfo(baseUrl, routeVideoId, wsUrl);
+  if (!result || !result.ok) {
+    handleProcessingRouteLoadFailure(routeVideoId, result);
+    return;
+  }
+
+  if (!handleProcessingRouteStatus(result.payload)) {
+    return;
+  }
+
+  connectWebSocket(wsUrl, routeVideoId);
 }
 
 function uploadFile({ preserveLog, isRetry } = {}) {
@@ -1153,6 +1523,9 @@ function uploadFile({ preserveLog, isRetry } = {}) {
 }
 
 uploadBtn.addEventListener("click", uploadFile);
+if (cancelProcessingBtn) {
+  cancelProcessingBtn.addEventListener("click", cancelProcessing);
+}
 if (fileInput) {
   fileInput.addEventListener("change", () => {
     const file = fileInput.files && fileInput.files[0];
@@ -1179,18 +1552,19 @@ if (playBtn) {
 if (refreshReadyBtn) {
   refreshReadyBtn.addEventListener("click", refreshReadyList);
 }
+if (deleteSelectedBtn) {
+  deleteSelectedBtn.addEventListener("click", deleteSelectedVideos);
+}
+if (processingRouteStateStreamBtn) {
+  processingRouteStateStreamBtn.addEventListener("click", () => setActiveTab("stream"));
+}
 
 refreshReadyList();
 const routeVideoId = getProcessingRouteVideoId();
 if (routeVideoId) {
-  currentVideoId = routeVideoId;
-  setActiveTab("upload");
-  enterProcessingRoute(routeVideoId);
-  const routeStatusUrl = getProcessingRouteStatusUrl(routeVideoId);
-  const baseUrl = resolveBaseUrl();
-  const wsUrl = routeStatusUrl || deriveWsUrl(baseUrl, routeVideoId);
-  fetchUploadInfo(baseUrl, routeVideoId, wsUrl).catch(() => {});
-  connectWebSocket(wsUrl, routeVideoId);
+  bootProcessingRoute(routeVideoId).catch(() => {
+    handleProcessingRouteLoadFailure(routeVideoId, { status: 0 });
+  });
 } else {
   setActiveTab("upload");
 }

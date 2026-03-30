@@ -16,6 +16,8 @@ In the default local setup, the services are exposed at:
 - MinIO console: `http://localhost:9001`
 - RabbitMQ management UI: `http://localhost:15672`
 
+These addresses are the same for Docker Compose and for the Minikube-based Kubernetes setup described in [docs/k8s-deployment.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/k8s-deployment.md). In Kubernetes, they are exposed through `LoadBalancer` Services and `minikube tunnel`.
+
 ## Required User Configuration
 
 Before starting the system, copy the example environment file:
@@ -53,6 +55,9 @@ The following settings are expected to be configured by the user.
 - `RABBITMQ_PASS`: RabbitMQ password
 - `RABBITMQ_VHOST`: RabbitMQ virtual host
 - `RABBITMQ_EXCHANGE`: topic exchange used for upload and status events
+- `RABBITMQ_RETRY_INITIAL_DELAY_MS`: initial RabbitMQ startup retry delay used by the Java services
+- `RABBITMQ_RETRY_MAX_DELAY_MS`: maximum RabbitMQ startup retry delay used by the Java services
+- `RABBITMQ_RETRY_MAX_ATTEMPTS`: maximum RabbitMQ startup retry attempts, where `0` means unlimited
 
 ### Queue Bindings
 

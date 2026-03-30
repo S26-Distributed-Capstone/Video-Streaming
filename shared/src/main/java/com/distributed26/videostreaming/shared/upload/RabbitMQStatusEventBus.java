@@ -15,7 +15,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.TimeoutException;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import com.distributed26.videostreaming.shared.upload.events.UploadFailedEvent;
@@ -42,17 +41,29 @@ public class RabbitMQStatusEventBus implements StatusEventBus {
 
     public RabbitMQStatusEventBus(RabbitMQBusConfig config, boolean consumeStatus) {
         this.exchange = Objects.requireNonNull(config.exchange(), "exchange is null");
-        try {
-            ConnectionFactory factory = new ConnectionFactory();
-            factory.setHost(config.host());
-            factory.setPort(config.port());
-            factory.setUsername(config.username());
-            factory.setPassword(config.password());
-            factory.setVirtualHost(config.vhost());
-            this.connection = factory.newConnection("upload-status-event-bus");
-            this.channel = connection.createChannel();
+        RabbitMQResources resources = RabbitMQRetrySupport.retry(
+                "initialize RabbitMQ status event bus",
+                () -> {
+                    ConnectionFactory factory = config.createConnectionFactory();
+                    Connection connection = factory.newConnection("upload-status-event-bus");
+                    try {
+                        Channel channel = connection.createChannel();
+                        channel.exchangeDeclare(this.exchange, BuiltinExchangeType.TOPIC, true);
+                        return new RabbitMQResources(connection, channel);
+                    } catch (IOException | RuntimeException e) {
+                        try {
+                            connection.close();
+                        } catch (Exception closeError) {
+                            LOGGER.warn("Failed to close RabbitMQ connection after status bus init error", closeError);
+                        }
+                        throw e;
+                    }
+                }
+        );
+        this.connection = resources.connection();
+        this.channel = resources.channel();
 
-            channel.exchangeDeclare(this.exchange, BuiltinExchangeType.TOPIC, true);
+        try {
             if (consumeStatus) {
                 this.consumerQueueName = declareConsumerQueue(config);
                 channel.queueBind(this.consumerQueueName, this.exchange, config.statusBinding());
@@ -67,7 +78,7 @@ public class RabbitMQStatusEventBus implements StatusEventBus {
                 this.failureQueueName = null;
                 LOGGER.info("Status event consumer disabled for {}", this.exchange);
             }
-        } catch (IOException | TimeoutException e) {
+        } catch (IOException e) {
             throw new RuntimeException("Failed to initialize RabbitMQStatusEventBus", e);
         }
     }
@@ -151,7 +162,8 @@ public class RabbitMQStatusEventBus implements StatusEventBus {
             LOGGER.info("Declared replica-local status queue={} exchange={}", queueName, exchange);
             return queueName;
         }
-        channel.queueDeclare(config.statusQueue(), true, false, false, null);
+        channel.queueDeclare(config.statusQueue(), true, false, false,
+                Map.of("x-queue-type", "quorum"));
         return config.statusQueue();
     }
 

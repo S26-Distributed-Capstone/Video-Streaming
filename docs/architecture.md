@@ -66,6 +66,21 @@ The most distribution-sensitive part of the system is processing-service, becaus
 
 The deployment model supports multiple replicas of stateless services while reusing shared infrastructure. The deployment relationships are shown in [docs/diagrams/architecture.drawio](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/diagrams/architecture.drawio).
 
+The current repository includes two deployment styles:
+
+- Docker Compose / Swarm for local and demo-oriented deployment
+- Kubernetes via Helm for replicated local-cluster deployment
+
+In Kubernetes:
+
+- Postgres, RabbitMQ, and MinIO run as `StatefulSet` workloads
+- upload-service, status-service, processing-service, and streaming-service run as `Deployment` workloads
+- Kubernetes `Service` objects provide stable DNS names for in-cluster communication
+- external traffic reaches the HTTP services through `LoadBalancer` Services rather than an Ingress
+- service replicas are selected by label and load-balanced automatically across ready pods
+
+See [docs/k8s-deployment.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/k8s-deployment.md) for the concrete chart layout and resource names.
+
 ## Redundancy
 
 Redundancy is used in the following places:
@@ -123,6 +138,7 @@ The main mitigations are:
 - durable artifact storage in MinIO
 - startup recovery and orphan cleanup in processing-service
 - explicit failure detection in node-watcher
+- Kubernetes readiness/liveness probes and dependency-gating init containers in the Helm deployment
 
 See [docs/scope.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/scope.md) for the supported scenarios these concerns apply to.
 See [docs/challenges.md](https://github.com/S26-Distributed-Capstone/Video-Streaming/blob/main/docs/challenges.md) for the concrete recovery behaviors currently implemented.

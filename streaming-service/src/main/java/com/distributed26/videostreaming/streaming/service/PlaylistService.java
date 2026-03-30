@@ -68,6 +68,11 @@ public final class PlaylistService {
         return storageClient.generatePresignedUrl(objectKey, SEGMENT_PRESIGNED_URL_TTL_SECONDS);
     }
 
+    public void invalidateVideo(String videoId) {
+        String prefix = videoId + "/";
+        playlistCache.keySet().removeIf(key -> key.startsWith(prefix));
+    }
+
     static String rewriteMasterManifest(String content) {
         String[] lines = content.split("\\r?\\n");
         StringBuilder rewritten = new StringBuilder(content.length() + lines.length * 8);

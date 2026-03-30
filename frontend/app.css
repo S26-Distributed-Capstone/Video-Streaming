@@ -121,6 +121,32 @@ video {
   text-decoration: underline;
 }
 
+.route-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.cancel-btn {
+  padding: 8px 16px;
+  border: 1px solid var(--danger-text);
+  border-radius: 999px;
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  font-weight: 700;
+  cursor: pointer;
+  font-size: 0.85em;
+}
+
+.cancel-btn:hover {
+  background: rgba(201, 109, 68, 0.22);
+}
+
+.cancel-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 body.processing-route .controls {
   display: none;
 }
@@ -198,6 +224,10 @@ button.secondary {
   color: var(--text);
 }
 
+button.danger {
+  background: linear-gradient(90deg, #b24f31, #d17847);
+}
+
 button:disabled {
   opacity: 0.55;
   cursor: not-allowed;
@@ -217,6 +247,42 @@ button:disabled {
   background: var(--success-bg);
   color: var(--success-text);
   border-color: rgba(79, 138, 120, 0.15);
+}
+
+.route-state {
+  margin-bottom: 18px;
+  padding: 18px 20px;
+  border-radius: 22px;
+  background: linear-gradient(180deg, #fff, #fbf4ea);
+  border: 1px solid var(--line);
+}
+
+.route-state h2 {
+  margin: 0 0 8px;
+  font-family: var(--serif);
+  font-size: 1.6rem;
+  font-weight: 600;
+}
+
+.route-state p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.route-state-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.route-state.error {
+  border-color: rgba(201, 109, 68, 0.25);
+  background: linear-gradient(180deg, #fff7f3, #fbeadd);
+}
+
+body.processing-route.processing-route-terminal .stage-grid {
+  display: none;
 }
 
 .stage-grid {
@@ -312,11 +378,10 @@ button:disabled {
 }
 
 .ready-list li {
-  padding: 10px 12px;
+  padding: 0;
   border-radius: 16px;
   background: #fff;
   border: 1px solid var(--line);
-  cursor: pointer;
   word-break: break-word;
   font-size: 0.92rem;
 }
@@ -329,6 +394,63 @@ button:disabled {
 .ready-list li.muted {
   color: var(--muted);
   cursor: default;
+  padding: 10px 12px;
+}
+
+.ready-list-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.ready-list-checkbox {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+}
+
+.ready-list-label {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font-weight: inherit;
+  text-align: left;
+  width: auto;
+  cursor: pointer;
+}
+
+.ready-list-name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--danger-text);
+}
+
+.icon-button:hover:not(:disabled) {
+  background: var(--danger-bg);
+}
+
+.icon-button svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
 }
 
 #player {

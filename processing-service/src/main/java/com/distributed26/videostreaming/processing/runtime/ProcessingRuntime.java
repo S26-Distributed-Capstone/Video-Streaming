@@ -36,7 +36,7 @@ import org.apache.logging.log4j.Logger;
 public final class ProcessingRuntime {
     private static final Logger LOGGER = LogManager.getLogger(ProcessingRuntime.class);
     private static final java.util.regex.Pattern SEGMENT_NUMBER_PATTERN = java.util.regex.Pattern.compile("(\\d+)");
-    private static final long DEFAULT_CLAIM_STALE_MILLIS = 60_000L;
+    private static final long DEFAULT_CLAIM_STALE_MILLIS = 10_000L;
     private final Set<String> manifestsInFlight = ConcurrentHashMap.newKeySet();
 
     private TranscodedSegmentStatusRepository transcodeStatusRepository;
@@ -332,6 +332,10 @@ public final class ProcessingRuntime {
 
     public VideoProcessingRepository videoProcessingRepository() {
         return videoProcessingRepository;
+    }
+
+    public StatusEventBus statusBus() {
+        return statusBus;
     }
 
     public TranscodedSegmentStatusRepository transcodeStatusRepository() {

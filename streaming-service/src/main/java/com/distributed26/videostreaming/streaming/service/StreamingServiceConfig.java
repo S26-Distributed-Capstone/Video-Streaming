@@ -5,12 +5,15 @@ import io.github.cdimascio.dotenv.Dotenv;
 
 public final class StreamingServiceConfig {
     private static final int DEFAULT_STREAMING_PORT = 8083;
+    private static final int DEFAULT_DELETE_RETRY_INTERVAL_SECONDS = 120;
 
     private final int port;
+    private final int deleteRetryIntervalSeconds;
     private final StorageConfig storageConfig;
 
-    private StreamingServiceConfig(int port, StorageConfig storageConfig) {
+    private StreamingServiceConfig(int port, int deleteRetryIntervalSeconds, StorageConfig storageConfig) {
         this.port = port;
+        this.deleteRetryIntervalSeconds = deleteRetryIntervalSeconds;
         this.storageConfig = storageConfig;
     }
 
@@ -18,6 +21,8 @@ public final class StreamingServiceConfig {
         Dotenv dotenv = Dotenv.configure().directory("./").ignoreIfMissing().load();
         return new StreamingServiceConfig(
                 parsePort(dotenv.get("STREAMING_PORT")),
+                parsePositiveInt(dotenv.get("STREAMING_DELETE_RETRY_INTERVAL_SECONDS"),
+                        DEFAULT_DELETE_RETRY_INTERVAL_SECONDS),
                 new StorageConfig(
                         getEnvOrDotenv(dotenv, "MINIO_ENDPOINT", "http://localhost:9000"),
                         getEnvOrDotenv(dotenv, "MINIO_PUBLIC_ENDPOINT", null),
@@ -33,6 +38,10 @@ public final class StreamingServiceConfig {
         return port;
     }
 
+    public int deleteRetryIntervalSeconds() {
+        return deleteRetryIntervalSeconds;
+    }
+
     public StorageConfig storageConfig() {
         return storageConfig;
     }
@@ -45,6 +54,17 @@ public final class StreamingServiceConfig {
             return Integer.parseInt(rawPort.trim());
         } catch (NumberFormatException e) {
             return DEFAULT_STREAMING_PORT;
+        }
+    }
+
+    private static int parsePositiveInt(String rawValue, int defaultValue) {
+        if (rawValue == null || rawValue.isBlank()) {
+            return defaultValue;
+        }
+        try {
+            return Math.max(1, Integer.parseInt(rawValue.trim()));
+        } catch (NumberFormatException e) {
+            return defaultValue;
         }
     }
 

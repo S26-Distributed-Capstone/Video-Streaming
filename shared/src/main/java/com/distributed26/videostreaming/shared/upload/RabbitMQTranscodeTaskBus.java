@@ -11,11 +11,11 @@ import com.rabbitmq.client.DeliverCallback;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.TimeoutException;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -42,27 +42,39 @@ public class RabbitMQTranscodeTaskBus implements TranscodeTaskBus {
         this.exchange = Objects.requireNonNull(config.exchange(), "exchange is null");
         this.taskBinding = Objects.requireNonNull(config.taskBinding(), "taskBinding is null");
         this.taskPrefetch = resolveTaskPrefetch();
+        RabbitMQResources resources = RabbitMQRetrySupport.retry(
+                "initialize RabbitMQ transcode task bus",
+                () -> {
+                    ConnectionFactory factory = config.createConnectionFactory();
+                    Connection connection = factory.newConnection("upload-transcode-task-bus");
+                    try {
+                        Channel channel = connection.createChannel();
+                        channel.exchangeDeclare(this.exchange, BuiltinExchangeType.TOPIC, true);
+                        channel.queueDeclare(config.taskQueue(), true, false, false,
+                                Map.of("x-queue-type", "quorum"));
+                        channel.queueBind(config.taskQueue(), this.exchange, config.taskBinding());
+                        return new RabbitMQResources(connection, channel);
+                    } catch (IOException | RuntimeException e) {
+                        try {
+                            connection.close();
+                        } catch (Exception closeError) {
+                            LOGGER.warn("Failed to close RabbitMQ connection after task bus init error", closeError);
+                        }
+                        throw e;
+                    }
+                }
+        );
+        this.connection = resources.connection();
+        this.channel = resources.channel();
+
         try {
-            ConnectionFactory factory = new ConnectionFactory();
-            factory.setHost(config.host());
-            factory.setPort(config.port());
-            factory.setUsername(config.username());
-            factory.setPassword(config.password());
-            factory.setVirtualHost(config.vhost());
-            this.connection = factory.newConnection("upload-transcode-task-bus");
-            this.channel = connection.createChannel();
-
-            channel.exchangeDeclare(this.exchange, BuiltinExchangeType.TOPIC, true);
-            channel.queueDeclare(config.taskQueue(), true, false, false, null);
-            channel.queueBind(config.taskQueue(), this.exchange, config.taskBinding());
-
             if (consumeTasks) {
                 channel.basicQos(taskPrefetch);
                 startConsumer(config.taskQueue());
             } else {
                 LOGGER.info("Transcode task consumer disabled for {}", this.exchange);
             }
-        } catch (IOException | TimeoutException e) {
+        } catch (IOException e) {
             throw new RuntimeException("Failed to initialize RabbitMQTranscodeTaskBus", e);
         }
     }
