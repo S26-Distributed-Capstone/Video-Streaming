@@ -53,6 +53,7 @@ let wsReconnectTimerId = null;
 let uploadRetryTimerId = null;
 let currentWsUrl = null;
 let reconnectAttempts = 0;
+let hasEverConnectedWebSocket = false;
 let retryingMinioConnection = false;
 const maxReconnectAttempts = 6;
 const reconnectBaseDelayMs = 1000;
@@ -155,7 +156,7 @@ function enterProcessingRoute(videoId) {
   if (transcodeBlock) {
     transcodeBlock.classList.remove("hidden");
   }
-  setDoneMessage("Upload accepted. Processing in progress.", { success: true });
+  setDoneMessage("", { success: true, hidden: true });
 }
 
 function setActiveTab(tab) {
@@ -406,6 +407,7 @@ function resetStateForNextUpload() {
   completedSegments = 0;
   sourceSegmentsComplete = false;
   processingComplete = false;
+  hasEverConnectedWebSocket = false;
   retryingMinioConnection = false;
   clearProgressRefreshTimer();
   resetWsReconnectState();
@@ -1088,6 +1090,7 @@ function scheduleWebSocketReconnect(wsUrl, videoId, token) {
   if (!wsUrl || !videoId) {
     return;
   }
+  const shouldNotifyUser = hasEverConnectedWebSocket;
   wsReconnectTimerId = scheduleRetry({
     activeToken: token,
     expectedToken: wsToken,
@@ -1100,13 +1103,17 @@ function scheduleWebSocketReconnect(wsUrl, videoId, token) {
     onExhausted: () => {
       uploadBtn.disabled = false;
       uploadInFlight = false;
-      setDoneMessage("Status service unavailable. Please reconnect or retry.", { success: false });
+      if (shouldNotifyUser) {
+        setDoneMessage("Status service unavailable. Please reconnect or retry.", { success: false });
+      }
       appendLog("WebSocket reconnect exhausted", "error");
     },
     beforeSchedule: ({ attempt, maxAttempts, delayMs }) => {
       const retryWord = attempt === maxAttempts ? "final retry" : `retry ${attempt}/${maxAttempts}`;
       reconnectAttempts = attempt;
-      setDoneMessage(`Status service connection lost. Reconnecting (${retryWord})...`, { success: false });
+      if (shouldNotifyUser) {
+        setDoneMessage(`Status service connection lost. Reconnecting (${retryWord})...`, { success: false });
+      }
       appendLog(`WebSocket reconnect scheduled in ${Math.round(delayMs / 1000)}s`);
     },
     run: () => {
@@ -1140,9 +1147,10 @@ function connectWebSocket(wsUrl, videoId, { isReconnect = false } = {}) {
     if (token !== wsToken) {
       return;
     }
+    hasEverConnectedWebSocket = true;
     resetWsReconnectState();
     appendLog("WebSocket connected");
-    setDoneMessage("Upload complete.", { success: true, hidden: true });
+    setDoneMessage("", { success: true, hidden: true });
     console.log("[upload-ui] ws open", { wsUrl, videoId, token });
     if (videoId) {
       ws.send(`job:${videoId}`);
