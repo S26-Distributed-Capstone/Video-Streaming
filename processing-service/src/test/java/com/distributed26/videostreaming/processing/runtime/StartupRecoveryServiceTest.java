@@ -334,6 +334,30 @@ class StartupRecoveryServiceTest {
         }
 
         @Test
+        void uploadedVideo_isRecoveredAfterProcessingRestart() {
+            String videoId = UUID.randomUUID().toString();
+
+            when(videoProcessingRepo.findVideoIdsByStatus("PROCESSING")).thenReturn(List.of());
+            when(videoProcessingRepo.findVideoIdsByStatus("UPLOADED")).thenReturn(List.of(videoId));
+            when(storageClient.listFiles(videoId + "/chunks/")).thenReturn(List.of(videoId + "/chunks/output0.ts"));
+            when(transcodeStatusRepo.findSegmentNumbersByState(videoId, "low", TranscodeSegmentState.DONE)).thenReturn(Set.of());
+            when(transcodeStatusRepo.findSegmentNumbersByState(videoId, "medium", TranscodeSegmentState.DONE)).thenReturn(Set.of());
+            when(transcodeStatusRepo.findSegmentNumbersByState(videoId, "high", TranscodeSegmentState.DONE)).thenReturn(Set.of());
+            when(uploadTaskRepo.findOpenSegmentNumbers(videoId, "low")).thenReturn(Set.of());
+            when(uploadTaskRepo.findOpenSegmentNumbers(videoId, "medium")).thenReturn(Set.of());
+            when(uploadTaskRepo.findOpenSegmentNumbers(videoId, "high")).thenReturn(Set.of());
+            when(claimRepo.findClaimedSegmentNumbers(videoId, "low", runtime.claimStaleMillis())).thenReturn(Set.of());
+            when(claimRepo.findClaimedSegmentNumbers(videoId, "medium", runtime.claimStaleMillis())).thenReturn(Set.of());
+            when(claimRepo.findClaimedSegmentNumbers(videoId, "high", runtime.claimStaleMillis())).thenReturn(Set.of());
+
+            recoveryService.recoverIncompleteVideos(storageClient);
+
+            verify(transcodeTaskBus, times(3)).publish(argThat((TranscodeTaskEvent ev) ->
+                    videoId.equals(ev.getJobId()) && ev.getSegmentNumber() == 0
+            ));
+        }
+
+        @Test
         void queuedState_preventsRequeueForThatSegment() {
             String videoId = UUID.randomUUID().toString();
 
@@ -483,7 +507,7 @@ class StartupRecoveryServiceTest {
 
             uploadWorkerPool.uploadSpoolTask(task, storageClient);
 
-            verify(videoProcessingRepo).updateStatus(videoId, "PROCESSING");
+            verify(videoProcessingRepo).markProcessingIfPending(videoId);
             verify(statusBus).publish(argThat(event ->
                     event instanceof UploadStorageStatusEvent storageEvent
                             && videoId.equals(storageEvent.getJobId())

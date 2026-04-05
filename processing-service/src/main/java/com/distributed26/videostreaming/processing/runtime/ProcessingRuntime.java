@@ -475,6 +475,17 @@ public final class ProcessingRuntime {
         failedVideoRegistry.markFailed(videoId);
     }
 
+    private void markVideoProcessing(String videoId) {
+        if (videoProcessingRepository == null || videoId == null || videoId.isBlank()) {
+            return;
+        }
+        try {
+            videoProcessingRepository.markProcessingIfPending(videoId);
+        } catch (RuntimeException e) {
+            LOGGER.warn("Failed to mark video PROCESSING for videoId={}", videoId, e);
+        }
+    }
+
     private boolean executeTranscodingTask(
             TranscodingTask task,
             ObjectStorageClient storageClient,
@@ -511,6 +522,7 @@ public final class ProcessingRuntime {
                 }
                 claimAcquired = true;
             }
+            markVideoProcessing(task.getJobId());
             task.setStatus(Status.RUNNING);
             LOGGER.info("Worker {} picked up task {} (chunk={} profile={})",
                     worker == null ? "unknown" : worker.getId(),

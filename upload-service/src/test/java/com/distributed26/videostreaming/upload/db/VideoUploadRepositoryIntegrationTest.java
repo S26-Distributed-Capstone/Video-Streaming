@@ -93,6 +93,19 @@ public class VideoUploadRepositoryIntegrationTest {
         assertEquals("machine-b", r.getMachineId());
     }
 
+    @Test
+    @Tag("integration")
+    void markFailedIfProcessing_allowsUploadedStatus() {
+        repo.create(videoId, "Test Video", 2, "UPLOADED", "machine-c", "container-c");
+
+        VideoUploadRepository.FailedTransitionResult result = repo.markFailedIfProcessing(videoId);
+
+        assertEquals(VideoUploadRepository.FailedTransitionResult.UPDATED, result);
+        Optional<VideoUploadRecord> record = repo.findByVideoId(videoId);
+        assertTrue(record.isPresent(), "Expected record to exist");
+        assertEquals("FAILED", record.get().getStatus());
+    }
+
     private void assumeDatabaseReachable() {
         try (Connection ignored = DriverManager.getConnection(jdbcUrl, username, password)) {
             // Reachable.

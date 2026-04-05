@@ -78,7 +78,11 @@ final class ProcessingStorageStateTracker {
             return;
         }
         try {
-            videoProcessingRepository.updateStatus(videoId, status);
+            if ("PROCESSING".equalsIgnoreCase(status)) {
+                videoProcessingRepository.markProcessingIfPending(videoId);
+            } else {
+                videoProcessingRepository.updateStatus(videoId, status);
+            }
         } catch (RuntimeException e) {
             LOGGER.warn("Failed to update processing status videoId={} status={}", videoId, status, e);
         }

@@ -189,7 +189,7 @@ public class UploadHandlerTest {
                         String body = response.body().string();
                         assertTrue(body.contains("\"retryingMinioConnection\":true"));
                         assertTrue(body.contains("\"status\":\"WAITING_FOR_STORAGE\""));
-                        assertTrue(body.contains("\"statusMessage\":\"Retrying MinIO connection\""));
+                        assertTrue(body.contains("\"statusMessage\":\"MinIO is down. Waiting for it to come back up.\""));
                     }
                 });
 
