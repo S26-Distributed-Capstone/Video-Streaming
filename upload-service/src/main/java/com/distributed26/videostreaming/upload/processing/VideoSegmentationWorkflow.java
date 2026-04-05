@@ -175,7 +175,7 @@ public final class VideoSegmentationWorkflow {
                     duration
             );
             if (videoUploadRepository != null) {
-                videoUploadRepository.updateStatus(videoId, "COMPLETED");
+                videoUploadRepository.updateStatus(videoId, "UPLOADED");
             }
         } catch (java.util.concurrent.CancellationException e) {
             cancelInFlightUploads = true;
