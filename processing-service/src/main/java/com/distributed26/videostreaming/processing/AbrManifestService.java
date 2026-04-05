@@ -47,25 +47,52 @@ public class AbrManifestService {
     public void generateIfNeeded(String videoId, int totalSegments) throws IOException {
         Objects.requireNonNull(videoId, "videoId");
         String masterManifestKey = videoId + MANIFEST_ROOT + MASTER_MANIFEST_KEY;
-        if (storageClient.fileExists(masterManifestKey)) {
-            LOGGER.info("Master manifest already exists, skipping generation: {}", masterManifestKey);
+        boolean masterManifestExists = storageClient.fileExists(masterManifestKey);
+        List<TranscodingProfile> missingVariantProfiles = new ArrayList<>();
+        for (TranscodingProfile profile : ProcessingServiceApplication.PROFILES) {
+            String variantManifestKey = buildVariantManifestKey(videoId, profile.getName());
+            if (!storageClient.fileExists(variantManifestKey)) {
+                missingVariantProfiles.add(profile);
+            }
+        }
+
+        if (masterManifestExists && missingVariantProfiles.isEmpty()) {
+            LOGGER.info("All manifests already exist, skipping generation for videoId={}", videoId);
             return;
         }
 
-        List<SourceSegment> sourceSegments = parseSourceSegments(videoId, totalSegments);
-        LOGGER.info("videoId={} source segment count from manifest={}", videoId, sourceSegments.size());
+        List<SourceSegment> sourceSegments = List.of();
+        if (!missingVariantProfiles.isEmpty()) {
+            sourceSegments = parseSourceSegments(videoId, totalSegments);
+            LOGGER.info("videoId={} source segment count from manifest={}", videoId, sourceSegments.size());
+        }
 
-        for (TranscodingProfile profile : ProcessingServiceApplication.PROFILES) {
+        for (TranscodingProfile profile : missingVariantProfiles) {
             waitForAllTranscodedSegments(videoId, profile, sourceSegments);
             String variantManifestKey = buildVariantManifestKey(videoId, profile.getName());
             String variantPlaylist = buildVariantPlaylist(sourceSegments);
             uploadString(variantManifestKey, variantPlaylist);
-            LOGGER.info("Wrote variant manifest: {} ({} segments)", variantManifestKey, sourceSegments.size());
+            LOGGER.info("Wrote missing variant manifest: {} ({} segments)", variantManifestKey, sourceSegments.size());
         }
 
-        String masterManifest = buildMasterManifest(videoId);
-        uploadString(masterManifestKey, masterManifest);
-        LOGGER.info("Wrote master manifest: {} for videoId={}", masterManifestKey, videoId);
+        if (!masterManifestExists) {
+            String masterManifest = buildMasterManifest(videoId);
+            uploadString(masterManifestKey, masterManifest);
+            LOGGER.info("Wrote master manifest: {} for videoId={}", masterManifestKey, videoId);
+        }
+    }
+
+    public boolean hasRequiredManifests(String videoId) {
+        Objects.requireNonNull(videoId, "videoId");
+        if (!storageClient.fileExists(videoId + MANIFEST_ROOT + MASTER_MANIFEST_KEY)) {
+            return false;
+        }
+        for (TranscodingProfile profile : ProcessingServiceApplication.PROFILES) {
+            if (!storageClient.fileExists(buildVariantManifestKey(videoId, profile.getName()))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private String buildMasterManifest(String videoId) {
