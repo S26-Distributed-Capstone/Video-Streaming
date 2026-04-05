@@ -65,6 +65,12 @@ class ProcessingStorageStateTrackerTest {
             statusUpdates.add(videoId + ":" + status);
         }
 
+        @Override
+        public boolean markProcessingIfPending(String videoId) {
+            statusUpdates.add(videoId + ":PROCESSING");
+            return true;
+        }
+
         private int countStatus(String entry) {
             return (int) statusUpdates.stream().filter(entry::equals).count();
         }

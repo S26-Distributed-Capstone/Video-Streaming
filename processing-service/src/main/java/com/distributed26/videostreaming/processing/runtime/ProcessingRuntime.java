@@ -447,7 +447,7 @@ public final class ProcessingRuntime {
             return;
         }
         try {
-            videoProcessingRepository.updateStatus(videoId, "PROCESSING");
+            videoProcessingRepository.markProcessingIfPending(videoId);
         } catch (RuntimeException e) {
             LOGGER.warn("Failed to mark video PROCESSING for videoId={}", videoId, e);
         }

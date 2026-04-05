@@ -507,7 +507,7 @@ class StartupRecoveryServiceTest {
 
             uploadWorkerPool.uploadSpoolTask(task, storageClient);
 
-            verify(videoProcessingRepo).updateStatus(videoId, "PROCESSING");
+            verify(videoProcessingRepo).markProcessingIfPending(videoId);
             verify(statusBus).publish(argThat(event ->
                     event instanceof UploadStorageStatusEvent storageEvent
                             && videoId.equals(storageEvent.getJobId())
