@@ -376,7 +376,8 @@ public final class ProcessingRuntime {
             return Optional.empty();
         }
         try {
-            return videoProcessingRepository.findStatusByVideoId(videoId);
+            return Optional.ofNullable(videoProcessingRepository.findStatusByVideoId(videoId))
+                    .orElse(Optional.empty());
         } catch (Exception e) {
             LOGGER.warn("Failed to load status for videoId={}", videoId, e);
             return Optional.empty();

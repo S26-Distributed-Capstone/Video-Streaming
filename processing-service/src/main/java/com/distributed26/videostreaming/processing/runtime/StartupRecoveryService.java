@@ -27,10 +27,20 @@ public final class StartupRecoveryService {
 
     private final TranscodingProfile[] profiles;
     private final ProcessingRuntime runtime;
+    private final boolean reconcileCompletedVideos;
 
     public StartupRecoveryService(TranscodingProfile[] profiles, ProcessingRuntime runtime) {
+        this(profiles, runtime, false);
+    }
+
+    public StartupRecoveryService(
+            TranscodingProfile[] profiles,
+            ProcessingRuntime runtime,
+            boolean reconcileCompletedVideos
+    ) {
         this.profiles = profiles;
         this.runtime = runtime;
+        this.reconcileCompletedVideos = reconcileCompletedVideos;
     }
 
     /**
@@ -188,7 +198,9 @@ public final class StartupRecoveryService {
                     runtime.videoProcessingRepository().findVideoIdsByStatus("PROCESSING")
             );
             recoverableVideoIds.addAll(runtime.videoProcessingRepository().findVideoIdsByStatus("UPLOADED"));
-            recoverableVideoIds.addAll(runtime.videoProcessingRepository().findVideoIdsByStatus("COMPLETED"));
+            if (reconcileCompletedVideos) {
+                recoverableVideoIds.addAll(runtime.videoProcessingRepository().findVideoIdsByStatus("COMPLETED"));
+            }
             if (runtime.processingUploadTaskRepository() != null) {
                 recoverableVideoIds.addAll(runtime.processingUploadTaskRepository().findVideoIdsWithOpenTasks());
             }
@@ -214,10 +226,11 @@ public final class StartupRecoveryService {
                 return;
             }
             String currentStatus = runtime.findVideoStatus(videoId).orElse(null);
-            boolean manifestsReady = runtime.hasRequiredManifests(videoId);
-            if ("COMPLETED".equalsIgnoreCase(currentStatus) && manifestsReady) {
-                LOGGER.debug("Startup recovery found video already reconciled videoId={}", videoId);
-                return;
+            if ("COMPLETED".equalsIgnoreCase(currentStatus)) {
+                if (runtime.hasRequiredManifests(videoId)) {
+                    LOGGER.debug("Startup recovery found video already reconciled videoId={}", videoId);
+                    return;
+                }
             }
             List<String> chunkKeys = listSourceChunkKeys(videoId, storageClient);
             if (chunkKeys.isEmpty()) {

@@ -117,6 +117,11 @@ public class ProcessingServiceApplication {
                     "PROCESSING_RECOVERY_RECONCILIATION_MILLIS",
                     String.valueOf(DEFAULT_RECOVERY_RECONCILIATION_MILLIS)
             ));
+            boolean reconcileCompletedVideos = Boolean.parseBoolean(getEnvOrDotenv(
+                    dotenv,
+                    "PROCESSING_RECOVER_COMPLETED_VIDEOS",
+                    "false"
+            ));
             ProcessingRuntime runtime = new ProcessingRuntime(
                     transcodeStatusRepository,
                     videoProcessingRepository,
@@ -161,7 +166,11 @@ public class ProcessingServiceApplication {
             transcodeTaskBus.subscribe(ev -> runtime.submitTranscodeTask(ev, taskExecutor, storageClient, workersByThread, PROFILES));
             statusEventBus.subscribeAll(runtime::onStatusEvent);
 
-            StartupRecoveryService startupRecovery = new StartupRecoveryService(PROFILES, runtime);
+            StartupRecoveryService startupRecovery = new StartupRecoveryService(
+                    PROFILES,
+                    runtime,
+                    reconcileCompletedVideos
+            );
             startBucketEnsureThread(
                     storageClient,
                     startupRecovery,
