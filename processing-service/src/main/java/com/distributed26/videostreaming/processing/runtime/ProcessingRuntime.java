@@ -23,6 +23,7 @@ import com.distributed26.videostreaming.shared.upload.events.UploadFailedEvent;
 import com.distributed26.videostreaming.shared.upload.events.UploadMetaEvent;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -370,10 +371,41 @@ public final class ProcessingRuntime {
         }
     }
 
+    public Optional<String> findVideoStatus(String videoId) {
+        if (videoProcessingRepository == null) {
+            return Optional.empty();
+        }
+        try {
+            return videoProcessingRepository.findStatusByVideoId(videoId);
+        } catch (Exception e) {
+            LOGGER.warn("Failed to load status for videoId={}", videoId, e);
+            return Optional.empty();
+        }
+    }
+
+    public boolean hasRequiredManifests(String videoId) {
+        if (manifestServiceRef == null) {
+            return false;
+        }
+        try {
+            return manifestServiceRef.hasRequiredManifests(videoId);
+        } catch (Exception e) {
+            LOGGER.warn("Failed to verify manifests for videoId={}", videoId, e);
+            return false;
+        }
+    }
+
     public void scheduleManifestGeneration(String videoId, int totalSegments) {
         if (manifestServiceRef == null || manifestExecutorRef == null) {
             LOGGER.warn("Cannot schedule manifest generation for videoId={} because manifest generator is not configured",
                     videoId);
+            return;
+        }
+        Optional<String> currentStatus = findVideoStatus(videoId);
+        if (currentStatus.isPresent()
+                && "COMPLETED".equalsIgnoreCase(currentStatus.get())
+                && hasRequiredManifests(videoId)) {
+            LOGGER.debug("Skipping manifest reconciliation for already completed videoId={}", videoId);
             return;
         }
         if (!manifestsInFlight.add(videoId)) {

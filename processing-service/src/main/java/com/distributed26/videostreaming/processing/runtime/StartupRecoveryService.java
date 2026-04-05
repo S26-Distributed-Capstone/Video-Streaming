@@ -187,6 +187,8 @@ public final class StartupRecoveryService {
             Set<String> recoverableVideoIds = new HashSet<>(
                     runtime.videoProcessingRepository().findVideoIdsByStatus("PROCESSING")
             );
+            recoverableVideoIds.addAll(runtime.videoProcessingRepository().findVideoIdsByStatus("UPLOADED"));
+            recoverableVideoIds.addAll(runtime.videoProcessingRepository().findVideoIdsByStatus("COMPLETED"));
             if (runtime.processingUploadTaskRepository() != null) {
                 recoverableVideoIds.addAll(runtime.processingUploadTaskRepository().findVideoIdsWithOpenTasks());
             }
@@ -209,6 +211,12 @@ public final class StartupRecoveryService {
         try {
             if (runtime.isVideoFailed(videoId)) {
                 LOGGER.info("Startup recovery skipping failed videoId={}", videoId);
+                return;
+            }
+            String currentStatus = runtime.findVideoStatus(videoId).orElse(null);
+            boolean manifestsReady = runtime.hasRequiredManifests(videoId);
+            if ("COMPLETED".equalsIgnoreCase(currentStatus) && manifestsReady) {
+                LOGGER.debug("Startup recovery found video already reconciled videoId={}", videoId);
                 return;
             }
             List<String> chunkKeys = listSourceChunkKeys(videoId, storageClient);
