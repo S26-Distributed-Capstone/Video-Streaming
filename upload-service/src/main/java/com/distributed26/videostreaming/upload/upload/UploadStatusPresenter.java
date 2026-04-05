@@ -15,8 +15,11 @@ final class UploadStatusPresenter {
         if ("PROCESSING".equalsIgnoreCase(status)) {
             return "Processing upload";
         }
+        if ("UPLOADED".equalsIgnoreCase(status)) {
+            return "Upload completed. Waiting for processing to finish.";
+        }
         if ("COMPLETED".equalsIgnoreCase(status)) {
-            return "Upload completed";
+            return "Video is ready to play";
         }
         if ("FAILED".equalsIgnoreCase(status)) {
             return "Upload failed";

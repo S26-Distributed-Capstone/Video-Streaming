@@ -184,11 +184,11 @@ public final class StartupRecoveryService {
         }
         List<String> videoIds;
         try {
-            Set<String> recoverableVideoIds = new HashSet<>(
-                    runtime.videoProcessingRepository().findVideoIdsByStatus("PROCESSING")
-            );
+            Set<String> recoverableVideoIds = new HashSet<>();
+            addRecoverableVideoIds(recoverableVideoIds, runtime.videoProcessingRepository().findVideoIdsByStatus("PROCESSING"));
+            addRecoverableVideoIds(recoverableVideoIds, runtime.videoProcessingRepository().findVideoIdsByStatus("UPLOADED"));
             if (runtime.processingUploadTaskRepository() != null) {
-                recoverableVideoIds.addAll(runtime.processingUploadTaskRepository().findVideoIdsWithOpenTasks());
+                addRecoverableVideoIds(recoverableVideoIds, runtime.processingUploadTaskRepository().findVideoIdsWithOpenTasks());
             }
             videoIds = new ArrayList<>(recoverableVideoIds);
         } catch (Exception e) {
@@ -203,6 +203,13 @@ public final class StartupRecoveryService {
         for (String videoId : videoIds) {
             recoverVideo(videoId, storageClient);
         }
+    }
+
+    private void addRecoverableVideoIds(Set<String> recoverableVideoIds, List<String> videoIds) {
+        if (videoIds == null || videoIds.isEmpty()) {
+            return;
+        }
+        recoverableVideoIds.addAll(videoIds);
     }
 
     private void recoverVideo(String videoId, ObjectStorageClient storageClient) {
