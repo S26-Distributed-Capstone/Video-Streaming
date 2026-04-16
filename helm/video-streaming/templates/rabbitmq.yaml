@@ -47,6 +47,9 @@ data:
 
     ## Networking
     loopback_users.guest = false
+
+    ## Allow deprecated feature to avoid startup failure
+    deprecated_features.permit.management_metrics_collection = true
 ---
 # ── Headless Service: peer discovery + StatefulSet DNS ──
 # publishNotReadyAddresses: true is CRITICAL — without it, new nodes can't
