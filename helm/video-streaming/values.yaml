@@ -1,8 +1,8 @@
 # ─── App image ──────────────────────────────────────────────────
 image:
-  repository: video-streaming-app
-  tag: latest
-  pullPolicy: Never            # minikube local build; change for a registry
+  repository: cp1:5000/video-streaming-app   # private registry on cp1
+  tag: "1.0"
+  pullPolicy: IfNotPresent
 
 # ─── Replica counts ────────────────────────────────────────────
 uploadService:
