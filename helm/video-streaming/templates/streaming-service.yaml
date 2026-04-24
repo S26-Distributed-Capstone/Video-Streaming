@@ -37,11 +37,6 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - containerPort: 8083
-          command: ["/bin/sh", "-c"]
-          args:
-            - >
-              mvn -pl streaming-service -DskipTests exec:java
-              -Dexec.mainClass=com.distributed26.videostreaming.streaming.streaming.StreamingServiceApplication
           envFrom:
             - configMapRef:
                 name: {{ .Release.Name }}-config
@@ -72,4 +67,3 @@ spec:
             limits:
               memory: {{ .Values.streamingService.resources.limits.memory | quote }}
               cpu: {{ .Values.streamingService.resources.limits.cpu | quote }}
-

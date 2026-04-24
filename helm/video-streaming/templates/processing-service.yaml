@@ -34,11 +34,6 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - containerPort: 8082
-          command: ["/bin/sh", "-c"]
-          args:
-            - >
-              mvn -pl processing-service -DskipTests exec:java
-              -Dexec.mainClass=com.distributed26.videostreaming.processing.ProcessingServiceApplication
           env:
             - name: SERVICE_MODE
               value: "processing"

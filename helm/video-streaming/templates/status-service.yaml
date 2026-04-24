@@ -36,11 +36,6 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - containerPort: 8081
-          command: ["/bin/sh", "-c"]
-          args:
-            - >
-              mvn -pl upload-service -DskipTests exec:java
-              -Dexec.mainClass=com.distributed26.videostreaming.upload.upload.UploadServiceApplication
           env:
             - name: SERVICE_MODE
               value: "status"
@@ -74,4 +69,3 @@ spec:
             limits:
               memory: {{ .Values.statusService.resources.limits.memory | quote }}
               cpu: {{ .Values.statusService.resources.limits.cpu | quote }}
-

@@ -6,6 +6,7 @@ Usage: {{ include "video-streaming.wait-for" (dict "name" "rabbitmq" "host" (pri
 {{- define "video-streaming.wait-for" -}}
 - name: wait-for-{{ .name }}
   image: busybox:1.36
+  imagePullPolicy: IfNotPresent
   command: ["sh", "-c"]
   args:
     - |
@@ -15,4 +16,3 @@ Usage: {{ include "video-streaming.wait-for" (dict "name" "rabbitmq" "host" (pri
       done
       echo "{{ .host }}:{{ .port }} is up."
 {{- end -}}
-
