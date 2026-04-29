@@ -324,6 +324,13 @@ public class UploadServiceApplication {
     }
 
     static void registerFrontendRoutes(Javalin app, String frontendIndex) {
+        app.get("/", ctx -> {
+            if (frontendIndex == null || frontendIndex.isBlank()) {
+                ctx.status(500).result("Frontend shell unavailable");
+                return;
+            }
+            ctx.html(frontendIndex);
+        });
         app.get("/processing/{videoId}", ctx -> {
             if (frontendIndex == null || frontendIndex.isBlank()) {
                 ctx.status(500).result("Frontend shell unavailable");
