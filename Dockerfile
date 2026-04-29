@@ -18,6 +18,7 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY --from=build /app/node-watcher /app/node-watcher
+COPY --from=build /app/frontend /app/frontend
 COPY --from=build /app/upload-service/target/upload-service-all.jar /app/upload-service.jar
 COPY --from=build /app/processing-service/target/processing-service-all.jar /app/processing-service.jar
 COPY --from=build /app/streaming-service/target/streaming-service-all.jar /app/streaming-service.jar
