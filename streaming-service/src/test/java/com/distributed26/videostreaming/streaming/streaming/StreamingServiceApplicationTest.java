@@ -229,8 +229,8 @@ class StreamingServiceApplicationTest {
 
     @Test
     void clientGivesUpAfterManifestRetriesWhenAllReplicasAreUnavailable() throws Exception {
-        try (ClosedPort unavailableReplicaOne = new ClosedPort();
-             ClosedPort unavailableReplicaTwo = new ClosedPort()) {
+        try (RejectingReplica unavailableReplicaOne = new RejectingReplica();
+             RejectingReplica unavailableReplicaTwo = new RejectingReplica()) {
             HttpClient retryingClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(1))
                 .build();
@@ -366,7 +366,7 @@ class StreamingServiceApplicationTest {
             executor.submit(() -> {
                 try (Socket socket = serverSocket.accept()) {
                     socket.setSoTimeout(2_000);
-                    socket.getInputStream().readNBytes(512);
+                    readRequestHeaders(socket.getInputStream());
                     byte[] partialBody = "#EXTM3U\n".getBytes(StandardCharsets.UTF_8);
                     byte[] headers = (
                             "HTTP/1.1 200 OK\r\n"
@@ -386,6 +386,23 @@ class StreamingServiceApplicationTest {
             });
         }
 
+        private void readRequestHeaders(InputStream inputStream) throws IOException {
+            int matched = 0;
+            while (matched < 4) {
+                int next = inputStream.read();
+                if (next == -1) {
+                    return;
+                }
+                matched = switch (matched) {
+                    case 0 -> next == '\r' ? 1 : 0;
+                    case 1 -> next == '\n' ? 2 : next == '\r' ? 1 : 0;
+                    case 2 -> next == '\r' ? 3 : 0;
+                    case 3 -> next == '\n' ? 4 : next == '\r' ? 1 : 0;
+                    default -> matched;
+                };
+            }
+        }
+
         void awaitServedRequest() throws InterruptedException {
             assertTrue(servedRequest.await(5, TimeUnit.SECONDS),
                     "dropping replica should receive the manifest request");
@@ -400,21 +417,34 @@ class StreamingServiceApplicationTest {
         }
     }
 
-    private static final class ClosedPort implements AutoCloseable {
-        private final ServerSocket socket = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"));
-        private final int port = socket.getLocalPort();
+    private static final class RejectingReplica implements AutoCloseable {
+        private final ServerSocket serverSocket = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"));
+        private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
-        private ClosedPort() throws IOException {
-            socket.close();
+        private RejectingReplica() throws IOException {
+            executor.submit(() -> {
+                while (!Thread.currentThread().isInterrupted() && !serverSocket.isClosed()) {
+                    try (Socket socket = serverSocket.accept()) {
+                        socket.close();
+                    } catch (IOException ignored) {
+                        if (serverSocket.isClosed()) {
+                            return;
+                        }
+                    }
+                }
+            });
         }
 
         int port() {
-            return port;
+            return serverSocket.getLocalPort();
         }
 
         @Override
-        public void close() {
-            // already closed to keep the port unavailable
+        public void close() throws Exception {
+            serverSocket.close();
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS),
+                    "rejecting replica should shut down promptly");
         }
     }
 }
