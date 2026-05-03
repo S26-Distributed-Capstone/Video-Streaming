@@ -1,25 +1,28 @@
 package com.distributed26.videostreaming.upload.upload;
 
-import static org.awaitility.Awaitility.await;
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
+import com.distributed26.videostreaming.shared.upload.FailedVideoRegistry;
+import com.distributed26.videostreaming.upload.db.SegmentUploadRepository;
+import com.distributed26.videostreaming.upload.db.TranscodedSegmentStatusRepository;
+import com.distributed26.videostreaming.upload.db.VideoUploadRecord;
+import com.distributed26.videostreaming.upload.db.VideoUploadRepository;
+import com.distributed26.videostreaming.upload.processing.StorageRetryExecutor;
+import com.distributed26.videostreaming.upload.processing.StorageStateTracker;
+import com.distributed26.videostreaming.upload.processing.UploadProcessingConfig;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
-import com.distributed26.videostreaming.upload.db.SegmentUploadRepository;
-import com.distributed26.videostreaming.upload.db.VideoUploadRepository;
 import io.github.cdimascio.dotenv.Dotenv;
 import io.javalin.Javalin;
+import io.javalin.testtools.HttpClient;
 import io.javalin.testtools.JavalinTest;
-import okhttp3.MediaType;
-import okhttp3.MultipartBody;
-import okhttp3.RequestBody;
-import org.junit.jupiter.api.*;
-import org.junit.jupiter.api.condition.EnabledIf;
-
-import java.io.*;
+import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
@@ -27,388 +30,356 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.LinkedHashSet;
+import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import okhttp3.MediaType;
+import okhttp3.MultipartBody;
+import okhttp3.RequestBody;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.DisplayName;
 
-/**
- * Integration tests for UploadHandler that require FFmpeg to be installed.
- *
- * These tests verify the complete upload, segmentation, and storage flow.
- * They are skipped if FFmpeg is not available in the system PATH.
- *
- * Note: These tests use the global .env file in the Video-Streaming root directory.
- */
-@TestInstance(TestInstance.Lifecycle.PER_CLASS)
-@EnabledIf("isFfmpegAvailable")
-public class UploadHandlerIntegrationTest {
+@Tag("integration")
+class UploadHandlerIntegrationTest {
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
-    private ObjectStorageClient mockStorageClient;
-    private Path testVideoFile;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private static final org.apache.logging.log4j.Logger logger =
+        org.apache.logging.log4j.LogManager.getLogger(UploadHandlerIntegrationTest.class);
 
-    static boolean isFfmpegAvailable() {
-        try {
-            Process process = new ProcessBuilder("ffmpeg", "-version")
-                .redirectErrorStream(true)
-                .start();
-            int exitCode = process.waitFor();
-            boolean available = exitCode == 0;
-            System.out.println("[Integration Test] FFmpeg available: " + available);
-            return available;
-        } catch (Exception e) {
-            System.out.println("[Integration Test] FFmpeg available: false (error: " + e.getMessage() + ")");
-            return false;
-        }
-    }
 
-    @BeforeAll
-    void setUpClass() throws Exception {
-        // Create a real test video file using FFmpeg
-        testVideoFile = createTestVideo();
-    }
+    private String jdbcUrl;
+    private String username;
+    private String password;
 
-    @AfterAll
-    void tearDownClass() throws Exception {
-        // Cleanup test video
-        if (testVideoFile != null && Files.exists(testVideoFile)) {
-            Files.deleteIfExists(testVideoFile);
-        }
-    }
-
-    @BeforeEach
-    void setUp() {
-        mockStorageClient = mock(ObjectStorageClient.class);
+    @AfterEach
+    void tearDown() {
+        // per-test cleanup happens explicitly once videoId is known
     }
 
     @Test
-    @DisplayName("Should segment video and upload all chunks to storage")
-    void shouldSegmentVideoAndUploadAllChunks() throws Exception {
-        List<String> uploadedKeys = new CopyOnWriteArrayList<>();
-        List<Long> uploadedSizes = new CopyOnWriteArrayList<>();
+    void retryWithSameVideoIdSkipsPreviouslyUploadedSegments() throws Exception {
+        assumeFfmpegAvailable();
+        loadDatabaseConfig();
+        assumeDatabaseReachable();
 
-        doAnswer(invocation -> {
-            String key = invocation.getArgument(0);
-            Long size = invocation.getArgument(2);
-            uploadedKeys.add(key);
-            uploadedSizes.add(size);
-            return null;
-        }).when(mockStorageClient).uploadFile(anyString(), any(InputStream.class), anyLong());
-
-        UploadHandler handler = new UploadHandler(mockStorageClient, new TestStatusEventBus(), new TestTranscodeTaskBus());
-        Javalin app = Javalin.create();
-        app.post("/upload", handler::upload);
-
-        final String[] capturedVideoId = new String[1];
-
-        JavalinTest.test(app, (server, client) -> {
-            byte[] videoBytes = Files.readAllBytes(testVideoFile);
-
-            RequestBody fileBody = RequestBody.create(
-                videoBytes,
-                MediaType.parse("video/mp4")
-            );
-
-            MultipartBody requestBody = new MultipartBody.Builder()
-                .setType(MultipartBody.FORM)
-                .addFormDataPart("file", "integration-test.mp4", fileBody)
-                .addFormDataPart("name", "Integration Test Video")
-                .build();
-
-            try (var response = client.request("/upload", builder ->
-                builder.post(requestBody))) {
-                assertEquals(202, response.code());
-                JsonNode json = objectMapper.readTree(response.body().string());
-                capturedVideoId[0] = json.get("videoId").asText();
-            }
-        });
-
-        // Wait for async processing to complete
-        await().atMost(Duration.ofSeconds(30))
-            .pollInterval(Duration.ofMillis(500))
-            .until(() -> {
-                // Should have uploaded at least one .ts segment and one .m3u8 playlist
-                boolean hasSegment = uploadedKeys.stream().anyMatch(k -> k.endsWith(".ts"));
-                boolean hasPlaylist = uploadedKeys.stream().anyMatch(k -> k.endsWith(".m3u8"));
-                return hasSegment && hasPlaylist;
-            });
-
-        // Verify uploads
-        assertTrue(uploadedKeys.size() >= 2, "Should have uploaded at least segment and playlist");
-
-        // All keys should contain the video ID
-        String finalVideoId = capturedVideoId[0];
-        assertTrue(uploadedKeys.stream().allMatch(k -> k.contains(finalVideoId)),
-            "All keys should contain video ID");
-
-        // Chunk keys should follow the pattern: {videoId}/chunks/{filename}
-        assertTrue(uploadedKeys.stream()
-                .filter(k -> k.contains("/chunks/"))
-                .allMatch(k -> k.matches("[a-f0-9-]+/chunks/.+")),
-            "Chunk keys should follow expected pattern");
-
-        assertTrue(uploadedKeys.stream().anyMatch(k -> k.endsWith("/metadata.json")),
-            "Should have uploaded metadata.json");
-
-        // Verify playlist was uploaded
-        assertTrue(uploadedKeys.stream().anyMatch(k -> k.endsWith("output.m3u8")),
-            "Should have uploaded HLS playlist");
-
-        // Verify at least one segment was uploaded
-        assertTrue(uploadedKeys.stream().anyMatch(k -> k.matches(".*output\\d+\\.ts")),
-            "Should have uploaded at least one TS segment");
-
-        // Verify all uploads have non-zero size
-        assertTrue(uploadedSizes.stream().allMatch(s -> s > 0),
-            "All uploaded files should have positive size");
-    }
-
-    @Test
-    @DisplayName("Should handle storage failure during segment upload")
-    void shouldHandleStorageFailureDuringSegmentUpload() throws Exception {
-        // Make storage fail after first successful upload
-        List<String> uploadedKeys = new ArrayList<>();
-
-        doAnswer(invocation -> {
-            String key = invocation.getArgument(0);
-            uploadedKeys.add(key);
-            if (uploadedKeys.size() > 1) {
-                throw new RuntimeException("Simulated storage failure");
-            }
-            return null;
-        }).when(mockStorageClient).uploadFile(anyString(), any(InputStream.class), anyLong());
-
-        UploadHandler handler = new UploadHandler(mockStorageClient, new TestStatusEventBus(), new TestTranscodeTaskBus());
-        Javalin app = Javalin.create();
-        app.post("/upload", handler::upload);
-
-        JavalinTest.test(app, (server, client) -> {
-            byte[] videoBytes = Files.readAllBytes(testVideoFile);
-
-            RequestBody fileBody = RequestBody.create(
-                videoBytes,
-                MediaType.parse("video/mp4")
-            );
-
-            MultipartBody requestBody = new MultipartBody.Builder()
-                .setType(MultipartBody.FORM)
-                .addFormDataPart("file", "fail-test.mp4", fileBody)
-                .addFormDataPart("name", "Fail Test Video")
-                .build();
-
-            try (var response = client.request("/upload", builder ->
-                builder.post(requestBody))) {
-                // Initial response should still be 202
-                assertEquals(202, response.code());
-            }
-        });
-
-        // Wait for processing to fail
-        Thread.sleep(5000);
-
-        // Verify at least one upload was attempted before failure
-        assertFalse(uploadedKeys.isEmpty(), "Should have attempted at least one upload");
-    }
-
-    @Test
-    @DisplayName("Should accept upload while metadata upload keeps retrying when storage is unavailable")
-    void shouldAcceptUploadWhenStorageIsUnavailable() throws Exception {
-        doThrow(new RuntimeException("Storage unavailable"))
-            .when(mockStorageClient).uploadFile(anyString(), any(InputStream.class), anyLong());
-
-        UploadHandler handler = new UploadHandler(mockStorageClient, new TestStatusEventBus(), new TestTranscodeTaskBus());
-        Javalin app = Javalin.create();
-        app.post("/upload", handler::upload);
-
-        JavalinTest.test(app, (server, client) -> {
-            byte[] videoBytes = Files.readAllBytes(testVideoFile);
-
-            RequestBody fileBody = RequestBody.create(
-                videoBytes,
-                MediaType.parse("video/mp4")
-            );
-
-            MultipartBody requestBody = new MultipartBody.Builder()
-                .setType(MultipartBody.FORM)
-                .addFormDataPart("file", "cleanup-test.mp4", fileBody)
-                .addFormDataPart("name", "Cleanup Test Video")
-                .build();
-
-            try (var response = client.request("/upload", builder ->
-                builder.post(requestBody))) {
-                assertEquals(202, response.code());
-            }
-        });
-
-        await().atMost(Duration.ofSeconds(5))
-            .pollInterval(Duration.ofMillis(100))
-            .untilAsserted(() ->
-                verify(mockStorageClient, atLeast(2))
-                    .uploadFile(anyString(), any(InputStream.class), anyLong())
-            );
-
-        handler.close();
-    }
-
-    @Test
-    @DisplayName("Should upload segments progressively as FFmpeg generates them")
-    void shouldUploadSegmentsProgressively() throws Exception {
-        List<Long> uploadTimestamps = new CopyOnWriteArrayList<>();
-
-        doAnswer(invocation -> {
-            uploadTimestamps.add(System.currentTimeMillis());
-            // Simulate some upload delay
-            Thread.sleep(50);
-            return null;
-        }).when(mockStorageClient).uploadFile(anyString(), any(InputStream.class), anyLong());
-
-        UploadHandler handler = new UploadHandler(mockStorageClient, new TestStatusEventBus(), new TestTranscodeTaskBus());
-        Javalin app = Javalin.create();
-        app.post("/upload", handler::upload);
-
-        JavalinTest.test(app, (server, client) -> {
-            byte[] videoBytes = Files.readAllBytes(testVideoFile);
-
-            RequestBody fileBody = RequestBody.create(
-                videoBytes,
-                MediaType.parse("video/mp4")
-            );
-
-            MultipartBody requestBody = new MultipartBody.Builder()
-                .setType(MultipartBody.FORM)
-                .addFormDataPart("file", "progressive-test.mp4", fileBody)
-                .addFormDataPart("name", "Progressive Test Video")
-                .build();
-
-            try (var response = client.request("/upload", builder ->
-                builder.post(requestBody))) {
-                assertEquals(202, response.code());
-            }
-        });
-
-        // Wait for processing to complete
-        await().atMost(Duration.ofSeconds(30))
-            .pollInterval(Duration.ofMillis(500))
-            .until(() -> uploadTimestamps.size() >= 2);
-
-        // Verify that uploads were spread out over time (progressive upload)
-        if (uploadTimestamps.size() >= 2) {
-            long firstUpload = uploadTimestamps.get(0);
-            long lastUpload = uploadTimestamps.get(uploadTimestamps.size() - 1);
-
-            // There should be some time gap between first and last upload
-            // indicating progressive processing rather than batch at the end
-            // Note: On fast systems, this gap might be small, so we use a small threshold
-            assertTrue(lastUpload >= firstUpload,
-                "Last upload should not be before first upload");
-        }
-    }
-
-    @Test
-    @Tag("integration")
-    @DisplayName("Should skip previously uploaded segments when retrying with same videoId")
-    void shouldSkipPreviouslyUploadedSegmentsOnRetry() throws Exception {
-        Dotenv dotenv = Dotenv.configure().directory("../").ignoreIfMissing().load();
-        String jdbcUrl = dotenv.get("PG_URL");
-        String username = dotenv.get("PG_USER");
-        String password = dotenv.get("PG_PASSWORD");
-        if (jdbcUrl == null || jdbcUrl.isBlank()) {
-            throw new IllegalStateException("PG_URL is not set");
-        }
-        if (username == null || username.isBlank()) {
-            throw new IllegalStateException("PG_USER is not set");
-        }
-        assumeDatabaseReachable(jdbcUrl, username, password);
+        String videoId = UUID.randomUUID().toString();
+        Path testVideo = createTestVideo();
+        byte[] videoBytes = Files.readAllBytes(testVideo);
+        Files.deleteIfExists(testVideo);
 
         VideoUploadRepository videoRepo = new VideoUploadRepository(jdbcUrl, username, password);
         SegmentUploadRepository segmentRepo = new SegmentUploadRepository(jdbcUrl, username, password);
-        String videoId = UUID.randomUUID().toString();
-        videoRepo.create(videoId, "Retry Test Video", 0, "PROCESSING", "test-machine", "test-container");
-        segmentRepo.insert(videoId, 0);
-
-        List<String> uploadedKeys = new CopyOnWriteArrayList<>();
-        doAnswer(invocation -> {
-            String key = invocation.getArgument(0);
-            uploadedKeys.add(key);
-            return null;
-        }).when(mockStorageClient).uploadFile(anyString(), any(InputStream.class), anyLong());
-
-        TestStatusEventBus statusBus = new TestStatusEventBus();
-        TestTranscodeTaskBus taskBus = new TestTranscodeTaskBus();
-        UploadHandler handler = new UploadHandler(
-            mockStorageClient,
-            statusBus,
-            taskBus,
-            videoRepo,
-            segmentRepo,
-            "test-machine",
-            "test-container"
+        FlakyStorageClient storageClient = new FlakyStorageClient(videoId + "/chunks/output8.ts");
+        TestStatusEventBus statusEventBus = new TestStatusEventBus();
+        TestTranscodeTaskBus transcodeTaskBus = new TestTranscodeTaskBus();
+        UploadProcessingConfig config = new UploadProcessingConfig(
+                200,
+                5,
+                60_000,
+                100,
+                1,
+                1,
+                1,
+                1,
+                1
         );
+        UploadHandler handler = new UploadHandler(
+                storageClient,
+                statusEventBus,
+                transcodeTaskBus,
+                videoRepo,
+                segmentRepo,
+                "it-machine",
+                "it-container",
+                new FailedVideoRegistry(),
+                new StorageStateTracker(videoRepo, statusEventBus),
+                config
+        );
+
         Javalin app = Javalin.create();
         app.post("/upload", handler::upload);
 
         try {
             JavalinTest.test(app, (server, client) -> {
-                byte[] videoBytes = Files.readAllBytes(testVideoFile);
+                JsonNode firstResponse = sendUpload(client, videoBytes, videoId, "resume-test-first.mp4");
+                assertEquals(videoId, firstResponse.get("videoId").asText());
+                assertTrue(storageClient.firstFailure.await(10, TimeUnit.SECONDS),
+                        "first upload should fail after a partial chunk upload");
+                awaitCondition(Duration.ofSeconds(20), () -> statusOf(videoRepo, videoId).equals("FAILED"));
 
-                RequestBody fileBody = RequestBody.create(
-                    videoBytes,
-                    MediaType.parse("video/mp4")
-                );
-
-                MultipartBody requestBody = new MultipartBody.Builder()
-                    .setType(MultipartBody.FORM)
-                    .addFormDataPart("file", "retry-test.mp4", fileBody)
-                    .addFormDataPart("name", "Retry Test Video")
-                    .addFormDataPart("videoId", videoId)
-                    .build();
-
-                try (var response = client.request("/upload", builder ->
-                    builder.post(requestBody))) {
-                    assertEquals(202, response.code());
+                assertEquals(expectedUploadedBeforeFailure(), segmentRepo.findSegmentNumbers(videoId),
+                        "first attempt should record the first eight uploaded segments");
+                for (int i = 0; i < 8; i++) {
+                    assertEquals(1, storageClient.uploadAttempts(videoId + "/chunks/output" + i + ".ts"));
                 }
+                assertEquals(0, storageClient.successfulUploads(videoId + "/chunks/output8.ts"));
+
+                JsonNode secondResponse = sendUpload(client, videoBytes, videoId, "resume-test-second.mp4");
+                assertEquals(videoId, secondResponse.get("videoId").asText());
+
+                awaitCondition(Duration.ofSeconds(20), () -> statusOf(videoRepo, videoId).equals("UPLOADED"));
+
+                Set<Integer> uploadedSegments = segmentRepo.findSegmentNumbers(videoId);
+                assertTrue(uploadedSegments.size() >= 9,
+                        "retry should upload the remaining segments after the first eight");
+                for (int i = 0; i < 8; i++) {
+                    assertEquals(1, storageClient.uploadAttempts(videoId + "/chunks/output" + i + ".ts"),
+                            "retry should skip segment " + i + " because it was already uploaded");
+                }
+                assertEquals(1, storageClient.successfulUploads(videoId + "/chunks/output8.ts"),
+                        "retry should complete the previously failed ninth segment");
+
+                Optional<VideoUploadRecord> record = videoRepo.findByVideoId(videoId);
+                assertTrue(record.isPresent(), "video record should exist");
+                assertEquals("UPLOADED", record.get().getStatus());
             });
-
-            await().atMost(Duration.ofSeconds(30))
-                .pollInterval(Duration.ofMillis(500))
-                .until(() -> uploadedKeys.stream().anyMatch(k -> k.endsWith(".m3u8")));
-
-            assertTrue(uploadedKeys.stream().noneMatch(k -> k.endsWith("output0.ts")),
-                "output0.ts should be skipped when already recorded");
         } finally {
-            cleanupVideoRecords(jdbcUrl, username, password, videoId);
+            handler.close();
+            cleanupVideoRecords(videoId);
         }
     }
 
-    /**
-     * Creates a test video file using FFmpeg.
-     * The video is 3 seconds long with color bars.
-     */
-    private Path createTestVideo() throws Exception {
-        Path testVideo = Files.createTempFile("test-video-", ".mp4");
+    @Test
+    @DisplayName("client can keep monitoring status after upload-service work is done without restarting upload")
+    void statusRemainsVisibleAfterUploadServiceStops() throws Exception {
+        assumeFfmpegAvailable();
+        loadDatabaseConfig();
+        assumeDatabaseReachable();
 
-        ProcessBuilder pb = new ProcessBuilder(
-            "ffmpeg",
-            "-y",  // Overwrite output
-            "-f", "lavfi",  // Use lavfi input
-            "-i", "testsrc=duration=3:size=320x240:rate=30",  // 3-second test pattern
-            "-f", "lavfi",
-            "-i", "sine=frequency=1000:duration=3",  // Audio
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-c:a", "aac",
-            "-shortest",
-            testVideo.toString()
+        String videoId = UUID.randomUUID().toString();
+        Path testVideo = createTestVideo();
+        byte[] videoBytes = Files.readAllBytes(testVideo);
+        Files.deleteIfExists(testVideo);
+
+        VideoUploadRepository videoRepo = new VideoUploadRepository(jdbcUrl, username, password);
+        SegmentUploadRepository segmentRepo = new SegmentUploadRepository(jdbcUrl, username, password);
+        TranscodedSegmentStatusRepository transcodeRepo =
+                new TranscodedSegmentStatusRepository(jdbcUrl, username, password);
+        FlakyStorageClient storageClient = new FlakyStorageClient(null);
+        TestStatusEventBus statusEventBus = new TestStatusEventBus();
+        TestTranscodeTaskBus transcodeTaskBus = new TestTranscodeTaskBus();
+        UploadProcessingConfig config = new UploadProcessingConfig(
+                200,
+                5,
+                60_000,
+                100,
+                1,
+                1,
+                1,
+                1,
+                1
+        );
+        UploadHandler uploadHandler = new UploadHandler(
+                storageClient,
+                statusEventBus,
+                transcodeTaskBus,
+                videoRepo,
+                segmentRepo,
+                "it-machine",
+                "it-container",
+                new FailedVideoRegistry(),
+                new StorageStateTracker(videoRepo, statusEventBus),
+                config
         );
 
-        pb.redirectErrorStream(true);
-        Process process = pb.start();
+        Javalin uploadApp = Javalin.create();
+        uploadApp.post("/upload", uploadHandler::upload);
 
-        // Read output to prevent buffer blocking
+        try {
+            JavalinTest.test(uploadApp, (server, client) -> {
+                JsonNode response = sendUpload(client, videoBytes, videoId, "status-monitoring.mp4");
+                assertEquals(videoId, response.get("videoId").asText());
+                awaitCondition(Duration.ofSeconds(20), () -> statusOf(videoRepo, videoId).equals("UPLOADED"));
+            });
+            int uploadedSegments = segmentRepo.countByVideoId(videoId);
+            assertTrue(uploadedSegments >= 2, "expected multiple uploaded source segments");
+            int uploadAttemptsBeforeShutdown = storageClient.totalUploadAttempts();
+
+            uploadHandler.close();
+            if (uploadApp != null) {
+                uploadApp.stop();
+            }
+
+            insertTranscodeState(videoId, "low", 0, "DONE");
+            insertTranscodeState(videoId, "low", 1, "DONE");
+            insertTranscodeState(videoId, "medium", 0, "DONE");
+
+            UploadInfoHandler infoHandler = new UploadInfoHandler(videoRepo, segmentRepo, transcodeRepo);
+            Javalin statusApp = Javalin.create();
+            statusApp.get("/upload-info/{videoId}", infoHandler::getInfo);
+
+            try {
+                JavalinTest.test(statusApp, (server, client) -> {
+                    try (var response = client.get("/upload-info/" + videoId)) {
+                        assertEquals(200, response.code());
+                        JsonNode body = OBJECT_MAPPER.readTree(response.body().string());
+                        assertEquals(videoId, body.get("videoId").asText());
+                        assertEquals("UPLOADED", body.get("status").asText());
+                        assertEquals("Upload completed. Waiting for processing to finish.",
+                                body.get("statusMessage").asText());
+                        assertEquals(uploadedSegments, body.get("uploadedSegments").asInt());
+                        assertEquals(2, body.get("transcode").get("lowDone").asInt());
+                        assertEquals(1, body.get("transcode").get("mediumDone").asInt());
+                        assertEquals(0, body.get("transcode").get("highDone").asInt());
+                    }
+                });
+            } finally {
+                statusApp.stop();
+            }
+
+            assertEquals(uploadAttemptsBeforeShutdown, storageClient.totalUploadAttempts(),
+                    "status monitoring should not trigger any additional upload attempts");
+        } finally {
+            uploadHandler.close();
+            cleanupTranscodeState(videoId);
+            cleanupVideoRecords(videoId);
+        }
+    }
+
+    private JsonNode sendUpload(HttpClient client, byte[] videoBytes, String videoId, String fileName)
+            throws IOException {
+        RequestBody fileBody = RequestBody.create(videoBytes, MediaType.parse("video/mp4"));
+        MultipartBody requestBody = new MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart("file", fileName, fileBody)
+                .addFormDataPart("name", "Resume Scenario Test")
+                .addFormDataPart("videoId", videoId)
+                .build();
+
+        try (var response = client.request("/upload", builder -> builder.post(requestBody))) {
+            assertEquals(202, response.code());
+            return OBJECT_MAPPER.readTree(response.body().string());
+        }
+    }
+
+    private void loadDatabaseConfig() {
+        Dotenv dotenv = Dotenv.configure().directory("../").ignoreIfMissing().load();
+        jdbcUrl = normalizeJdbcUrl(firstNonBlank(System.getenv("PG_URL"), dotenv.get("PG_URL")));
+        username = firstNonBlank(System.getenv("PG_USER"), dotenv.get("PG_USER"));
+        password = firstNonBlank(System.getenv("PG_PASSWORD"), dotenv.get("PG_PASSWORD"));
+    }
+
+    private void assumeDatabaseReachable() {
+        Assumptions.assumeTrue(jdbcUrl != null && !jdbcUrl.isBlank(), "PG_URL is not set");
+        Assumptions.assumeTrue(username != null && !username.isBlank(), "PG_USER is not set");
+        try (Connection ignored = DriverManager.getConnection(jdbcUrl, username, password)) {
+            // reachable
+        } catch (SQLException e) {
+            Assumptions.assumeTrue(false, "Skipping integration test because Postgres is not reachable: " + e.getMessage());
+        }
+    }
+
+    private void cleanupVideoRecords(String videoId) {
+        if (videoId == null || jdbcUrl == null || username == null) {
+            return;
+        }
+        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password)) {
+            try (PreparedStatement ps = conn.prepareStatement("DELETE FROM segment_upload WHERE video_id = ?")) {
+                ps.setObject(1, UUID.fromString(videoId));
+                ps.executeUpdate();
+            }
+            try (PreparedStatement ps = conn.prepareStatement("DELETE FROM video_upload WHERE video_id = ?")) {
+                ps.setObject(1, UUID.fromString(videoId));
+                ps.executeUpdate();
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to clean up integration test data", e);
+        }
+    }
+
+    private void cleanupTranscodeState(String videoId) {
+        if (videoId == null || jdbcUrl == null || username == null) {
+            return;
+        }
+        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+             PreparedStatement ps = conn.prepareStatement("DELETE FROM transcoded_segment_status WHERE video_id = ?")) {
+            ps.setObject(1, UUID.fromString(videoId));
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to clean up transcode integration test data", e);
+        }
+    }
+
+    private void insertTranscodeState(String videoId, String profile, int segmentNumber, String state) {
+        String sql = """
+                INSERT INTO transcoded_segment_status (video_id, profile, segment_number, state)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (video_id, profile, segment_number) DO UPDATE
+                SET state = EXCLUDED.state,
+                    updated_at = NOW()
+                """;
+        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setObject(1, UUID.fromString(videoId));
+            ps.setString(2, profile);
+            ps.setInt(3, segmentNumber);
+            ps.setString(4, state);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to insert transcoded_segment_status", e);
+        }
+    }
+
+    private String statusOf(VideoUploadRepository repo, String videoId) {
+        return repo.findByVideoId(videoId).map(VideoUploadRecord::getStatus).orElse("");
+    }
+
+    private void awaitCondition(Duration timeout, CheckedBooleanSupplier condition) throws Exception {
+        long deadline = System.nanoTime() + timeout.toNanos();
+        while (System.nanoTime() < deadline) {
+            if (condition.getAsBoolean()) {
+                return;
+            }
+            Thread.sleep(100);
+        }
+        assertTrue(condition.getAsBoolean(), "Condition was not satisfied within " + timeout);
+    }
+
+    private void assumeFfmpegAvailable() {
+        try {
+            Process process = new ProcessBuilder("ffmpeg", "-version")
+                    .redirectErrorStream(true)
+                    .start();
+            int exitCode = process.waitFor();
+            Assumptions.assumeTrue(exitCode == 0, "Skipping integration test because ffmpeg is not available");
+        } catch (Exception e) {
+            Assumptions.assumeTrue(false, "Skipping integration test because ffmpeg is not available: " + e.getMessage());
+        }
+    }
+
+    private Path createTestVideo() throws Exception {
+        Path testVideo = Files.createTempFile("upload-resume-it-", ".mp4");
+        ProcessBuilder pb = new ProcessBuilder(
+                "ffmpeg",
+                "-f", "lavfi",
+                "-i", "testsrc=duration=52:size=320x240:rate=25",
+                "-f", "lavfi",
+                "-i", "sine=frequency=1000:duration=52",
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                "-g", "25",
+                "-keyint_min", "25",
+                "-sc_threshold", "0",
+                "-c:a", "aac",
+                "-shortest",
+                "-y",
+                testVideo.toString()
+        );
+        pb.redirectErrorStream(true);
+
+        Process process = pb.start();
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
             while (reader.readLine() != null) {
-                // Consume output
+                // drain process output
             }
         }
 
@@ -417,35 +388,106 @@ public class UploadHandlerIntegrationTest {
             Files.deleteIfExists(testVideo);
             throw new RuntimeException("Failed to create test video, exit code: " + exitCode);
         }
-
         return testVideo;
     }
 
-    private void cleanupVideoRecords(String jdbcUrl, String username, String password, String videoId) {
-        if (jdbcUrl == null || username == null || videoId == null) {
-            return;
+    private String normalizeJdbcUrl(String url) {
+        if (url == null) {
+            return null;
         }
-        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password)) {
-            try (PreparedStatement ps = conn.prepareStatement(
-                "DELETE FROM segment_upload WHERE video_id = ?")) {
-                ps.setObject(1, UUID.fromString(videoId));
-                ps.executeUpdate();
-            }
-            try (PreparedStatement ps = conn.prepareStatement(
-                "DELETE FROM video_upload WHERE video_id = ?")) {
-                ps.setObject(1, UUID.fromString(videoId));
-                ps.executeUpdate();
-            }
-        } catch (SQLException e) {
-            throw new RuntimeException("Failed to clean up test data", e);
-        }
+        return url
+                .replace("jdbc:postgresql://postgres:", "jdbc:postgresql://localhost:")
+                .replace("jdbc:postgresql://host.docker.internal:", "jdbc:postgresql://localhost:");
     }
 
-    private void assumeDatabaseReachable(String jdbcUrl, String username, String password) {
-        try (Connection ignored = DriverManager.getConnection(jdbcUrl, username, password)) {
-            // Reachable.
-        } catch (SQLException e) {
-            Assumptions.assumeTrue(false, "Skipping integration test because Postgres is not reachable: " + e.getMessage());
+    private String firstNonBlank(String first, String second) {
+        return first != null && !first.isBlank() ? first : second;
+    }
+
+    private Set<Integer> expectedUploadedBeforeFailure() {
+        Set<Integer> segments = new LinkedHashSet<>();
+        for (int i = 0; i < 8; i++) {
+            segments.add(i);
+        }
+        return segments;
+    }
+
+    @FunctionalInterface
+    private interface CheckedBooleanSupplier {
+        boolean getAsBoolean() throws Exception;
+    }
+
+    private static final class FlakyStorageClient implements ObjectStorageClient {
+        private final Map<String, byte[]> objects = new ConcurrentHashMap<>();
+        private final Map<String, Integer> attempts = new ConcurrentHashMap<>();
+        private final Map<String, Integer> successes = new ConcurrentHashMap<>();
+        private final String failOnceKey;
+        private volatile boolean failedOnce;
+        private final CountDownLatch firstFailure = new CountDownLatch(1);
+
+        private FlakyStorageClient(String failOnceKey) {
+            this.failOnceKey = failOnceKey;
+        }
+
+        @Override
+        public void uploadFile(String key, InputStream data, long size) {
+            attempts.merge(key, 1, Integer::sum);
+            if (!failedOnce && key.equals(failOnceKey)) {
+                failedOnce = true;
+                firstFailure.countDown();
+                throw new StorageRetryExecutor.NonRetriableException("simulated upload-service crash during segment upload");
+            }
+            try {
+                objects.put(key, data.readAllBytes());
+                successes.merge(key, 1, Integer::sum);
+            } catch (IOException e) {
+                throw new RuntimeException("Failed to store object in test storage", e);
+            }
+        }
+
+        @Override
+        public InputStream downloadFile(String key) {
+            byte[] data = objects.get(key);
+            if (data == null) {
+                throw new RuntimeException("Object not found: " + key);
+            }
+            return new ByteArrayInputStream(data);
+        }
+
+        @Override
+        public void deleteFile(String key) {
+            objects.remove(key);
+        }
+
+        @Override
+        public boolean fileExists(String key) {
+            return objects.containsKey(key);
+        }
+
+        @Override
+        public List<String> listFiles(String prefix) {
+            return objects.keySet().stream().filter(key -> key.startsWith(prefix)).sorted().toList();
+        }
+
+        @Override
+        public void ensureBucketExists() {
+        }
+
+        @Override
+        public String generatePresignedUrl(String key, long durationSeconds) {
+            return "presigned://" + key;
+        }
+
+        private int uploadAttempts(String key) {
+            return attempts.getOrDefault(key, 0);
+        }
+
+        private int successfulUploads(String key) {
+            return successes.getOrDefault(key, 0);
+        }
+
+        private int totalUploadAttempts() {
+            return attempts.values().stream().mapToInt(Integer::intValue).sum();
         }
     }
 }

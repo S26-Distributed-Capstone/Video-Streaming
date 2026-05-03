@@ -34,19 +34,24 @@ This prevents videos from being stuck forever in `PROCESSING` after a container 
 
 1. Upload Service dies before returning videoId to the client. If no healthy instance is available, the request fails with a service-unavailable error from the routing layer; otherwise, the request is routed to another healthy upload-service instance.
 2. Upload Service dies before source chunk upload is complete - client retries the upload with the same videoId, skipping previously uploaded segments. If retries exceed the client threshold, the upload is treated as failed.
+   - Test coverage: `upload-service/src/test/java/com/distributed26/videostreaming/upload/upload/UploadHandlerIntegrationTest.java` includes an integration test that forces a partial first upload, retries with the same `videoId`, and verifies that already uploaded segments are skipped on retry.
 3. Upload Service dies after source chunks are already uploaded and the system is in downstream transcoding / processing - client should continue monitoring status and should not restart the upload just because the upload-service instance died.
+   - Test coverage: `upload-service/src/test/java/com/distributed26/videostreaming/upload/upload/UploadHandlerIntegrationTest.java` includes an integration test that completes source-chunk upload, shuts down the upload-side app, seeds downstream transcode progress in Postgres, and verifies `/upload-info/{videoId}` still reports status and progress without triggering any new upload attempts.
 
 ### Status Service
 
 1. Status-service dies mid-upload - client reconnects or retries against a healthy status-service instance
-  - Recovery: New status-service instance restores the latest known progress for that videoId from Postgres, sends the latest snapshot to the client, then resumes consuming live status events from RabbitMQ
+   - Recovery: New status-service instance restores the latest known progress for that videoId from Postgres, sends the latest snapshot to the client, then resumes consuming live status events from RabbitMQ
+   - Test coverage: `upload-service/src/test/java/com/distributed26/videostreaming/upload/upload/StatusServiceIntegrationTest.java` starts one status-service instance, connects over WebSocket, stops that instance, advances durable progress in Postgres, reconnects to a new instance, and verifies the restored snapshot plus resumed live events.
 2. All status-service instances are unavailable during uploading / processing
-  - Recovery: client shows "status unavailable" and retries a few times before giving up
+   - Recovery: client shows "status unavailable" and retries a few times before giving up
 
 ### Processing Service
 
 1. Processing Service fails / dies mid-transcoding a segment - needs to be downloaded again from S3 and retranscoded. (Never acked from RabbitMQ)
-2. Processing Service fails / dies mid-uploading a segment - checks local DB for previously transcoded segments and uploads them with the local queue. Tried to sping up for ~10 seconds. If it can't spin it up, have another processing service instance pick it up using RabbitMQ ack timeout
+   - Test coverage: `processing-service/src/test/java/com/distributed26/videostreaming/processing/ProcessingServiceIntegrationTest.java` includes an integration test that forces an initial transcode failure after downloading the source chunk, runs startup recovery, verifies the missing task is republished, and confirms the retried task downloads the chunk again and reaches `TRANSCODED`.
+2. Processing Service fails / dies after a segment has already been transcoded but before the processed segment is uploaded - if the same instance comes back and still has the local spool file, it resumes the pending local upload from the DB-backed upload queue without retranscoding. If another instance takes over and the spool file is not available on that machine, it marks the local upload as failed and republishes the transcode task so the segment can be regenerated and uploaded.
+   - Test coverage: `processing-service/src/test/java/com/distributed26/videostreaming/processing/ProcessingServiceIntegrationTest.java` includes one integration test that verifies a restarted local upload worker on the same instance uploads a pending spool file without retranscoding, and a second integration test that verifies a different instance without access to that spool file does not upload it and instead requeues the transcode work.
 
 ### RabbitMQ Startup Ordering
 
@@ -70,10 +75,12 @@ This reduces `CrashLoopBackOff` risk during cluster startup and makes the servic
 When the processing service restarts after a mid-upload crash, the following recovery sequence runs:
 
 1. **Reset UPLOADING → PENDING**: Any `processing_upload_task` rows left in `UPLOADING` state are reset to `PENDING` so the upload workers will retry them.
+   - Test coverage: `processing-service/src/test/java/com/distributed26/videostreaming/processing/ProcessingServiceIntegrationTest.java` includes an integration test that moves a real upload task into `UPLOADING`, runs the startup reset path, and verifies the task becomes `PENDING` and claimable again.
 2. **Spool orphan scan** (`recoverOrphanedSpoolFiles`): The local spool directory (`/app/processing-spool`) is scanned for `.ts` files that were transcoded but never registered as upload tasks (crash between `transcodeToSpool()` and `upsertPending()`). For each orphaned file:
    - If already in object storage → clean up spool file and mark DONE
    - If an upload task already exists → skip
    - Otherwise → create a PENDING upload task so the upload workers pick it up
+   - Test coverage: `processing-service/src/test/java/com/distributed26/videostreaming/processing/ProcessingServiceIntegrationTest.java` includes an integration test that creates a real orphaned spool file on disk, runs `recoverOrphanedSpoolFiles(...)`, and verifies recovery creates a `PENDING` local upload task from that file.
 3. **Incomplete video recovery** (`recoverIncompleteVideos`): Videos still in `PROCESSING` status are inspected. Any segments that are neither `DONE` nor have an open upload task are re-queued via RabbitMQ for re-transcoding.
 4. **Upload workers start** and begin polling the `processing_upload_task` table for PENDING tasks, uploading them to object storage.
 
@@ -82,9 +89,11 @@ The spool directory is backed by a Docker volume (`processing_spool`) so transco
 ### Streaming Service
 
 1. A manifest request hits a streaming-service instance that dies or drops the connection mid-request
-  - Recovery: client retries the manifest request, and Swarm should route it to another healthy replica
+   - Recovery: client retries the manifest request, and should be routed to another healthy replica
+   - Test coverage: `streaming-service/src/test/java/com/distributed26/videostreaming/streaming/streaming/StreamingServiceApplicationTest.java` includes an integration-style test that forces the first manifest response to drop mid-request and verifies the client can retry the same manifest request successfully against a healthy replica.
 2. All streaming-service instances are unavailable when the client tries to fetch the manifest
-  - Recovery: client shows "stream unavailable" and retries a few times before giving up
+   - Recovery: client shows "stream unavailable" and retries a few times before giving up
+   - Test coverage: `streaming-service/src/test/java/com/distributed26/videostreaming/streaming/streaming/StreamingServiceApplicationTest.java` includes an integration-style test that retries the manifest request across multiple unavailable replica endpoints and verifies the client exhausts its retries before giving up.
 
 ### MinIO / Object Storage Outage
 
@@ -106,19 +115,23 @@ When MinIO becomes unreachable, the processing service continues transcoding any
    - `TranscodingTask.execute()` and `transcodeToSpool()`
    - `LocalSpoolUploadWorkerPool.uploadSpoolTask()`
    - `StartupRecoveryService.recoverOrphanedSpoolFiles()`
+   - Test coverage: `processing-service/src/test/java/com/distributed26/videostreaming/processing/ProcessingServiceIntegrationTest.java` includes an integration test that forces `fileExists` to throw before transcoding and verifies the task still downloads the source chunk and produces a local spool output.
 
 3. **Source chunk downloads** — `downloadFile` is a pass-through in `ResilientStorageClient` — the caller (`TranscodingTask.downloadChunkWithRetry()`) owns retry logic with its own bounded exponential backoff (configurable via `DOWNLOAD_MAX_ATTEMPTS`, default 5). Failed downloads produce readable error messages that surface the root cause (e.g. "Connection refused") rather than generic wrapper exceptions.
+   - Test coverage: `processing-service/src/test/java/com/distributed26/videostreaming/processing/ProcessingServiceIntegrationTest.java` includes an integration test that forces the first two source chunk download attempts to fail, verifies the bounded retry loop continues, and confirms transcoding succeeds once MinIO recovers on a later attempt.
 
 4. **Local spool upload workers** — When an upload to MinIO fails, the upload task is reset to `PENDING` and retried on the next poll cycle. The spool directory is backed by a Docker volume (`processing_spool`), so transcoded files survive container restarts and will be uploaded once MinIO returns.
+   - Test coverage: `processing-service/src/test/java/com/distributed26/videostreaming/processing/ProcessingServiceIntegrationTest.java` includes an integration test that forces the first local spool upload attempt to fail, verifies the task remains pending and the spool file is preserved, then confirms the worker retries and completes the upload once MinIO recovers.
 
 5. **Startup bucket check** — `ensureBucketExists()` is called on the raw `S3StorageClient` (single attempt, no retry wrapper) at startup. If it succeeds, the service proceeds normally. If MinIO is unreachable, the failure is logged at `WARN` and a **background daemon thread** is spawned that retries `ensureBucketExists()` with exponential backoff (same `STORAGE_RETRY_*` timing as the main retry loop) until it succeeds. This is necessary because `ResilientStorageClient` treats `NoSuchBucketException` (404) as a non-transient error — without the background thread, a truly missing bucket on a fresh deployment would cause every subsequent S3 operation to fail immediately with no recovery path. Worker pools, recovery logic, and the health endpoint all start normally regardless.
+   - Test coverage: `processing-service/src/test/java/com/distributed26/videostreaming/processing/ProcessingServiceApplicationTest.java` includes an application-level test that forces the startup `ensureBucketExists()` loop to fail twice, verifies it retries in the background, and confirms the loop continues into recovery once storage becomes reachable again.
 
-7. **Concise logging** — `S3StorageClient` logs every terminal failure at `WARN` with `ex.toString()` (one concise line), plus the full stack trace at `DEBUG` for troubleshooting. This two-tier approach keeps default logs readable while preserving observability for services that use `S3StorageClient` directly (upload-service, streaming-service). Callers in the processing pipeline add their own context:
+6. **Concise logging** — `S3StorageClient` logs every terminal failure at `WARN` with `ex.toString()` (one concise line), plus the full stack trace at `DEBUG` for troubleshooting. This two-tier approach keeps default logs readable while preserving observability for services that use `S3StorageClient` directly (upload-service, streaming-service). Callers in the processing pipeline add their own context:
    - `ResilientStorageClient` logs each retry attempt at `WARN` with `e.toString()` (one line)
    - `safeFileExists` logs the graceful fall-through at `WARN` with a short explanation
    - `downloadChunkWithRetry` unwraps exception chains to surface the root cause (e.g. "Connection refused") without a full stack trace
 
-### Presigned URL Resolution In Docker
+## Presigned URL Resolution In Docker
 
 Presigned URLs must be reachable by the browser, not just by services inside the Docker network. The `S3StorageClient` solves this by using two separate endpoints:
 
@@ -126,6 +139,8 @@ Presigned URLs must be reachable by the browser, not just by services inside the
 - The `S3Presigner` (presigned URL generation) uses `MINIO_PUBLIC_ENDPOINT` (e.g. `http://localhost:9000`), which resolves from the host machine.
 
 If `MINIO_PUBLIC_ENDPOINT` is misconfigured or points to the internal hostname, presigned URLs will contain `minio:9000` in the host portion, causing browser requests to fail with DNS resolution errors. This is the most common cause of "upload works but playback does not" in local development. Both endpoints must use path-style access (`pathStyleAccessEnabled(true)`) because MinIO does not support virtual-hosted-style bucket addressing.
+
+- Test coverage: `shared/src/test/java/com/distributed26/videostreaming/shared/storage/S3StorageClientTest.java` verifies that `generatePresignedUrl(...)` uses the configured public endpoint host and path-style bucket URL rather than the internal MinIO service hostname.
 
 For the broader user workflow that reaches playback after successful upload and processing, see:
 
