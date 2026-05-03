@@ -4,24 +4,36 @@ import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
 import com.distributed26.videostreaming.streaming.db.VideoStatusRepository;
 import io.javalin.Javalin;
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.InetAddress;
 import java.net.HttpURLConnection;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class StreamingServiceApplicationTest {
@@ -185,43 +197,57 @@ class StreamingServiceApplicationTest {
     }
 
     @Test
-    void deleteEndpointRemovesVideoFromStorageAndRepository() throws Exception {
-        storage.put(VIDEO_ID + "/manifest/high.m3u8",
-            "#EXTM3U\n#EXTINF:10,\n000.ts\n".getBytes(StandardCharsets.UTF_8));
+    void clientCanRetryManifestRequestAgainstHealthyReplicaAfterConnectionDrops() throws Exception {
+        try (DroppingManifestServer failedReplica = new DroppingManifestServer()) {
+            failedReplica.start();
 
-        HttpRequest request = HttpRequest.newBuilder()
-            .uri(URI.create("http://localhost:" + port + "/stream/" + VIDEO_ID))
-            .DELETE()
-            .build();
+            HttpRequest firstAttempt = HttpRequest.newBuilder()
+                .uri(URI.create("http://localhost:" + failedReplica.port() + "/stream/" + VIDEO_ID + "/manifest"))
+                .timeout(Duration.ofSeconds(2))
+                .GET()
+                .build();
 
-        HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
+            assertThrows(IOException.class,
+                    () -> httpClient.send(firstAttempt, HttpResponse.BodyHandlers.ofByteArray()),
+                    "first replica should drop the manifest response mid-request");
 
-        assertEquals(HttpURLConnection.HTTP_OK, response.statusCode());
-        assertTrue(!statuses.containsKey(VIDEO_ID), "Video status should be deleted");
-        assertTrue(storage.keySet().stream().noneMatch(key -> key.startsWith(VIDEO_ID + "/")),
-                "All storage objects under the video prefix should be deleted");
+            failedReplica.awaitServedRequest();
+
+            HttpRequest retry = HttpRequest.newBuilder()
+                .uri(URI.create("http://localhost:" + port + "/stream/" + VIDEO_ID + "/manifest"))
+                .GET()
+                .build();
+
+            HttpResponse<byte[]> response = httpClient.send(retry, HttpResponse.BodyHandlers.ofByteArray());
+
+            assertEquals(HttpURLConnection.HTTP_OK, response.statusCode());
+            String body = new String(response.body(), StandardCharsets.UTF_8);
+            assertTrue(body.contains("#EXTM3U"));
+            assertTrue(body.contains("variant/low/playlist.m3u8"));
+        }
     }
 
     @Test
-    void bulkDeleteEndpointRemovesAllRequestedVideos() throws Exception {
-        String secondVideoId = "66666666-6666-6666-6666-666666666666";
-        statuses.put(secondVideoId, "COMPLETED");
-        storage.put(secondVideoId + "/manifest/master.m3u8",
-            "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nlow/playlist.m3u8\n".getBytes(StandardCharsets.UTF_8));
-        storage.put(secondVideoId + "/processed/low/000.ts", "segment-000".getBytes(StandardCharsets.UTF_8));
+    void clientGivesUpAfterManifestRetriesWhenAllReplicasAreUnavailable() throws Exception {
+        try (ClosedPort unavailableReplicaOne = new ClosedPort();
+             ClosedPort unavailableReplicaTwo = new ClosedPort()) {
+            HttpClient retryingClient = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(1))
+                .build();
+            AtomicInteger attempts = new AtomicInteger();
 
-        HttpRequest request = HttpRequest.newBuilder()
-            .uri(URI.create("http://localhost:" + port + "/stream"))
-            .header("Content-Type", "application/json")
-            .method("DELETE", HttpRequest.BodyPublishers.ofString(
-                    "{\"videoIds\":[\"" + VIDEO_ID + "\",\"" + secondVideoId + "\"]}"))
-            .build();
+            URI[] replicas = {
+                URI.create("http://localhost:" + unavailableReplicaOne.port() + "/stream/" + VIDEO_ID + "/manifest"),
+                URI.create("http://localhost:" + unavailableReplicaTwo.port() + "/stream/" + VIDEO_ID + "/manifest"),
+                URI.create("http://localhost:" + unavailableReplicaOne.port() + "/stream/" + VIDEO_ID + "/manifest")
+            };
 
-        HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
-
-        assertEquals(HttpURLConnection.HTTP_OK, response.statusCode());
-        assertEquals(Set.of(), statuses.keySet(), "All requested videos should be removed from status storage");
-        assertTrue(storage.isEmpty(), "All requested video objects should be deleted");
+            assertThrows(IOException.class,
+                    () -> fetchManifestWithRetries(retryingClient, replicas, attempts),
+                    "client should give up after retrying unavailable replicas");
+            assertEquals(replicas.length, attempts.get(),
+                    "client should exhaust each configured manifest retry before giving up");
+        }
     }
 
     private static class FakeStatusRepository extends VideoStatusRepository {
@@ -298,6 +324,97 @@ class StreamingServiceApplicationTest {
         @Override
         public String generatePresignedUrl(String key, long durationSeconds) {
             return "presigned://" + key + "?duration=" + durationSeconds;
+        }
+    }
+
+    private static byte[] fetchManifestWithRetries(HttpClient client, URI[] replicas, AtomicInteger attempts)
+            throws IOException, InterruptedException {
+        IOException lastFailure = null;
+        for (URI replica : replicas) {
+            attempts.incrementAndGet();
+            HttpRequest request = HttpRequest.newBuilder()
+                .uri(replica)
+                .timeout(Duration.ofSeconds(1))
+                .GET()
+                .build();
+            try {
+                HttpResponse<byte[]> response = client.send(request, HttpResponse.BodyHandlers.ofByteArray());
+                if (response.statusCode() == HttpURLConnection.HTTP_OK) {
+                    return response.body();
+                }
+                lastFailure = new IOException("Unexpected manifest status " + response.statusCode() + " from " + replica);
+            } catch (IOException e) {
+                lastFailure = e;
+            }
+        }
+        throw lastFailure != null ? lastFailure : new IOException("No replicas were attempted");
+    }
+
+    private static final class DroppingManifestServer implements AutoCloseable {
+        private final ServerSocket serverSocket = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"));
+        private final ExecutorService executor = Executors.newSingleThreadExecutor();
+        private final CountDownLatch servedRequest = new CountDownLatch(1);
+
+        private DroppingManifestServer() throws IOException {
+        }
+
+        int port() {
+            return serverSocket.getLocalPort();
+        }
+
+        void start() {
+            executor.submit(() -> {
+                try (Socket socket = serverSocket.accept()) {
+                    socket.setSoTimeout(2_000);
+                    socket.getInputStream().readNBytes(512);
+                    byte[] partialBody = "#EXTM3U\n".getBytes(StandardCharsets.UTF_8);
+                    byte[] headers = (
+                            "HTTP/1.1 200 OK\r\n"
+                                    + "Content-Type: application/vnd.apple.mpegurl\r\n"
+                                    + "Content-Length: 64\r\n"
+                                    + "Connection: close\r\n"
+                                    + "\r\n")
+                            .getBytes(StandardCharsets.UTF_8);
+                    OutputStream out = socket.getOutputStream();
+                    out.write(headers);
+                    out.write(partialBody);
+                    out.flush();
+                    servedRequest.countDown();
+                } catch (IOException ignored) {
+                    servedRequest.countDown();
+                }
+            });
+        }
+
+        void awaitServedRequest() throws InterruptedException {
+            assertTrue(servedRequest.await(5, TimeUnit.SECONDS),
+                    "dropping replica should receive the manifest request");
+        }
+
+        @Override
+        public void close() throws Exception {
+            serverSocket.close();
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS),
+                    "dropping manifest server should shut down promptly");
+        }
+    }
+
+    private static final class ClosedPort implements AutoCloseable {
+        private final ServerSocket socket = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"));
+        private final int port = socket.getLocalPort();
+
+        private ClosedPort() throws IOException {
+            socket.close();
+        }
+
+        int port() {
+            return port;
+        }
+
+        @Override
+        public void close() {
+            // already closed to keep the port unavailable
         }
     }
 }

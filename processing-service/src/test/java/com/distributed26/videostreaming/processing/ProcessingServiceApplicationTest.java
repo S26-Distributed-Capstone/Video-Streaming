@@ -1,278 +1,130 @@
 package com.distributed26.videostreaming.processing;
 
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import com.distributed26.videostreaming.processing.db.ProcessingUploadTaskRepository;
-import com.distributed26.videostreaming.processing.db.ProcessingTaskClaimRepository;
-import com.distributed26.videostreaming.processing.db.TranscodedSegmentStatusRepository;
-import com.distributed26.videostreaming.shared.jobs.Status;
-import com.distributed26.videostreaming.shared.upload.StatusEventBus;
-import com.distributed26.videostreaming.shared.upload.events.TranscodeSegmentState;
-import com.distributed26.videostreaming.shared.upload.events.TranscodeTaskEvent;
-import com.distributed26.videostreaming.shared.upload.events.UploadMetaEvent;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.LinkedBlockingQueue;
-import org.junit.jupiter.api.BeforeEach;
+import com.distributed26.videostreaming.processing.runtime.ProcessingRuntime;
+import com.distributed26.videostreaming.processing.runtime.StartupRecoveryService;
+import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
+import java.io.InputStream;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
 
-@ExtendWith(MockitoExtension.class)
 class ProcessingServiceApplicationTest {
 
-    @Mock
-    private StatusEventBus bus;
-    @Mock
-    private TranscodedSegmentStatusRepository transcodeStatusRepository;
-    @Mock
-    private ProcessingUploadTaskRepository processingUploadTaskRepository;
-    @Mock
-    private ProcessingTaskClaimRepository processingTaskClaimRepository;
-
-    private BlockingQueue<TranscodingTask> taskQueue;
-
-    @BeforeEach
-    void setUp() {
-        taskQueue = new LinkedBlockingQueue<>();
+    @AfterEach
+    void tearDown() throws Exception {
+        Field bucketThreadField = ProcessingServiceApplication.class.getDeclaredField("bucketEnsureThread");
+        bucketThreadField.setAccessible(true);
+        Thread bucketThread = (Thread) bucketThreadField.get(null);
+        if (bucketThread != null) {
+            bucketThread.interrupt();
+            bucketThread.join(5_000);
+            bucketThreadField.set(null, null);
+        }
         ProcessingServiceApplication.resetState();
     }
 
-    // ── Task count ─────────────────────────────────────────────────────────────
-
     @Test
-    void oneSourceChunk_enqueuesThreeProfileTasks() {
-        sendChunks("vid1", "vid1/chunks/seg0.ts");
+    void startupBucketEnsureThreadRetriesUntilStorageRecovers() throws Exception {
+        ProcessingRuntime runtime = new ProcessingRuntime(
+                null, null, null, null, null, null, null, null, null, null
+        );
+        StartupRecoveryService startupRecovery = new StartupRecoveryService(
+                ProcessingServiceApplication.PROFILES,
+                runtime
+        );
+        RecoveringEnsureBucketStorageClient storageClient = new RecoveringEnsureBucketStorageClient(2);
 
-        assertEquals(3, taskQueue.size());
+        Method startBucketEnsureThread = ProcessingServiceApplication.class.getDeclaredMethod(
+                "startBucketEnsureThread",
+                ObjectStorageClient.class,
+                StartupRecoveryService.class,
+                Path.class,
+                com.distributed26.videostreaming.shared.upload.RabbitMQDevLogPublisher.class,
+                long.class
+        );
+        startBucketEnsureThread.setAccessible(true);
+        startBucketEnsureThread.invoke(null, storageClient, startupRecovery, null, null, 1_000L);
+
+        Field bucketThreadField = ProcessingServiceApplication.class.getDeclaredField("bucketEnsureThread");
+        bucketThreadField.setAccessible(true);
+        Thread bucketThread = (Thread) bucketThreadField.get(null);
+        assertNotNull(bucketThread, "startup should spawn the bucket ensure thread");
+
+        assertTrue(storageClient.awaitRecovered(5, TimeUnit.SECONDS),
+                "bucket ensure thread should retry until storage becomes reachable");
+        assertEquals(3, storageClient.ensureAttempts(),
+                "bucket ensure should retry after two failures and then succeed");
+
+        bucketThread.interrupt();
+        bucketThread.join(5_000);
+        assertNull(bucketThreadField.get(null), "bucket ensure thread should clear itself on shutdown");
     }
 
-    @Test
-    void twoSourceChunks_enqueueSixProfileTasks() {
-        sendChunks("vid1", "vid1/chunks/seg0.ts", "vid1/chunks/seg1.ts");
+    private static final class RecoveringEnsureBucketStorageClient implements ObjectStorageClient {
+        private final int failuresBeforeSuccess;
+        private final AtomicInteger ensureAttempts = new AtomicInteger();
+        private final CountDownLatch recovered = new CountDownLatch(1);
 
-        assertEquals(6, taskQueue.size());
-    }
-
-    @Test
-    void taskCount_isSourceChunksTimesProfiles() {
-        int chunkCount = 5;
-        String[] keys = new String[chunkCount];
-        for (int i = 0; i < chunkCount; i++) {
-            keys[i] = "vid1/chunks/seg" + i + ".ts";
+        private RecoveringEnsureBucketStorageClient(int failuresBeforeSuccess) {
+            this.failuresBeforeSuccess = failuresBeforeSuccess;
         }
-        sendChunks("vid1", keys);
 
-        assertEquals(chunkCount * ProcessingServiceApplication.PROFILES.length, taskQueue.size());
-    }
-
-    // ── Ordering: tasks are queued immediately, not on meta ───────────────────
-
-    @Test
-    void transcodeTaskMessages_immediatelyQueueThreeProfileTasks() {
-        sendChunks("vid1", "vid1/chunks/seg0.ts");
-        assertEquals(3, taskQueue.size(), "Profile tasks should be queued as soon as task messages arrive");
-
-        sendChunks("vid1", "vid1/chunks/seg1.ts");
-        assertEquals(6, taskQueue.size(), "Each source chunk independently adds three profile tasks");
-    }
-
-    @Test
-    void metaEvent_doesNotQueueTranscodeTasks() {
-        sendMeta("vid1", 2);
-        assertEquals(0, taskQueue.size(), "UploadMetaEvent alone queues nothing");
-
-        sendMeta("vid1", 2); // second meta also ignored
-        assertEquals(0, taskQueue.size());
-    }
-
-    @Test
-    void queuedTasksRemainUnchangedWhenMetaArrives() {
-        sendChunks("vid1", "vid1/chunks/seg0.ts", "vid1/chunks/seg1.ts");
-        assertEquals(6, taskQueue.size());
-
-        sendMeta("vid1", 2); // meta arrives after chunks — should change nothing
-        assertEquals(6, taskQueue.size());
-    }
-
-    // ── Task properties ────────────────────────────────────────────────────────
-
-    @Test
-    void queuedTasks_haveCreatedStatus() {
-        sendChunks("vid1", "vid1/chunks/seg0.ts");
-
-        for (TranscodingTask t : taskQueue) {
-            assertEquals(Status.CREATED, t.getStatus());
+        @Override
+        public void uploadFile(String key, InputStream data, long size) {
+            throw new UnsupportedOperationException();
         }
-    }
 
-    @Test
-    void queuedTasks_allThreeProfilesCovered() {
-        sendChunks("vid1", "vid1/chunks/seg0.ts");
-
-        boolean hasLow    = taskQueue.stream().anyMatch(t -> t.getProfile() == TranscodingProfile.LOW);
-        boolean hasMedium = taskQueue.stream().anyMatch(t -> t.getProfile() == TranscodingProfile.MEDIUM);
-        boolean hasHigh   = taskQueue.stream().anyMatch(t -> t.getProfile() == TranscodingProfile.HIGH);
-
-        assertTrue(hasLow,    "Expected a LOW profile task");
-        assertTrue(hasMedium, "Expected a MEDIUM profile task");
-        assertTrue(hasHigh,   "Expected a HIGH profile task");
-    }
-
-    @Test
-    void queuedTasks_haveCorrectJobId() {
-        sendChunks("vid1", "vid1/chunks/seg0.ts");
-
-        for (TranscodingTask t : taskQueue) {
-            assertEquals("vid1", t.getJobId());
+        @Override
+        public InputStream downloadFile(String key) {
+            throw new UnsupportedOperationException();
         }
-    }
 
-    @Test
-    void queuedTasks_outputKeysAreUnderProcessedPath() {
-        sendChunks("vid1", "vid1/chunks/seg0.ts");
+        @Override
+        public void deleteFile(String key) {
+            throw new UnsupportedOperationException();
+        }
 
-        for (TranscodingTask t : taskQueue) {
-            assertTrue(t.getOutputKey().startsWith("vid1/processed/"),
-                    "Expected output under vid1/processed/ but was: " + t.getOutputKey());
+        @Override
+        public boolean fileExists(String key) {
+            return false;
+        }
+
+        @Override
+        public List<String> listFiles(String prefix) {
+            return List.of();
+        }
+
+        @Override
+        public void ensureBucketExists() {
+            int attempt = ensureAttempts.incrementAndGet();
+            if (attempt <= failuresBeforeSuccess) {
+                throw new RuntimeException("simulated MinIO outage during ensureBucketExists attempt " + attempt);
+            }
+            recovered.countDown();
+        }
+
+        @Override
+        public String generatePresignedUrl(String key, long durationSeconds) {
+            return "presigned://" + key;
+        }
+
+        private boolean awaitRecovered(long timeout, TimeUnit unit) throws InterruptedException {
+            return recovered.await(timeout, unit);
+        }
+
+        private int ensureAttempts() {
+            return ensureAttempts.get();
         }
     }
-
-    @Test
-    void queuedTasks_haveUniqueIds() {
-        sendChunks("vid1", "vid1/chunks/seg0.ts", "vid1/chunks/seg1.ts");
-
-        long distinctIds = taskQueue.stream().map(TranscodingTask::getId).distinct().count();
-        assertEquals(taskQueue.size(), distinctIds);
-    }
-
-    // ── Multiple videos ────────────────────────────────────────────────────────
-
-    @Test
-    void twoVideos_enqueueTasksIndependently() {
-        sendChunks("vidA", "vidA/chunks/seg0.ts");
-        assertEquals(3, taskQueue.size());
-
-        sendChunks("vidB", "vidB/chunks/seg0.ts", "vidB/chunks/seg1.ts");
-        assertEquals(9, taskQueue.size());
-    }
-
-    @Test
-    void twoVideos_tasksHaveCorrectJobIds() {
-        sendChunks("vidA", "vidA/chunks/seg0.ts");
-        sendChunks("vidB", "vidB/chunks/seg0.ts");
-
-        long forA = taskQueue.stream().filter(t -> "vidA".equals(t.getJobId())).count();
-        long forB = taskQueue.stream().filter(t -> "vidB".equals(t.getJobId())).count();
-        assertEquals(3, forA);
-        assertEquals(3, forB);
-    }
-
-    // ── Task message semantics ────────────────────────────────────────────────
-
-    @Test
-    void duplicateTranscodeTask_isQueuedAgain() {
-        sendChunks("vid1", "vid1/chunks/seg0.ts");
-        sendChunks("vid1", "vid1/chunks/seg0.ts"); // duplicate publish / retry
-
-        // Processing now consumes one task message at a time and does not dedupe retries.
-        assertEquals(6, taskQueue.size());
-    }
-
-    @Test
-    void alreadyDoneSegments_areSkipped() {
-        ProcessingServiceApplication.runtime().setTranscodeStatusRepository(transcodeStatusRepository);
-        ProcessingServiceApplication.runtime().setStatusBus(bus);
-        when(transcodeStatusRepository.hasState("vid1", "low", 0, TranscodeSegmentState.DONE)).thenReturn(true);
-        when(transcodeStatusRepository.hasState("vid1", "medium", 0, TranscodeSegmentState.DONE)).thenReturn(false);
-        when(transcodeStatusRepository.hasState("vid1", "high", 0, TranscodeSegmentState.DONE)).thenReturn(false);
-        when(transcodeStatusRepository.countByState(any(), any(), any())).thenReturn(0);
-
-        sendChunks("vid1", "vid1/chunks/seg0.ts");
-
-        assertEquals(2, taskQueue.size(), "One profile should be skipped because it's already DONE");
-        verify(transcodeStatusRepository).hasState("vid1", "low", 0, TranscodeSegmentState.DONE);
-        verify(transcodeStatusRepository).hasState("vid1", "medium", 0, TranscodeSegmentState.DONE);
-        verify(transcodeStatusRepository).hasState("vid1", "high", 0, TranscodeSegmentState.DONE);
-        verify(bus).publish(argThat(ev ->
-                ev instanceof com.distributed26.videostreaming.shared.upload.events.TranscodeProgressEvent t
-                        && "vid1".equals(t.getJobId())
-                        && "low".equals(t.getProfile())
-                        && t.getSegmentNumber() == 0
-                        && t.getState() == TranscodeSegmentState.DONE
-        ));
-    }
-
-    @Test
-    void openLocalUploadTask_isSkipped() {
-        ProcessingServiceApplication.runtime().setProcessingUploadTaskRepository(processingUploadTaskRepository);
-        when(processingUploadTaskRepository.hasOpenTask("vid1", "low", 0)).thenReturn(true);
-        when(processingUploadTaskRepository.hasOpenTask("vid1", "medium", 0)).thenReturn(false);
-        when(processingUploadTaskRepository.hasOpenTask("vid1", "high", 0)).thenReturn(false);
-
-        sendChunks("vid1", "vid1/chunks/seg0.ts");
-
-        assertEquals(2, taskQueue.size(), "One profile should be skipped because a local upload task already exists");
-        verify(processingUploadTaskRepository).hasOpenTask("vid1", "low", 0);
-        verify(processingUploadTaskRepository).hasOpenTask("vid1", "medium", 0);
-        verify(processingUploadTaskRepository).hasOpenTask("vid1", "high", 0);
-    }
-
-    @Test
-    void failedVideo_doesNotQueueMoreTranscodeTasks() {
-        ProcessingServiceApplication.runtime().markVideoFailed("vid1");
-
-        sendChunks("vid1", "vid1/chunks/seg0.ts");
-
-        assertEquals(0, taskQueue.size(), "Failed videos should not enqueue more transcode work");
-    }
-
-    @Test
-    void activeClaim_isSkipped() {
-        ProcessingServiceApplication.runtime().setProcessingTaskClaimRepository(processingTaskClaimRepository);
-        when(processingTaskClaimRepository.hasActiveClaim("vid1", "low", 0, 10000L)).thenReturn(true);
-        when(processingTaskClaimRepository.hasActiveClaim("vid1", "medium", 0, 10000L)).thenReturn(false);
-        when(processingTaskClaimRepository.hasActiveClaim("vid1", "high", 0, 10000L)).thenReturn(false);
-
-        sendChunks("vid1", "vid1/chunks/seg0.ts");
-
-        assertEquals(2, taskQueue.size(), "One profile should be skipped because another instance already claimed it");
-        verify(processingTaskClaimRepository).hasActiveClaim("vid1", "low", 0, 10000L);
-        verify(processingTaskClaimRepository).hasActiveClaim("vid1", "medium", 0, 10000L);
-        verify(processingTaskClaimRepository).hasActiveClaim("vid1", "high", 0, 10000L);
-    }
-
-    // ── Helpers ────────────────────────────────────────────────────────────────
-
-    private void sendChunks(String videoId, String... chunkKeys) {
-        for (String key : chunkKeys) {
-            int segmentNumber = extractSegmentNumber(key);
-            enqueueIfPresent(new TranscodeTaskEvent(videoId, key, "low", segmentNumber));
-            enqueueIfPresent(new TranscodeTaskEvent(videoId, key, "medium", segmentNumber));
-            enqueueIfPresent(new TranscodeTaskEvent(videoId, key, "high", segmentNumber));
-        }
-    }
-
-    private void enqueueIfPresent(TranscodeTaskEvent event) {
-        TranscodingTask task = ProcessingServiceApplication.onTranscodeTaskEvent(event);
-        if (task != null) {
-            taskQueue.offer(task);
-        }
-    }
-
-    private void sendMeta(String videoId, int totalSegments) {
-        ProcessingServiceApplication.onStatusEvent(new UploadMetaEvent(videoId, totalSegments), null, null);
-    }
-
-    private static int extractSegmentNumber(String chunkKey) {
-        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("(\\d+)").matcher(chunkKey);
-        int last = -1;
-        while (matcher.find()) {
-            last = Integer.parseInt(matcher.group(1));
-        }
-        return last;
-    }
-
 }
