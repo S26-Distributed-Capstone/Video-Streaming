@@ -37,6 +37,9 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - containerPort: 8083
+          env:
+            - name: SERVICE_MODE
+              value: "streaming"
           envFrom:
             - configMapRef:
                 name: {{ .Release.Name }}-config

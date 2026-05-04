@@ -10,7 +10,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENV_FILE="${SCRIPT_DIR}/.env"
-CHART_DIR="${SCRIPT_DIR}/helm/video-streaming"
+CHART_DIR="${SCRIPT_DIR}/k8s"
 RELEASE_NAME="vs"
 
 # ── Load .env ──────────────────────────────────────────────────
@@ -76,4 +76,3 @@ case "$ACTION" in
     exit 1
     ;;
 esac
-

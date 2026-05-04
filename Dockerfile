@@ -1,13 +1,20 @@
 FROM maven:3.9.6-eclipse-temurin-17 AS build
 
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends ffmpeg python3 python3-pip \
-  && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
+
+COPY pom.xml ./
+COPY shared/pom.xml shared/pom.xml
+COPY upload-service/pom.xml upload-service/pom.xml
+COPY processing-service/pom.xml processing-service/pom.xml
+COPY streaming-service/pom.xml streaming-service/pom.xml
+
+RUN --mount=type=cache,target=/root/.m2 \
+  mvn -pl upload-service,processing-service,streaming-service -am dependency:go-offline
+
 COPY . .
 
-RUN mvn -pl upload-service,processing-service,streaming-service -am -DskipTests package
+RUN --mount=type=cache,target=/root/.m2 \
+  mvn -pl upload-service,processing-service,streaming-service -am -DskipTests package
 
 FROM eclipse-temurin:17-jre
 
