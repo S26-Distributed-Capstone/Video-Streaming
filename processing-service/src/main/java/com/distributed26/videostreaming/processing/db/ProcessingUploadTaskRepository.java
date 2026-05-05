@@ -22,6 +22,7 @@ public class ProcessingUploadTaskRepository {
         this.jdbcUrl = jdbcUrl;
         this.username = username;
         this.password = password;
+        ensureSpoolOwnerColumn();
     }
 
     public static ProcessingUploadTaskRepository fromEnv() {
@@ -40,6 +41,7 @@ public class ProcessingUploadTaskRepository {
 
     public void upsertPending(
             String videoId,
+            String spoolOwner,
             String profile,
             int segmentNumber,
             String chunkKey,
@@ -51,6 +53,7 @@ public class ProcessingUploadTaskRepository {
         String sql = """
             INSERT INTO processing_upload_task (
                 video_id,
+                spool_owner,
                 profile,
                 segment_number,
                 chunk_key,
@@ -62,9 +65,10 @@ public class ProcessingUploadTaskRepository {
                 attempt_count,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 0, NOW())
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 0, NOW())
             ON CONFLICT (video_id, profile, segment_number) DO UPDATE
-            SET chunk_key = EXCLUDED.chunk_key,
+            SET spool_owner = EXCLUDED.spool_owner,
+                chunk_key = EXCLUDED.chunk_key,
                 output_key = EXCLUDED.output_key,
                 spool_path = EXCLUDED.spool_path,
                 size_bytes = EXCLUDED.size_bytes,
@@ -74,15 +78,16 @@ public class ProcessingUploadTaskRepository {
                 updated_at = NOW()
             """;
         try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
-             PreparedStatement ps = conn.prepareStatement(sql)) {
+            PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setObject(1, UUID.fromString(videoId));
-            ps.setString(2, profile);
-            ps.setInt(3, segmentNumber);
-            ps.setString(4, chunkKey);
-            ps.setString(5, outputKey);
-            ps.setString(6, spoolPath);
-            ps.setLong(7, sizeBytes);
-            ps.setDouble(8, outputTsOffsetSeconds);
+            ps.setString(2, spoolOwner);
+            ps.setString(3, profile);
+            ps.setInt(4, segmentNumber);
+            ps.setString(5, chunkKey);
+            ps.setString(6, outputKey);
+            ps.setString(7, spoolPath);
+            ps.setLong(8, sizeBytes);
+            ps.setDouble(9, outputTsOffsetSeconds);
             ps.executeUpdate();
         } catch (SQLException e) {
             throw new RuntimeException("Failed to upsert processing_upload_task", e);
@@ -94,8 +99,11 @@ public class ProcessingUploadTaskRepository {
             WITH next_task AS (
                 SELECT id
                 FROM processing_upload_task
-                WHERE state = 'PENDING'
-                   OR (state = 'UPLOADING' AND updated_at < NOW() - (? * INTERVAL '1 millisecond'))
+                WHERE spool_owner = ?
+                  AND (
+                        state = 'PENDING'
+                     OR (state = 'UPLOADING' AND updated_at < NOW() - (? * INTERVAL '1 millisecond'))
+                  )
                 ORDER BY updated_at ASC, id ASC
                 LIMIT 1
                 FOR UPDATE SKIP LOCKED
@@ -109,6 +117,7 @@ public class ProcessingUploadTaskRepository {
             WHERE t.id = next_task.id
             RETURNING t.id,
                       t.video_id,
+                      t.spool_owner,
                       t.profile,
                       t.segment_number,
                       t.chunk_key,
@@ -120,8 +129,9 @@ public class ProcessingUploadTaskRepository {
             """;
         try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
              PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setLong(1, staleMillis);
-            ps.setString(2, claimedBy);
+            ps.setString(1, claimedBy);
+            ps.setLong(2, staleMillis);
+            ps.setString(3, claimedBy);
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) {
                     return Optional.empty();
@@ -255,6 +265,7 @@ public class ProcessingUploadTaskRepository {
         return new LocalSpoolUploadTask(
                 rs.getLong("id"),
                 rs.getString("video_id"),
+                rs.getString("spool_owner"),
                 rs.getString("profile"),
                 rs.getInt("segment_number"),
                 rs.getString("chunk_key"),
@@ -264,5 +275,18 @@ public class ProcessingUploadTaskRepository {
                 rs.getDouble("output_ts_offset_seconds"),
                 rs.getInt("attempt_count")
         );
+    }
+
+    private void ensureSpoolOwnerColumn() {
+        String sql = """
+            ALTER TABLE processing_upload_task
+            ADD COLUMN IF NOT EXISTS spool_owner VARCHAR(128)
+            """;
+        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to ensure processing_upload_task.spool_owner", e);
+        }
     }
 }

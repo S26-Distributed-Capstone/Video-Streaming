@@ -3,6 +3,7 @@ package com.distributed26.videostreaming.processing;
 public record LocalSpoolUploadTask(
         long id,
         String videoId,
+        String spoolOwner,
         String profile,
         int segmentNumber,
         String chunkKey,

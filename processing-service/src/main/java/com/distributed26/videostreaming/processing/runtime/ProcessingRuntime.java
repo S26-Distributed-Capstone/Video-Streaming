@@ -551,6 +551,7 @@ public final class ProcessingRuntime {
                 }
                 processingUploadTaskRepository.upsertPending(
                         task.getJobId(),
+                        processorInstanceId,
                         task.getProfile().getName(),
                         segmentNumber,
                         task.getChunkKey(),
