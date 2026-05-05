@@ -1,7 +1,7 @@
 # ─── App image ──────────────────────────────────────────────────
 image:
-  repository: cp1:32000/video-streaming-app   # in-cluster registry, NodePort 32000
-  tag: "1.0"
+  repository: tanigross/video-streaming-app
+  tag: "1.2"
   pullPolicy: IfNotPresent
 
 # ─── Replica counts ────────────────────────────────────────────

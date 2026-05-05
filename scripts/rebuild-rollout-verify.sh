@@ -9,7 +9,7 @@ KUBECTL_PREFIX="doas env KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl"
 VALUES_FILE="${ROOT_DIR}/k8s/values.yaml"
 RENDERED_FILE="${ROOT_DIR}/k8s/rendered.yaml"
 DIST_TAR="${ROOT_DIR}/dist/images-amd64.tar"
-IMAGE_REPO="cp1:32000/video-streaming-app"
+IMAGE_REPO="tanigross/video-streaming-app"
 BASE_IMAGES=(
   "rabbitmq:3-management"
   "quay.io/minio/minio:latest"
@@ -39,7 +39,7 @@ current_tag() {
 update_tag_files() {
   local new_tag="$1"
   perl -0pi -e 's/(tag:\s*")[^"]+(")/${1}'"$new_tag"'${2}/' "$VALUES_FILE"
-  perl -0pi -e 's|(image: "cp1:32000/video-streaming-app:)[^"]+(")|${1}'"$new_tag"'${2}|g' "$RENDERED_FILE"
+  perl -0pi -e 's|(image: "tanigross/video-streaming-app:)[^"]+(")|${1}'"$new_tag"'${2}|g' "$RENDERED_FILE"
 }
 
 remote_run() {
