@@ -18,7 +18,7 @@ statusService:
     limits:   { memory: "1Gi",   cpu: "1000m" }
 
 processingService:
-  replicas: 1
+  replicas: 10
   spoolStorageSize: 5Gi
   resources:
     requests: { memory: "1Gi",  cpu: "1000m" }
@@ -74,7 +74,7 @@ config:
   statusPort: "8081"
   processingPort: "8082"
   streamingPort: "8083"
-  workerPoolSize: "6"
+  workerPoolSize: "2"
   threadsPerWorker: "1"
   ffmpegPreset: "superfast"
   processingSpoolRoot: "/app/processing-spool"
