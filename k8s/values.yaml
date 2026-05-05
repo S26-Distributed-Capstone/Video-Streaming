@@ -40,6 +40,10 @@ rabbitmq:
 
 minio:
   storageSize: 10Gi
+  # Pin MinIO to a specific IP from your MetalLB address pool.
+  # Once set, MINIO_PUBLIC_ENDPOINT is auto-derived — no manual helm upgrade needed.
+  # Pick any free IP from your MetalLB range, e.g. 192.168.1.200
+  loadBalancerIP: ""
 
 # ─── Credentials ────────────────────────────────────────────────
 # DO NOT put real secrets here — this file is committed to git.
@@ -57,7 +61,9 @@ secrets:
 # ─── App config ─────────────────────────────────────────────────
 config:
   minioEndpoint: "http://minio:9000"
-  minioPublicEndpoint: "http://localhost:9000"
+  # minioPublicEndpoint is auto-derived from minio.loadBalancerIP when that is set.
+  # Only override this manually if you are NOT using minio.loadBalancerIP.
+  minioPublicEndpoint: ""
   minioBucketName: "uploads"
   minioRegion: "us-east-1"
   chunkDuration: "6"
@@ -85,9 +91,10 @@ config:
 
 # ─── Service exposure ──────────────────────────────────────────
 # LoadBalancer + "minikube tunnel" exposes services on localhost at their
-# real ports (8080, 8081, 8083) — no port-forward needed.
+# real ports (8080, 8081, 8083, 9000) — no port-forward needed.
 service:
   type: LoadBalancer
   uploadNodePort: 30080       # only used when type=NodePort
   statusNodePort: 30081
   streamingNodePort: 30083
+  minioNodePort: 30090        # only used when type=NodePort; set config.minioPublicEndpoint to http://<node-ip>:30090

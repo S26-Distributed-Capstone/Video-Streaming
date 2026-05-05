@@ -7,7 +7,7 @@ metadata:
     helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
 data:
   MINIO_ENDPOINT: "http://{{ .Release.Name }}-minio:9000"
-  MINIO_PUBLIC_ENDPOINT: {{ .Values.config.minioPublicEndpoint | quote }}
+  MINIO_PUBLIC_ENDPOINT: {{ if .Values.minio.loadBalancerIP }}"http://{{ .Values.minio.loadBalancerIP }}:9000"{{ else }}{{ .Values.config.minioPublicEndpoint | quote }}{{ end }}
   MINIO_BUCKET_NAME: {{ .Values.config.minioBucketName | quote }}
   MINIO_REGION: {{ .Values.config.minioRegion | quote }}
   CHUNK_DURATION_SECONDS: {{ .Values.config.chunkDuration | quote }}

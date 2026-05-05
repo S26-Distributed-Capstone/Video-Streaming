@@ -34,7 +34,7 @@ metadata:
     helm.sh/chart: video-streaming-0.1.0
 data:
   MINIO_ENDPOINT: "http://vs-minio:9000"
-  MINIO_PUBLIC_ENDPOINT: "http://localhost:9000"
+  MINIO_PUBLIC_ENDPOINT: ""
   MINIO_BUCKET_NAME: "uploads"
   MINIO_REGION: "us-east-1"
   CHUNK_DURATION_SECONDS: "6"
@@ -643,12 +643,12 @@ spec:
               readOnly: true
           readinessProbe:
             exec:
-              command: ["pg_isready", "-U", "CHANGE_ME"]
+              command: ["pg_isready", "-U", "admin"]
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             exec:
-              command: ["pg_isready", "-U", "CHANGE_ME"]
+              command: ["pg_isready", "-U", "admin"]
             initialDelaySeconds: 15
             periodSeconds: 20
       volumes:
