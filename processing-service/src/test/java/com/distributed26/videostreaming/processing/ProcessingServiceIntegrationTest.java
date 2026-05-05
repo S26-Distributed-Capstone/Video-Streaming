@@ -167,6 +167,62 @@ class ProcessingServiceIntegrationTest {
     }
 
     @Test
+    void startupRecoveryRequeuesStaleQueuedTranscodeWithoutClaimOrUploadTask() throws Exception {
+        loadDatabaseConfig();
+        assumeDatabaseReachable();
+
+        String videoId = UUID.randomUUID().toString();
+        String chunkKey = videoId + "/chunks/output0.ts";
+        seedVideoRecord(videoId, 1, "PROCESSING");
+
+        TranscodedSegmentStatusRepository transcodeRepo =
+                new TranscodedSegmentStatusRepository(jdbcUrl, username, password);
+        VideoProcessingRepository videoRepo = new VideoProcessingRepository(jdbcUrl, username, password);
+        ProcessingUploadTaskRepository uploadTaskRepo =
+                new ProcessingUploadTaskRepository(jdbcUrl, username, password);
+        ProcessingTaskClaimRepository claimRepo =
+                new ProcessingTaskClaimRepository(jdbcUrl, username, password);
+
+        TestStatusEventBus statusBus = new TestStatusEventBus();
+        RecordingTranscodeTaskBus transcodeBus = new RecordingTranscodeTaskBus();
+        Path spoolRoot = Files.createTempDirectory("processing-stale-queued-recovery-");
+        ProcessingRuntime runtime = new ProcessingRuntime(
+                transcodeRepo,
+                videoRepo,
+                uploadTaskRepo,
+                claimRepo,
+                statusBus,
+                transcodeBus,
+                null,
+                null,
+                spoolRoot,
+                "processing-it",
+                1
+        );
+        StartupRecoveryService recovery = new StartupRecoveryService(
+                new TranscodingProfile[]{TranscodingProfile.LOW},
+                runtime
+        );
+
+        try {
+            transcodeRepo.upsertState(videoId, "low", 0, TranscodeSegmentState.QUEUED);
+            Thread.sleep(5L);
+
+            recovery.recoverIncompleteVideos(new CountingStorageClient(chunkKey, new byte[0]));
+
+            TranscodeTaskEvent republished = transcodeBus.awaitPublished(videoId, "low", 0, 5, TimeUnit.SECONDS);
+            assertNotNull(republished, "startup recovery should republish stale QUEUED work");
+            assertEquals(chunkKey, republished.getChunkKey());
+            assertFalse(uploadTaskRepo.hasOpenTask(videoId, "low", 0),
+                    "recovery should republish the transcode task before any local upload task exists");
+        } finally {
+            runtime.resetForTests();
+            cleanupProcessingRows(videoId);
+            deleteDirectory(spoolRoot);
+        }
+    }
+
+    @Test
     void startupResetsUploadingTasksBackToPending() throws Exception {
         loadDatabaseConfig();
         assumeDatabaseReachable();
