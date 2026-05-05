@@ -55,13 +55,16 @@ let wsToken = 0;
 let progressRefreshTimerId = null;
 let wsReconnectTimerId = null;
 let uploadRetryTimerId = null;
+let processingRouteBootTimerId = null;
 let currentWsUrl = null;
 let reconnectAttempts = 0;
+let processingRouteBootAttempts = 0;
 let hasEverConnectedWebSocket = false;
 let retryingMinioConnection = false;
 const maxReconnectAttempts = 6;
 const reconnectBaseDelayMs = 1000;
 const maxUploadRetryAttempts = 5;
+const maxProcessingRouteBootAttempts = 8;
 let hlsInstance = null;
 let selectedVideoId = null;
 let readyVideosState = [];
@@ -206,6 +209,23 @@ function showRouteState(title, body, { tone = "", showStreamButton = false } = {
   setDoneMessage("", { hidden: true });
 }
 
+function showRouteTransientState(title, body, { tone = "" } = {}) {
+  document.body.classList.remove("processing-route-terminal");
+  if (processingRouteState) {
+    processingRouteState.classList.remove("hidden");
+    processingRouteState.classList.toggle("error", tone === "error");
+  }
+  if (processingRouteStateTitle) {
+    processingRouteStateTitle.textContent = title;
+  }
+  if (processingRouteStateBody) {
+    processingRouteStateBody.textContent = body;
+  }
+  if (processingRouteStateStreamBtn) {
+    processingRouteStateStreamBtn.classList.add("hidden");
+  }
+}
+
 function setActiveTab(tab) {
   const isUpload = tab === "upload";
   if (uploadTab) {
@@ -250,9 +270,18 @@ function clearPlaybackRetryTimer() {
   playbackRetryTimerId = clearTimer(playbackRetryTimerId);
 }
 
+function clearProcessingRouteBootTimer() {
+  processingRouteBootTimerId = clearTimer(processingRouteBootTimerId);
+}
+
 function resetWsReconnectState() {
   clearWsReconnectTimer();
   reconnectAttempts = 0;
+}
+
+function resetProcessingRouteBootState() {
+  clearProcessingRouteBootTimer();
+  processingRouteBootAttempts = 0;
 }
 
 function disconnectWebSocket() {
@@ -458,6 +487,7 @@ function resetStateForNextUpload() {
   retryingMinioConnection = false;
   clearProgressRefreshTimer();
   resetWsReconnectState();
+  resetProcessingRouteBootState();
   currentWsUrl = null;
   ["low", "medium", "high"].forEach((profile) => {
     const state = transcodeProfiles[profile];
@@ -1348,6 +1378,13 @@ async function fetchUploadInfo(baseUrl, videoId, uploadStatusUrl) {
     if (infoBox) {
       renderJson(infoBox, payload);
     }
+    if (getProcessingRouteVideoId() === videoId) {
+      if (!handleProcessingRouteStatus(payload)) {
+        return { ok: true, status: resp.status, payload };
+      }
+      hideRouteState();
+      resetProcessingRouteBootState();
+    }
     applyUploadInfoSnapshot(payload);
     return { ok: true, status: resp.status, payload };
   } catch (err) {
@@ -1398,6 +1435,51 @@ function handleProcessingRouteStatus(payload) {
   return true;
 }
 
+function isTransientProcessingRouteFailure(result) {
+  return !result || result.status === 0 || result.status >= 500;
+}
+
+function scheduleProcessingRouteBootstrapRetry(videoId, wsUrl) {
+  processingRouteBootTimerId = scheduleRetry({
+    activeToken: videoId,
+    expectedToken: currentVideoId,
+    attempt: processingRouteBootAttempts,
+    maxAttempts: maxProcessingRouteBootAttempts,
+    baseDelayMs: reconnectBaseDelayMs,
+    timerId: processingRouteBootTimerId,
+    clearTimerFn: clearProcessingRouteBootTimer,
+    isCanceled: () => processingComplete || currentVideoId !== videoId,
+    onExhausted: () => {
+      showRouteState(
+        "Processing status unavailable",
+        "The page could not load the current video state. Try refreshing when the status service is available.",
+        { tone: "error" }
+      );
+    },
+    beforeSchedule: ({ attempt, delayMs }) => {
+      processingRouteBootAttempts = attempt;
+      showRouteTransientState(
+        "Connecting to status service",
+        `Waiting for the latest processing state. Retrying in ${Math.round(delayMs / 1000)}s...`
+      );
+    },
+    run: () => {
+      fetchUploadInfo(resolveBaseUrl(), videoId, wsUrl).then((result) => {
+        if (!result || result.ok) {
+          return;
+        }
+        if (!isTransientProcessingRouteFailure(result)) {
+          handleProcessingRouteLoadFailure(videoId, result);
+          return;
+        }
+        scheduleProcessingRouteBootstrapRetry(videoId, wsUrl);
+      }).catch(() => {
+        scheduleProcessingRouteBootstrapRetry(videoId, wsUrl);
+      });
+    }
+  });
+}
+
 async function bootProcessingRoute(routeVideoId) {
   currentVideoId = routeVideoId;
   setActiveTab("upload");
@@ -1411,8 +1493,13 @@ async function bootProcessingRoute(routeVideoId) {
   const routeStatusUrl = getProcessingRouteStatusUrl(routeVideoId);
   const baseUrl = resolveBaseUrl();
   const wsUrl = routeStatusUrl || deriveWsUrl(baseUrl, routeVideoId);
+  connectWebSocket(wsUrl, routeVideoId);
   const result = await fetchUploadInfo(baseUrl, routeVideoId, wsUrl);
   if (!result || !result.ok) {
+    if (isTransientProcessingRouteFailure(result)) {
+      scheduleProcessingRouteBootstrapRetry(routeVideoId, wsUrl);
+      return;
+    }
     handleProcessingRouteLoadFailure(routeVideoId, result);
     return;
   }
@@ -1420,8 +1507,7 @@ async function bootProcessingRoute(routeVideoId) {
   if (!handleProcessingRouteStatus(result.payload)) {
     return;
   }
-
-  connectWebSocket(wsUrl, routeVideoId);
+  resetProcessingRouteBootState();
 }
 
 function uploadFile({ preserveLog, isRetry } = {}) {
