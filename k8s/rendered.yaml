@@ -429,6 +429,17 @@ spec:
           env:
             - name: SERVICE_MODE
               value: "streaming"
+            # Inject the node's own IP via the Downward API, then build
+            # MINIO_PUBLIC_ENDPOINT from it. In k3s (and most bare-metal clusters)
+            # every LoadBalancer service is reachable on any node IP, so the pod's
+            # host IP is always a valid external address for MinIO.
+            # This env entry overrides the empty value from the ConfigMap.
+            - name: NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: MINIO_PUBLIC_ENDPOINT
+              value: "http://$(NODE_IP):9000"
           envFrom:
             - configMapRef:
                 name: vs-config
@@ -871,3 +882,7 @@ spec:
         resources:
           requests:
             storage: 2Gi
+---
+# Source: video-streaming/templates/minio-endpoint-patcher.yaml
+# MINIO_PUBLIC_ENDPOINT is now set directly in the streaming-service Deployment
+# using the Downward API (status.hostIP). No patcher Job needed.
