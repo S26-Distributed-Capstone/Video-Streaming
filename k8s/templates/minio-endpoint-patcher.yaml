@@ -1,0 +1,92 @@
+{{- if not .Values.minio.loadBalancerIP }}
+# Runs once after initial deploy: waits for MinIO's LoadBalancer external IP,
+# patches MINIO_PUBLIC_ENDPOINT in the ConfigMap, and restarts the streaming
+# deployment. kubectl apply -k won't re-run a completed Job, so this is idempotent.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-minio-patcher
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-minio-patcher
+rules:
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Release.Name }}-minio-patcher
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Release.Name }}-minio-patcher
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-minio-patcher
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-minio-patcher
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      serviceAccountName: {{ .Release.Name }}-minio-patcher
+      restartPolicy: OnFailure
+      containers:
+        - name: patcher
+          image: bitnami/kubectl:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              RELEASE="{{ .Release.Name }}"
+              NAMESPACE="{{ .Release.Namespace }}"
+              SVC="${RELEASE}-minio"
+              CM="${RELEASE}-config"
+              DEPLOY="${RELEASE}-streaming"
+
+              echo "Waiting for MinIO LoadBalancer external IP on service ${SVC}..."
+              for i in $(seq 1 72); do
+                MINIO_ADDR=$(kubectl get svc "$SVC" -n "$NAMESPACE" \
+                  -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+                if [ -z "$MINIO_ADDR" ]; then
+                  MINIO_ADDR=$(kubectl get svc "$SVC" -n "$NAMESPACE" \
+                    -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+                fi
+                if [ -n "$MINIO_ADDR" ]; then
+                  PUBLIC_ENDPOINT="http://${MINIO_ADDR}:9000"
+                  echo "Discovered MinIO public endpoint: ${PUBLIC_ENDPOINT}"
+                  kubectl patch configmap "$CM" -n "$NAMESPACE" \
+                    --type merge \
+                    -p "{\"data\":{\"MINIO_PUBLIC_ENDPOINT\":\"${PUBLIC_ENDPOINT}\"}}"
+                  echo "ConfigMap patched. Restarting streaming deployment..."
+                  kubectl rollout restart deployment/"$DEPLOY" -n "$NAMESPACE"
+                  kubectl rollout status deployment/"$DEPLOY" -n "$NAMESPACE" --timeout=120s
+                  echo "Done."
+                  exit 0
+                fi
+                echo "Attempt ${i}/72: no external IP yet, retrying in 5s..."
+                sleep 5
+              done
+              echo "ERROR: MinIO LoadBalancer IP never became available after 6 minutes."
+              exit 1
+{{- end }}
