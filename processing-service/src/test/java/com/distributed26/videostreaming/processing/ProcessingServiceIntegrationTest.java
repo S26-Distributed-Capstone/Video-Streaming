@@ -240,6 +240,7 @@ class ProcessingServiceIntegrationTest {
         try {
             uploadTaskRepo.upsertPending(
                     videoId,
+                    "startup-reset-test",
                     "low",
                     0,
                     videoId + "/chunks/output0.ts",
@@ -259,7 +260,7 @@ class ProcessingServiceIntegrationTest {
             assertEquals(0, uploadTaskRepo.countByState("UPLOADING"));
             assertEquals(1, uploadTaskRepo.countByState("PENDING"));
             assertTrue(uploadTaskRepo.hasOpenTask(videoId, "low", 0));
-            assertTrue(uploadTaskRepo.claimNextReady("startup-reset-test-reclaimed", 0).isPresent(),
+            assertTrue(uploadTaskRepo.claimNextReady("startup-reset-test", 0).isPresent(),
                     "reset task should be claimable again as PENDING");
         } finally {
             cleanupProcessingRows(videoId);
@@ -316,8 +317,9 @@ class ProcessingServiceIntegrationTest {
                     "orphaned spool file should become a pending local upload task");
             assertEquals(1, uploadTaskRepo.countByState("PENDING"));
 
-            Optional<LocalSpoolUploadTask> claimed = uploadTaskRepo.claimNextReady("orphaned-spool-claim", 0);
+            Optional<LocalSpoolUploadTask> claimed = uploadTaskRepo.claimNextReady("startup-recovery-test", 0);
             assertTrue(claimed.isPresent(), "recovered orphaned spool file should be claimable by upload workers");
+            assertEquals("startup-recovery-test", claimed.get().spoolOwner());
             assertEquals(orphanedFile.toAbsolutePath().toString(), claimed.get().spoolPath());
             assertEquals(videoId + "/processed/low/output0.ts", claimed.get().outputKey());
             assertEquals(payload.length, claimed.get().sizeBytes());
@@ -356,6 +358,7 @@ class ProcessingServiceIntegrationTest {
         String outputKey = videoId + "/processed/low/output0.ts";
         uploadTaskRepo.upsertPending(
                 videoId,
+                "same-instance",
                 "low",
                 0,
                 chunkKey,
@@ -403,7 +406,7 @@ class ProcessingServiceIntegrationTest {
     }
 
     @Test
-    void differentInstanceWithoutSpoolFileRequeuesTranscodeInsteadOfUploading() throws Exception {
+    void differentInstanceDoesNotClaimRemoteSpoolUploadTask() throws Exception {
         loadDatabaseConfig();
         assumeDatabaseReachable();
 
@@ -427,6 +430,7 @@ class ProcessingServiceIntegrationTest {
         String outputKey = videoId + "/processed/low/output0.ts";
         uploadTaskRepo.upsertPending(
                 videoId,
+                "same-instance",
                 "low",
                 0,
                 chunkKey,
@@ -457,14 +461,15 @@ class ProcessingServiceIntegrationTest {
 
         var executor = pool.startUploadWorkers(1, 50, 250, storageClient);
         try {
-            awaitCondition(Duration.ofSeconds(5), () -> !uploadTaskRepo.hasOpenTask(videoId, "low", 0));
-            TranscodeTaskEvent republished = awaitRepublished(transcodeBus, videoId, "low", 0, Duration.ofSeconds(5));
-            assertNotNull(republished, "missing spool on another instance should republish the transcode task");
-            assertEquals(chunkKey, republished.getChunkKey());
+            Thread.sleep(500);
+            assertTrue(uploadTaskRepo.hasOpenTask(videoId, "low", 0),
+                    "different instance should leave the remote-owned upload task alone");
+            assertNull(uploadTaskRepo.claimNextReady("different-instance", 0).orElse(null),
+                    "different instance should not be able to claim a remote-owned spool task");
             assertEquals(0, storageClient.totalUploads(),
                     "different instance without the local spool file should not upload anything");
-            assertTrue(transcodeRepo.hasState(videoId, "low", 0, TranscodeSegmentState.FAILED),
-                    "missing spool file should mark the segment FAILED before requeue");
+            assertNull(transcodeBus.findPublished(videoId, "low", 0),
+                    "different instance should not republish a task it does not own");
         } finally {
             shutdownExecutor(executor);
             runtime.resetForTests();
@@ -569,6 +574,7 @@ class ProcessingServiceIntegrationTest {
         String outputKey = videoId + "/processed/low/output0.ts";
         uploadTaskRepo.upsertPending(
                 videoId,
+                "upload-retry-instance",
                 "low",
                 0,
                 chunkKey,
