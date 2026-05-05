@@ -40,6 +40,7 @@ CREATE INDEX IF NOT EXISTS idx_transcoded_segment_status_video_profile_state
 CREATE TABLE IF NOT EXISTS processing_upload_task (
     id SERIAL PRIMARY KEY,
     video_id UUID NOT NULL REFERENCES video_upload(video_id) ON DELETE CASCADE,
+    spool_owner VARCHAR(128),
     profile VARCHAR(32) NOT NULL,
     segment_number INTEGER NOT NULL,
     chunk_key VARCHAR(512) NOT NULL,
@@ -53,6 +54,9 @@ CREATE TABLE IF NOT EXISTS processing_upload_task (
     updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
     UNIQUE (video_id, profile, segment_number)
 );
+
+ALTER TABLE processing_upload_task
+    ADD COLUMN IF NOT EXISTS spool_owner VARCHAR(128);
 
 CREATE INDEX IF NOT EXISTS idx_processing_upload_task_state_updated
     ON processing_upload_task(state, updated_at);

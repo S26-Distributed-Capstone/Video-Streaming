@@ -344,7 +344,7 @@ spec:
               echo "vs-postgres:5432 is up."
       containers:
         - name: status-service
-          image: "tanigross/video-streaming-app:1.3"
+          image: "tanigross/video-streaming-app:1.4"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8081
@@ -422,7 +422,7 @@ spec:
               echo "vs-minio:9000 is up."
       containers:
         - name: streaming-service
-          image: "tanigross/video-streaming-app:1.3"
+          image: "tanigross/video-streaming-app:1.4"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8083
@@ -500,7 +500,7 @@ spec:
               echo "vs-postgres:5432 is up."
       containers:
         - name: upload-service
-          image: "tanigross/video-streaming-app:1.3"
+          image: "tanigross/video-streaming-app:1.4"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
@@ -721,7 +721,7 @@ spec:
               echo "vs-postgres:5432 is up."
       containers:
         - name: processing-service
-          image: "tanigross/video-streaming-app:1.3"
+          image: "tanigross/video-streaming-app:1.4"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8082

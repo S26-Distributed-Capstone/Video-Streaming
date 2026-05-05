@@ -159,6 +159,7 @@ public final class StartupRecoveryService {
 
                                 runtime.processingUploadTaskRepository().upsertPending(
                                         videoId,
+                                        runtime.processorInstanceId(),
                                         profileName,
                                         segmentNumber,
                                         chunkKey,
