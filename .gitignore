@@ -70,3 +70,6 @@ release.properties
 /out/             # IntelliJ output directory
 nbproject/        # NetBeans project files
 *.orig
+/dist/
+*.tar
+.tar

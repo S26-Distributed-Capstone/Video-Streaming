@@ -1,8 +1,8 @@
 # ─── App image ──────────────────────────────────────────────────
 image:
-  repository: video-streaming-app
-  tag: latest
-  pullPolicy: Never            # minikube local build; change for a registry
+  repository: cp1:32000/video-streaming-app   # in-cluster registry, NodePort 32000
+  tag: "1.0"
+  pullPolicy: IfNotPresent
 
 # ─── Replica counts ────────────────────────────────────────────
 uploadService:
@@ -18,7 +18,7 @@ statusService:
     limits:   { memory: "1Gi",   cpu: "1000m" }
 
 processingService:
-  replicas: 1
+  replicas: 10
   spoolStorageSize: 5Gi
   resources:
     requests: { memory: "1Gi",  cpu: "1000m" }
@@ -43,16 +43,16 @@ minio:
 
 # ─── Credentials ────────────────────────────────────────────────
 # DO NOT put real secrets here — this file is committed to git.
-# Override via: helm install vs ./helm/video-streaming -f helm/video-streaming/values.secret.yaml
-# Or inline:   helm install vs ./helm/video-streaming --set secrets.pgPassword=xxx
+# Override via: helm install vs ./k8s -f k8s/values.secret.yaml
+# Or inline:   helm install vs ./k8s --set secrets.pgPassword=xxx
 secrets:
-  pgUser: "CHANGE_ME"
-  pgPassword: "CHANGE_ME"
-  rabbitmqUser: "CHANGE_ME"
-  rabbitmqPass: "CHANGE_ME"
-  rabbitmqErlangCookie: "CHANGE_ME"
-  minioAccessKey: "CHANGE_ME"
-  minioSecretKey: "CHANGE_ME"
+  pgUser: "admin"
+  pgPassword: "admin123"
+  rabbitmqUser: "admin"
+  rabbitmqPass: "admin123"
+  rabbitmqErlangCookie: "some_long_random_shared_secret"
+  minioAccessKey: "minioadmin"
+  minioSecretKey: "minioadmin"
 
 # ─── App config ─────────────────────────────────────────────────
 config:
@@ -61,7 +61,7 @@ config:
   minioBucketName: "uploads"
   minioRegion: "us-east-1"
   chunkDuration: "6"
-  pgDb: "video_streaming"
+  pgDb: "videostreaming"
   rabbitmqHost: "rabbitmq"
   rabbitmqPort: "5672"
   rabbitmqVhost: "/"
@@ -69,14 +69,14 @@ config:
   rabbitmqStatusQueue: "upload.status.queue"
   rabbitmqStatusBinding: "upload.status.*"
   rabbitmqStatusQueueProcessing: "processing.events.queue"
-  rabbitmqTaskQueue: "upload.task.transcode"
-  rabbitmqTaskBinding: "upload.task.transcode"
+  rabbitmqTaskQueue: "upload.task.queue"
+  rabbitmqTaskBinding: "upload.task.*"
   statusPort: "8081"
   processingPort: "8082"
   streamingPort: "8083"
   workerPoolSize: "2"
   threadsPerWorker: "1"
-  ffmpegPreset: "veryfast"
+  ffmpegPreset: "superfast"
   processingSpoolRoot: "/app/processing-spool"
   storageRetryInitialDelayMs: "500"
   storageRetryMaxDelayMs: "5000"
@@ -91,4 +91,3 @@ service:
   uploadNodePort: 30080       # only used when type=NodePort
   statusNodePort: 30081
   streamingNodePort: 30083
-

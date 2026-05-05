@@ -30,9 +30,9 @@ public class VideoUploadRepository {
 
     public static VideoUploadRepository fromEnv() {
         Dotenv dotenv = Dotenv.configure().directory("./").ignoreIfMissing().load();
-        String url = dotenv.get("PG_URL");
-        String user = dotenv.get("PG_USER");
-        String pass = dotenv.get("PG_PASSWORD");
+        String url = getenvOrDotenv(dotenv, "PG_URL");
+        String user = getenvOrDotenv(dotenv, "PG_USER");
+        String pass = getenvOrDotenv(dotenv, "PG_PASSWORD");
 
         if (url == null || url.isBlank()) {
             throw new IllegalStateException("PG_URL is not set");
@@ -41,6 +41,14 @@ public class VideoUploadRepository {
             throw new IllegalStateException("PG_USER is not set");
         }
         return new VideoUploadRepository(url, user, pass);
+    }
+
+    private static String getenvOrDotenv(Dotenv dotenv, String key) {
+        String envVal = System.getenv(key);
+        if (envVal != null && !envVal.isBlank()) {
+            return envVal;
+        }
+        return dotenv.get(key);
     }
 
     public void create(

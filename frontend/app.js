@@ -511,6 +511,53 @@ function updateTranscodeProfileUi(profile) {
   }
 }
 
+function applyLiveProgressEvent(payload) {
+  if (!payload || typeof payload !== "object") {
+    return;
+  }
+  if (typeof payload.totalSegments === "number" && payload.totalSegments > 0) {
+    totalSegments = Math.max(totalSegments || 0, payload.totalSegments);
+  }
+  if (typeof payload.completedSegments === "number") {
+    completedSegments = Math.max(completedSegments, payload.completedSegments);
+    if (processingBlock) {
+      processingBlock.classList.remove("hidden");
+    }
+    if (totalSegments) {
+      const percent = Math.min(100, Math.round((completedSegments / totalSegments) * 100));
+      processingBar.style.width = `${percent}%`;
+      processingPercent.textContent = `${percent}% (${completedSegments}/${totalSegments})`;
+      processingTrack.classList.remove("indeterminate");
+      sourceSegmentsComplete = completedSegments >= totalSegments;
+    } else {
+      processingPercent.textContent = `${completedSegments} source chunks`;
+    }
+  }
+  tryFinalizeSuccess();
+}
+
+function applyLiveTranscodeEvent(payload) {
+  if (!payload || typeof payload !== "object" || !payload.profile || !transcodeProfiles[payload.profile]) {
+    return;
+  }
+  if (typeof payload.totalSegments === "number" && payload.totalSegments > 0) {
+    totalSegments = Math.max(totalSegments || 0, payload.totalSegments);
+  }
+  const state = transcodeProfiles[payload.profile];
+  if (typeof payload.doneSegments === "number") {
+    state.done = Math.max(state.done, payload.doneSegments);
+  }
+  if (typeof payload.segmentNumber === "number" && payload.segmentNumber >= 0 && payload.state) {
+    state.segments.set(payload.segmentNumber, payload.state);
+    recalcTranscodeCounters(payload.profile);
+  }
+  if (transcodeBlock) {
+    transcodeBlock.classList.remove("hidden");
+  }
+  updateTranscodeProfileUi(payload.profile);
+  tryFinalizeSuccess();
+}
+
 function applyUploadInfoSnapshot(payload) {
   if (!payload || typeof payload !== "object") {
     return;
@@ -526,11 +573,11 @@ function applyUploadInfoSnapshot(payload) {
   });
 
   if (typeof payload.totalSegments === "number" && payload.totalSegments >= 0) {
-    totalSegments = payload.totalSegments;
+    totalSegments = Math.max(totalSegments || 0, payload.totalSegments);
   }
 
   if (typeof payload.uploadedSegments === "number") {
-    completedSegments = payload.uploadedSegments;
+    completedSegments = Math.max(completedSegments, payload.uploadedSegments);
     if (processingBlock) {
       processingBlock.classList.remove("hidden");
     }
@@ -547,13 +594,13 @@ function applyUploadInfoSnapshot(payload) {
 
   const transcode = payload.transcode || {};
   if (typeof transcode.lowDone === "number") {
-    transcodeProfiles.low.done = transcode.lowDone;
+    transcodeProfiles.low.done = Math.max(transcodeProfiles.low.done, transcode.lowDone);
   }
   if (typeof transcode.mediumDone === "number") {
-    transcodeProfiles.medium.done = transcode.mediumDone;
+    transcodeProfiles.medium.done = Math.max(transcodeProfiles.medium.done, transcode.mediumDone);
   }
   if (typeof transcode.highDone === "number") {
-    transcodeProfiles.high.done = transcode.highDone;
+    transcodeProfiles.high.done = Math.max(transcodeProfiles.high.done, transcode.highDone);
   }
   if (transcodeBlock) {
     transcodeBlock.classList.remove("hidden");
@@ -1218,14 +1265,17 @@ function connectWebSocket(wsUrl, videoId, { isReconnect = false } = {}) {
     try {
       const payload = JSON.parse(event.data);
       if (payload && payload.type === "meta" && typeof payload.totalSegments === "number") {
+        totalSegments = Math.max(totalSegments || 0, payload.totalSegments);
         scheduleProgressRefresh();
         return;
       }
       if (payload && payload.type === "progress" && typeof payload.completedSegments === "number") {
+        applyLiveProgressEvent(payload);
         scheduleProgressRefresh();
         return;
       }
       if (payload && payload.type === "transcode_progress" && payload.profile) {
+        applyLiveTranscodeEvent(payload);
         scheduleProgressRefresh();
         return;
       }

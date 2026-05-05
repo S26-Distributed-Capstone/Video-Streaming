@@ -57,7 +57,7 @@ services:
           else:
               raise SystemExit("postgres not reachable")
           PY
-          mvn -pl upload-service -DskipTests exec:java -Dexec.mainClass=com.distributed26.videostreaming.upload.upload.UploadServiceApplication
+          exec java -jar /app/upload-service.jar
     healthcheck:
       test:
         [
@@ -138,7 +138,7 @@ services:
           else:
               raise SystemExit("postgres not reachable")
           PY
-          mvn -pl upload-service -DskipTests exec:java -Dexec.mainClass=com.distributed26.videostreaming.upload.upload.UploadServiceApplication
+          exec java -jar /app/upload-service.jar
     ports:
       - "8081:8081"
     deploy:
@@ -191,7 +191,7 @@ services:
           else:
               raise SystemExit("minio not reachable")
           PY
-          mvn -pl streaming-service -DskipTests exec:java -Dexec.mainClass=com.distributed26.videostreaming.streaming.streaming.StreamingServiceApplication
+          exec java -jar /app/streaming-service.jar
     ports:
       - "8083:8083"
     deploy:
@@ -256,7 +256,7 @@ services:
           else:
               raise SystemExit("minio not reachable")
           PY
-          mvn -pl processing-service -DskipTests exec:java -Dexec.mainClass=com.distributed26.videostreaming.processing.ProcessingServiceApplication
+          exec java -jar /app/processing-service.jar
     ports:
       - "8082:8082"
     deploy:

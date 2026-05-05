@@ -1,49 +1,44 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ .Release.Name }}-status
+  name: {{ .Release.Name }}-upload
 spec:
   type: {{ .Values.service.type }}
   selector:
-    app: {{ .Release.Name }}-status
+    app: {{ .Release.Name }}-upload
   ports:
-    - port: 8081
-      targetPort: 8081
+    - port: 8080
+      targetPort: 8080
       {{- if eq .Values.service.type "NodePort" }}
-      nodePort: {{ .Values.service.statusNodePort }}
+      nodePort: {{ .Values.service.uploadNodePort }}
       {{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ .Release.Name }}-status
+  name: {{ .Release.Name }}-upload
 spec:
-  replicas: {{ .Values.statusService.replicas }}
+  replicas: {{ .Values.uploadService.replicas }}
   selector:
     matchLabels:
-      app: {{ .Release.Name }}-status
+      app: {{ .Release.Name }}-upload
   template:
     metadata:
       labels:
-        app: {{ .Release.Name }}-status
+        app: {{ .Release.Name }}-upload
     spec:
       initContainers:
         {{- include "video-streaming.wait-for" (dict "name" "rabbitmq" "host" (printf "%s-rabbitmq" .Release.Name) "port" "5672") | nindent 8 }}
         {{- include "video-streaming.wait-for" (dict "name" "postgres" "host" (printf "%s-postgres" .Release.Name) "port" "5432") | nindent 8 }}
       containers:
-        - name: status-service
+        - name: upload-service
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
-            - containerPort: 8081
-          command: ["/bin/sh", "-c"]
-          args:
-            - >
-              mvn -pl upload-service -DskipTests exec:java
-              -Dexec.mainClass=com.distributed26.videostreaming.upload.upload.UploadServiceApplication
+            - containerPort: 8080
           env:
             - name: SERVICE_MODE
-              value: "status"
+              value: "upload"
           envFrom:
             - configMapRef:
                 name: {{ .Release.Name }}-config
@@ -52,26 +47,25 @@ spec:
           startupProbe:
             httpGet:
               path: /health
-              port: 8081
+              port: 8080
             failureThreshold: 30
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /health
-              port: 8081
+              port: 8080
             initialDelaySeconds: 10
             periodSeconds: 15
           readinessProbe:
             httpGet:
               path: /health
-              port: 8081
+              port: 8080
             initialDelaySeconds: 5
             periodSeconds: 5
           resources:
             requests:
-              memory: {{ .Values.statusService.resources.requests.memory | quote }}
-              cpu: {{ .Values.statusService.resources.requests.cpu | quote }}
+              memory: {{ .Values.uploadService.resources.requests.memory | quote }}
+              cpu: {{ .Values.uploadService.resources.requests.cpu | quote }}
             limits:
-              memory: {{ .Values.statusService.resources.limits.memory | quote }}
-              cpu: {{ .Values.statusService.resources.limits.cpu | quote }}
-
+              memory: {{ .Values.uploadService.resources.limits.memory | quote }}
+              cpu: {{ .Values.uploadService.resources.limits.cpu | quote }}

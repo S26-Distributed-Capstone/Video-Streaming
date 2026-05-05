@@ -1,0 +1,873 @@
+---
+# Source: video-streaming/templates/rabbitmq.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vs-rabbitmq
+---
+# Source: video-streaming/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vs-secrets
+  labels:
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  PG_USER: YWRtaW4=
+  PG_PASSWORD: YWRtaW4xMjM=
+  POSTGRES_USER: YWRtaW4=
+  POSTGRES_PASSWORD: YWRtaW4xMjM=
+  RABBITMQ_USER: YWRtaW4=
+  RABBITMQ_PASS: YWRtaW4xMjM=
+  RABBITMQ_ERLANG_COOKIE: c29tZV9sb25nX3JhbmRvbV9zaGFyZWRfc2VjcmV0
+  MINIO_ACCESS_KEY: bWluaW9hZG1pbg==
+  MINIO_SECRET_KEY: bWluaW9hZG1pbg==
+---
+# Source: video-streaming/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vs-config
+  labels:
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: video-streaming-0.1.0
+data:
+  MINIO_ENDPOINT: "http://vs-minio:9000"
+  MINIO_PUBLIC_ENDPOINT: "http://localhost:9000"
+  MINIO_BUCKET_NAME: "uploads"
+  MINIO_REGION: "us-east-1"
+  CHUNK_DURATION_SECONDS: "6"
+  PG_DB: "videostreaming"
+  PG_URL: "jdbc:postgresql://vs-postgres:5432/videostreaming"
+  RABBITMQ_HOST: "vs-rabbitmq"
+  RABBITMQ_PORT: "5672"
+  RABBITMQ_VHOST: "/"
+  RABBITMQ_EXCHANGE: "upload.events"
+  RABBITMQ_STATUS_QUEUE: "upload.status.queue"
+  RABBITMQ_STATUS_BINDING: "upload.status.*"
+  RABBITMQ_STATUS_QUEUE_PROCESSING: "processing.events.queue"
+  RABBITMQ_TASK_QUEUE: "upload.task.queue"
+  RABBITMQ_TASK_BINDING: "upload.task.*"
+  STATUS_PORT: "8081"
+  PROCESSING_PORT: "8082"
+  STREAMING_PORT: "8083"
+  WORKER_POOL_SIZE: "2"
+  THREADS_PER_WORKER: "1"
+  FFMPEG_PRESET: "superfast"
+  PROCESSING_SPOOL_ROOT: "/app/processing-spool"
+  STORAGE_RETRY_INITIAL_DELAY_MS: "500"
+  STORAGE_RETRY_MAX_DELAY_MS: "5000"
+  STORAGE_RETRY_MAX_ATTEMPTS: "3"
+  DEV_LOG_MAX_PEEK: "100"
+---
+# Source: video-streaming/templates/postgres-init.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vs-postgres-init
+data:
+  schema.sql: |
+    CREATE TABLE IF NOT EXISTS video_upload (
+        id SERIAL PRIMARY KEY,
+        video_id UUID NOT NULL UNIQUE,
+        video_name VARCHAR(256) NOT NULL DEFAULT '',
+        total_segments INTEGER NOT NULL DEFAULT 0,
+        status VARCHAR(32) NOT NULL,
+        machine_id VARCHAR(128),
+        container_id VARCHAR(128)
+    );
+    ALTER TABLE video_upload ADD COLUMN IF NOT EXISTS container_id VARCHAR(128);
+    ALTER TABLE video_upload ADD COLUMN IF NOT EXISTS video_name VARCHAR(256) NOT NULL DEFAULT '';
+
+    CREATE TABLE IF NOT EXISTS segment_upload (
+        id SERIAL PRIMARY KEY,
+        video_id UUID NOT NULL REFERENCES video_upload(video_id) ON DELETE CASCADE,
+        segment_number INTEGER NOT NULL,
+        UNIQUE (video_id, segment_number)
+    );
+    CREATE INDEX IF NOT EXISTS idx_segment_upload_video_id ON segment_upload(video_id);
+
+    CREATE TABLE IF NOT EXISTS transcoded_segment_status (
+        id SERIAL PRIMARY KEY,
+        video_id UUID NOT NULL REFERENCES video_upload(video_id) ON DELETE CASCADE,
+        profile VARCHAR(32) NOT NULL,
+        segment_number INTEGER NOT NULL,
+        state VARCHAR(32) NOT NULL,
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        UNIQUE (video_id, profile, segment_number)
+    );
+    CREATE INDEX IF NOT EXISTS idx_transcoded_segment_status_video_profile_state
+        ON transcoded_segment_status(video_id, profile, state);
+
+    CREATE TABLE IF NOT EXISTS processing_upload_task (
+        id SERIAL PRIMARY KEY,
+        video_id UUID NOT NULL REFERENCES video_upload(video_id) ON DELETE CASCADE,
+        profile VARCHAR(32) NOT NULL,
+        segment_number INTEGER NOT NULL,
+        chunk_key VARCHAR(512) NOT NULL,
+        output_key VARCHAR(512) NOT NULL,
+        spool_path VARCHAR(1024) NOT NULL,
+        size_bytes BIGINT NOT NULL,
+        output_ts_offset_seconds DOUBLE PRECISION NOT NULL DEFAULT 0,
+        state VARCHAR(32) NOT NULL,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        claimed_by VARCHAR(128),
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        UNIQUE (video_id, profile, segment_number)
+    );
+    CREATE INDEX IF NOT EXISTS idx_processing_upload_task_state_updated
+        ON processing_upload_task(state, updated_at);
+
+    CREATE TABLE IF NOT EXISTS processing_task_claim (
+        id SERIAL PRIMARY KEY,
+        video_id UUID NOT NULL REFERENCES video_upload(video_id) ON DELETE CASCADE,
+        profile VARCHAR(32) NOT NULL,
+        segment_number INTEGER NOT NULL,
+        stage VARCHAR(32) NOT NULL,
+        claimed_by VARCHAR(128) NOT NULL,
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        UNIQUE (video_id, profile, segment_number)
+    );
+    CREATE INDEX IF NOT EXISTS idx_processing_task_claim_claimed_by
+        ON processing_task_claim(claimed_by, updated_at);
+---
+# Source: video-streaming/templates/rabbitmq.yaml
+# ── RabbitMQ config ──────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vs-rabbitmq-config
+data:
+  enabled_plugins: |
+    [rabbitmq_management,rabbitmq_peer_discovery_k8s].
+  rabbitmq.conf: |
+    ## Clustering via K8s API
+    cluster_formation.peer_discovery_backend = rabbit_peer_discovery_k8s
+    cluster_formation.k8s.host = kubernetes.default.svc.cluster.local
+    cluster_formation.k8s.address_type = hostname
+    cluster_formation.k8s.service_name = vs-rabbitmq-headless
+    cluster_formation.k8s.hostname_suffix = .vs-rabbitmq-headless.default.svc.cluster.local
+    cluster_formation.node_cleanup.interval = 30
+    cluster_formation.node_cleanup.only_log_warning = true
+
+    ## HA: mirror all queues to all nodes
+    queue_master_locator = min-masters
+
+    ## Networking
+    loopback_users.guest = false
+
+    ## Allow deprecated feature to avoid startup failure
+    deprecated_features.permit.management_metrics_collection = true
+---
+# Source: video-streaming/templates/rabbitmq.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: vs-rabbitmq
+rules:
+  - apiGroups: [""]
+    resources: ["endpoints", "pods"]
+    verbs: ["get", "list", "watch"]
+---
+# Source: video-streaming/templates/rabbitmq.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vs-rabbitmq
+subjects:
+  - kind: ServiceAccount
+    name: vs-rabbitmq
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: vs-rabbitmq
+---
+# Source: video-streaming/templates/minio.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: vs-minio
+spec:
+  type: LoadBalancer
+  selector:
+    app: vs-minio
+  ports:
+    - name: api
+      port: 9000
+      targetPort: 9000
+    - name: console
+      port: 9001
+      targetPort: 9001
+---
+# Source: video-streaming/templates/postgres.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: vs-postgres
+spec:
+  type: ClusterIP
+  selector:
+    app: vs-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+# Source: video-streaming/templates/processing-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: vs-processing
+spec:
+  type: ClusterIP
+  selector:
+    app: vs-processing
+  ports:
+    - port: 8082
+      targetPort: 8082
+---
+# Source: video-streaming/templates/rabbitmq.yaml
+# ── Headless Service: peer discovery + StatefulSet DNS ──
+# publishNotReadyAddresses: true is CRITICAL — without it, new nodes can't
+# discover the seed node because they aren't "ready" yet during boot.
+apiVersion: v1
+kind: Service
+metadata:
+  name: vs-rabbitmq-headless
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: vs-rabbitmq
+  ports:
+    - name: amqp
+      port: 5672
+    - name: epmd
+      port: 4369
+    - name: cluster
+      port: 25672
+---
+# Source: video-streaming/templates/rabbitmq.yaml
+# ── Client Service: what your app services connect to ──
+apiVersion: v1
+kind: Service
+metadata:
+  name: vs-rabbitmq
+spec:
+  type: LoadBalancer
+  selector:
+    app: vs-rabbitmq
+  ports:
+    - name: amqp
+      port: 5672
+      targetPort: 5672
+    - name: management
+      port: 15672
+      targetPort: 15672
+---
+# Source: video-streaming/templates/status-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: vs-status
+spec:
+  type: LoadBalancer
+  selector:
+    app: vs-status
+  ports:
+    - port: 8081
+      targetPort: 8081
+---
+# Source: video-streaming/templates/streaming-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: vs-streaming
+spec:
+  type: LoadBalancer
+  selector:
+    app: vs-streaming
+  ports:
+    - port: 8083
+      targetPort: 8083
+---
+# Source: video-streaming/templates/upload-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: vs-upload
+spec:
+  type: LoadBalancer
+  selector:
+    app: vs-upload
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+# Source: video-streaming/templates/status-service.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vs-status
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vs-status
+  template:
+    metadata:
+      labels:
+        app: vs-status
+    spec:
+      initContainers:
+        - name: wait-for-rabbitmq
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "Waiting for vs-rabbitmq:5672..."
+              until nc -z vs-rabbitmq 5672 2>/dev/null; do
+                sleep 2
+              done
+              echo "vs-rabbitmq:5672 is up."
+        - name: wait-for-postgres
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "Waiting for vs-postgres:5432..."
+              until nc -z vs-postgres 5432 2>/dev/null; do
+                sleep 2
+              done
+              echo "vs-postgres:5432 is up."
+      containers:
+        - name: status-service
+          image: "cp1:32000/video-streaming-app:1.0"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8081
+          env:
+            - name: SERVICE_MODE
+              value: "status"
+          envFrom:
+            - configMapRef:
+                name: vs-config
+            - secretRef:
+                name: vs-secrets
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            failureThreshold: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+---
+# Source: video-streaming/templates/streaming-service.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vs-streaming
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vs-streaming
+  template:
+    metadata:
+      labels:
+        app: vs-streaming
+    spec:
+      initContainers:
+        - name: wait-for-postgres
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "Waiting for vs-postgres:5432..."
+              until nc -z vs-postgres 5432 2>/dev/null; do
+                sleep 2
+              done
+              echo "vs-postgres:5432 is up."
+        - name: wait-for-minio
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "Waiting for vs-minio:9000..."
+              until nc -z vs-minio 9000 2>/dev/null; do
+                sleep 2
+              done
+              echo "vs-minio:9000 is up."
+      containers:
+        - name: streaming-service
+          image: "cp1:32000/video-streaming-app:1.0"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8083
+          env:
+            - name: SERVICE_MODE
+              value: "streaming"
+          envFrom:
+            - configMapRef:
+                name: vs-config
+            - secretRef:
+                name: vs-secrets
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8083
+            failureThreshold: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8083
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8083
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+---
+# Source: video-streaming/templates/upload-service.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vs-upload
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vs-upload
+  template:
+    metadata:
+      labels:
+        app: vs-upload
+    spec:
+      initContainers:
+        - name: wait-for-rabbitmq
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "Waiting for vs-rabbitmq:5672..."
+              until nc -z vs-rabbitmq 5672 2>/dev/null; do
+                sleep 2
+              done
+              echo "vs-rabbitmq:5672 is up."
+        - name: wait-for-postgres
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "Waiting for vs-postgres:5432..."
+              until nc -z vs-postgres 5432 2>/dev/null; do
+                sleep 2
+              done
+              echo "vs-postgres:5432 is up."
+      containers:
+        - name: upload-service
+          image: "cp1:32000/video-streaming-app:1.0"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: SERVICE_MODE
+              value: "upload"
+          envFrom:
+            - configMapRef:
+                name: vs-config
+            - secretRef:
+                name: vs-secrets
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            failureThreshold: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+---
+# Source: video-streaming/templates/minio.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: vs-minio
+spec:
+  serviceName: vs-minio
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vs-minio
+  template:
+    metadata:
+      labels:
+        app: vs-minio
+    spec:
+      containers:
+        - name: minio
+          image: quay.io/minio/minio:latest
+          imagePullPolicy: IfNotPresent
+          args: ["server", "/data", "--console-address", ":9001"]
+          ports:
+            - containerPort: 9000
+            - containerPort: 9001
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: vs-secrets
+                  key: MINIO_ACCESS_KEY
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: vs-secrets
+                  key: MINIO_SECRET_KEY
+          volumeMounts:
+            - name: minio-data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: 9000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: 9000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+  volumeClaimTemplates:
+    - metadata:
+        name: minio-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
+---
+# Source: video-streaming/templates/postgres.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: vs-postgres
+spec:
+  serviceName: vs-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vs-postgres
+  template:
+    metadata:
+      labels:
+        app: vs-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: vs-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: vs-secrets
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: vs-config
+                  key: PG_DB
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+            - name: init-schema
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "CHANGE_ME"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "CHANGE_ME"]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+      volumes:
+        - name: init-schema
+          configMap:
+            name: vs-postgres-init
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+---
+# Source: video-streaming/templates/processing-service.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: vs-processing
+spec:
+  serviceName: vs-processing
+  replicas: 10
+  selector:
+    matchLabels:
+      app: vs-processing
+  template:
+    metadata:
+      labels:
+        app: vs-processing
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: vs-processing
+                topologyKey: kubernetes.io/hostname
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: vs-processing
+      initContainers:
+        - name: wait-for-rabbitmq
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "Waiting for vs-rabbitmq:5672..."
+              until nc -z vs-rabbitmq 5672 2>/dev/null; do
+                sleep 2
+              done
+              echo "vs-rabbitmq:5672 is up."
+        - name: wait-for-postgres
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "Waiting for vs-postgres:5432..."
+              until nc -z vs-postgres 5432 2>/dev/null; do
+                sleep 2
+              done
+              echo "vs-postgres:5432 is up."
+      containers:
+        - name: processing-service
+          image: "cp1:32000/video-streaming-app:1.0"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8082
+          env:
+            - name: SERVICE_MODE
+              value: "processing"
+          envFrom:
+            - configMapRef:
+                name: vs-config
+            - secretRef:
+                name: vs-secrets
+          volumeMounts:
+            - name: processing-spool
+              mountPath: /app/processing-spool
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8082
+            failureThreshold: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8082
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8082
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "1000m"
+            limits:
+              memory: "2Gi"
+              cpu: "2000m"
+  volumeClaimTemplates:
+    - metadata:
+        name: processing-spool
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+---
+# Source: video-streaming/templates/rabbitmq.yaml
+# ── StatefulSet: 3-node RabbitMQ cluster ──
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: vs-rabbitmq
+spec:
+  serviceName: vs-rabbitmq-headless
+  replicas: 1
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: vs-rabbitmq
+  template:
+    metadata:
+      labels:
+        app: vs-rabbitmq
+    spec:
+      serviceAccountName: vs-rabbitmq
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: rabbitmq
+          image: rabbitmq:3-management
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5672
+              name: amqp
+            - containerPort: 15672
+              name: management
+            - containerPort: 4369
+              name: epmd
+            - containerPort: 25672
+              name: cluster
+          env:
+            - name: RABBITMQ_DEFAULT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: vs-secrets
+                  key: RABBITMQ_USER
+            - name: RABBITMQ_DEFAULT_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: vs-secrets
+                  key: RABBITMQ_PASS
+            - name: RABBITMQ_ERLANG_COOKIE
+              valueFrom:
+                secretKeyRef:
+                  name: vs-secrets
+                  key: RABBITMQ_ERLANG_COOKIE
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: RABBITMQ_NODENAME
+              value: "rabbit@$(POD_NAME).vs-rabbitmq-headless.default.svc.cluster.local"
+            - name: RABBITMQ_USE_LONGNAME
+              value: "true"
+          volumeMounts:
+            - name: rabbitmq-data
+              mountPath: /var/lib/rabbitmq/mnesia
+            - name: config
+              mountPath: /etc/rabbitmq/rabbitmq.conf
+              subPath: rabbitmq.conf
+            - name: plugins
+              mountPath: /etc/rabbitmq/enabled_plugins
+              subPath: enabled_plugins
+          readinessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "ping"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "status"]
+            initialDelaySeconds: 90
+            periodSeconds: 30
+            timeoutSeconds: 15
+            failureThreshold: 5
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+      volumes:
+        - name: config
+          configMap:
+            name: vs-rabbitmq-config
+        - name: plugins
+          configMap:
+            name: vs-rabbitmq-config
+  volumeClaimTemplates:
+    - metadata:
+        name: rabbitmq-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi

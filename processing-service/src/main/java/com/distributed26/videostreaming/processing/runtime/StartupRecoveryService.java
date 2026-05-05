@@ -334,8 +334,15 @@ public final class StartupRecoveryService {
             Set<Integer> inFlightSegments = new HashSet<>();
             try {
                 if (runtime.transcodeStatusRepository() != null) {
+                    // Treat QUEUED as in-flight only while it is fresh. If RabbitMQ drains or a
+                    // published message is lost, stale QUEUED rows must be republished here.
                     inFlightSegments.addAll(runtime.transcodeStatusRepository()
-                            .findSegmentNumbersByState(videoId, profile.getName(), TranscodeSegmentState.QUEUED));
+                            .findSegmentNumbersByStateUpdatedSince(
+                                    videoId,
+                                    profile.getName(),
+                                    TranscodeSegmentState.QUEUED,
+                                    runtime.claimStaleMillis()
+                            ));
                     inFlightSegments.addAll(runtime.transcodeStatusRepository()
                             .findSegmentNumbersByState(videoId, profile.getName(), TranscodeSegmentState.TRANSCODING));
                     inFlightSegments.addAll(runtime.transcodeStatusRepository()

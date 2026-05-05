@@ -121,4 +121,33 @@ public class TranscodedSegmentStatusRepository {
             throw new RuntimeException("Failed to list transcoded_segment_status", e);
         }
     }
+
+    public Set<Integer> findSegmentNumbersByStateUpdatedSince(
+            String videoId,
+            String profile,
+            TranscodeSegmentState state,
+            long freshnessMillis
+    ) {
+        String sql = """
+            SELECT segment_number FROM transcoded_segment_status
+            WHERE video_id = ? AND profile = ? AND state = ?
+              AND updated_at >= NOW() - (? * INTERVAL '1 millisecond')
+            """;
+        Set<Integer> segmentNumbers = new HashSet<>();
+        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setObject(1, UUID.fromString(videoId));
+            ps.setString(2, profile);
+            ps.setString(3, state.name());
+            ps.setLong(4, Math.max(0L, freshnessMillis));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    segmentNumbers.add(rs.getInt("segment_number"));
+                }
+            }
+            return segmentNumbers;
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to list fresh transcoded_segment_status", e);
+        }
+    }
 }

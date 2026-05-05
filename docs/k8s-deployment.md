@@ -181,11 +181,13 @@ minikube stop
 minikube delete
 ```
 
-## Helm Chart Structure
+## Chart Structure
 
-```
-helm/video-streaming/
+``` 
+k8s/
 ├── Chart.yaml                   # Chart metadata
+├── kustomization.yaml           # Plain Kustomize entrypoint
+├── rendered.yaml                # Static manifest bundle for kubectl apply -k
 ├── values.yaml                  # All configurable values (no secrets)
 └── templates/
     ├── configmap.yaml           # App environment variables

@@ -28,6 +28,7 @@ spec:
       containers:
         - name: postgres
           image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 5432
           env:
@@ -74,4 +75,3 @@ spec:
         resources:
           requests:
             storage: {{ .Values.postgres.storageSize }}
-
