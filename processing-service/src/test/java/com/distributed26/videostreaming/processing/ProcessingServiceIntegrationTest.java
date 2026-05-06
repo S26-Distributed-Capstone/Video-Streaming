@@ -106,7 +106,9 @@ class ProcessingServiceIntegrationTest {
         );
         StartupRecoveryService recovery = new StartupRecoveryService(
                 new TranscodingProfile[]{TranscodingProfile.LOW},
-                runtime
+                runtime,
+                false,
+                1
         );
         ThreadPoolExecutor executor = new ThreadPoolExecutor(
                 1,

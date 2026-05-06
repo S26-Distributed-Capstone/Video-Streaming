@@ -24,13 +24,15 @@ import org.apache.logging.log4j.Logger;
 public final class StartupRecoveryService {
     private static final Logger LOGGER = LogManager.getLogger(StartupRecoveryService.class);
     private static final java.util.regex.Pattern EXTINF_PATTERN = java.util.regex.Pattern.compile("^#EXTINF:([^,]+),?");
+    private static final long DEFAULT_QUEUED_RECOVERY_STALE_MILLIS = 300_000L;
 
     private final TranscodingProfile[] profiles;
     private final ProcessingRuntime runtime;
     private final boolean reconcileCompletedVideos;
+    private final long queuedRecoveryStaleMillis;
 
     public StartupRecoveryService(TranscodingProfile[] profiles, ProcessingRuntime runtime) {
-        this(profiles, runtime, false);
+        this(profiles, runtime, false, DEFAULT_QUEUED_RECOVERY_STALE_MILLIS);
     }
 
     public StartupRecoveryService(
@@ -38,9 +40,19 @@ public final class StartupRecoveryService {
             ProcessingRuntime runtime,
             boolean reconcileCompletedVideos
     ) {
+        this(profiles, runtime, reconcileCompletedVideos, DEFAULT_QUEUED_RECOVERY_STALE_MILLIS);
+    }
+
+    public StartupRecoveryService(
+            TranscodingProfile[] profiles,
+            ProcessingRuntime runtime,
+            boolean reconcileCompletedVideos,
+            long queuedRecoveryStaleMillis
+    ) {
         this.profiles = profiles;
         this.runtime = runtime;
         this.reconcileCompletedVideos = reconcileCompletedVideos;
+        this.queuedRecoveryStaleMillis = Math.max(1_000L, queuedRecoveryStaleMillis);
     }
 
     /**
@@ -344,7 +356,7 @@ public final class StartupRecoveryService {
                                     videoId,
                                     profile.getName(),
                                     TranscodeSegmentState.QUEUED,
-                                    runtime.claimStaleMillis()
+                                    queuedRecoveryStaleMillis
                             ));
                     inFlightSegments.addAll(runtime.transcodeStatusRepository()
                             .findSegmentNumbersByState(videoId, profile.getName(), TranscodeSegmentState.TRANSCODING));

@@ -55,7 +55,8 @@ public class ProcessingServiceApplication {
     private static final String DEV_LOG_SERVICE = "Processing-service";
     private static final String MANIFEST_PROCESSOR_EXECUTOR_NAME = "AbrManifestGenerator";
     private static final long DEFAULT_CLAIM_STALE_MILLIS = 10_000L;
-    private static final long DEFAULT_RECOVERY_RECONCILIATION_MILLIS = 10_000L;
+    private static final long DEFAULT_RECOVERY_RECONCILIATION_MILLIS = 60_000L;
+    private static final long DEFAULT_RECOVERY_QUEUED_STALE_MILLIS = 300_000L;
     private static volatile ExecutorService uploadExecutorRef;
     private static volatile ProcessingRuntime runtimeRef;
     private static volatile Thread bucketEnsureThread;
@@ -117,6 +118,11 @@ public class ProcessingServiceApplication {
                     "PROCESSING_RECOVERY_RECONCILIATION_MILLIS",
                     String.valueOf(DEFAULT_RECOVERY_RECONCILIATION_MILLIS)
             ));
+            long recoveryQueuedStaleMillis = Long.parseLong(getEnvOrDotenv(
+                    dotenv,
+                    "PROCESSING_RECOVERY_QUEUED_STALE_MILLIS",
+                    String.valueOf(DEFAULT_RECOVERY_QUEUED_STALE_MILLIS)
+            ));
             boolean reconcileCompletedVideos = Boolean.parseBoolean(getEnvOrDotenv(
                     dotenv,
                     "PROCESSING_RECOVER_COMPLETED_VIDEOS",
@@ -169,7 +175,8 @@ public class ProcessingServiceApplication {
             StartupRecoveryService startupRecovery = new StartupRecoveryService(
                     PROFILES,
                     runtime,
-                    reconcileCompletedVideos
+                    reconcileCompletedVideos,
+                    recoveryQueuedStaleMillis
             );
             startBucketEnsureThread(
                     storageClient,
@@ -314,6 +321,7 @@ public class ProcessingServiceApplication {
         long normalizedRecoveryReconciliationMillis = Math.max(1_000L, recoveryReconciliationMillis);
         boolean waitingForStorage = false;
         boolean storageReady = false;
+        boolean incompleteVideoRecoveryPending = true;
         while (!Thread.currentThread().isInterrupted()) {
             try {
                 storageClient.ensureBucketExists();
@@ -330,10 +338,14 @@ public class ProcessingServiceApplication {
                 delayMillis = 500L;
 
                 startupRecovery.recoverOrphanedSpoolFiles(storageClient, localUploadSpoolRoot);
-                startupRecovery.recoverIncompleteVideos(storageClient);
+                if (incompleteVideoRecoveryPending) {
+                    startupRecovery.recoverIncompleteVideos(storageClient);
+                    incompleteVideoRecoveryPending = false;
+                }
                 Thread.sleep(normalizedRecoveryReconciliationMillis);
             } catch (RuntimeException e) {
                 storageReady = false;
+                incompleteVideoRecoveryPending = true;
                 if (!waitingForStorage) {
                     waitingForStorage = true;
                     LOGGER.warn("MinIO unavailable during processing startup; continuing and retrying bucket ensure", e);

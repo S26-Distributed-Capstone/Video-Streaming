@@ -1,7 +1,7 @@
 # ─── App image ──────────────────────────────────────────────────
 image:
   repository: tanigross/video-streaming-app
-  tag: "1.6"
+  tag: "1.7"
   pullPolicy: IfNotPresent
 
 # ─── Replica counts ────────────────────────────────────────────
@@ -81,6 +81,8 @@ config:
   processingPort: "8082"
   streamingPort: "8083"
   workerPoolSize: "2"
+  processingRecoveryReconciliationMillis: "60000"
+  processingRecoveryQueuedStaleMillis: "300000"
   threadsPerWorker: "1"
   ffmpegPreset: "superfast"
   processingSpoolRoot: "/app/processing-spool"
