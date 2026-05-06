@@ -18,11 +18,43 @@ statusService:
     limits:   { memory: "1Gi",   cpu: "1000m" }
 
 processingService:
-  replicas: 10
+  replicas: 13
   spoolStorageSize: 5Gi
   resources:
     requests: { memory: "1Gi",  cpu: "1000m" }
-    limits:   { memory: "2Gi",  cpu: "2000m" }
+    limits:   { memory: "2Gi",  cpu: "4000m" }
+
+processingPools:
+  - name: small
+    replicas: 6
+    nodeSelector:
+      processing-size: small
+    resources:
+      requests: { memory: "1Gi", cpu: "1000m" }
+      limits:   { memory: "2Gi", cpu: "4000m" }
+    workerPoolSize: "3"
+    threadsPerWorker: "1"
+
+  - name: medium
+    replicas: 1
+    nodeSelector:
+      processing-size: medium
+    resources:
+      requests: { memory: "1Gi", cpu: "1000m" }
+      limits:   { memory: "2Gi", cpu: "6000m" }
+    workerPoolSize: "4"
+    threadsPerWorker: "1"
+
+  - name: large
+    replicas: 6
+    nodeSelector:
+      processing-size: large
+    resources:
+      requests: { memory: "1Gi", cpu: "1000m" }
+      limits:   { memory: "2Gi", cpu: "7000m" }
+    workerPoolSize: "8"
+    threadsPerWorker: "1"
+
 
 streamingService:
   replicas: 1
@@ -80,9 +112,12 @@ config:
   statusPort: "8081"
   processingPort: "8082"
   streamingPort: "8083"
-  workerPoolSize: "2"
+  # Leave blank to let processing-service auto-size its local transcode worker pool
+  # from the CPUs visible to the container (the app defaults to ~3/4 of available CPUs).
+  workerPoolSize: ""
   processingRecoveryReconciliationMillis: "60000"
   processingRecoveryQueuedStaleMillis: "300000"
+  # Keep one FFmpeg thread per worker unless benchmarks prove otherwise.
   threadsPerWorker: "1"
   ffmpegPreset: "superfast"
   processingSpoolRoot: "/app/processing-spool"

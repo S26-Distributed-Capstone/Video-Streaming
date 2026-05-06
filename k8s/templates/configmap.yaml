@@ -25,7 +25,9 @@ data:
   STATUS_PORT: {{ .Values.config.statusPort | quote }}
   PROCESSING_PORT: {{ .Values.config.processingPort | quote }}
   STREAMING_PORT: {{ .Values.config.streamingPort | quote }}
+  {{- if .Values.config.workerPoolSize }}
   WORKER_POOL_SIZE: {{ .Values.config.workerPoolSize | quote }}
+  {{- end }}
   PROCESSING_RECOVERY_RECONCILIATION_MILLIS: {{ .Values.config.processingRecoveryReconciliationMillis | quote }}
   PROCESSING_RECOVERY_QUEUED_STALE_MILLIS: {{ .Values.config.processingRecoveryQueuedStaleMillis | quote }}
   THREADS_PER_WORKER: {{ .Values.config.threadsPerWorker | quote }}

@@ -133,6 +133,46 @@ kubectl scale statefulset vs-processing --replicas=5
 ./deploy_k8s.sh upgrade
 ```
 
+### Tune processing CPU usage
+
+The processing service already has an internal transcode worker pool. Do not
+default to "one worker per pod". Instead, size each pod by CPU and let the app
+run multiple single-threaded FFmpeg jobs in parallel.
+
+Recommended baseline:
+
+- Keep `THREADS_PER_WORKER=1`
+- Leave `WORKER_POOL_SIZE` blank so the app auto-sizes from visible CPU
+- Set each processing pod's CPU limit to roughly the amount of machine CPU you
+  want that pod to use
+- Start with `1` processing pod per machine, then benchmark before packing more
+
+Suggested starting points:
+
+| Pod CPU limit | Suggested WORKER_POOL_SIZE |
+|---------------|----------------------------|
+| 2 vCPU        | 1                          |
+| 4 vCPU        | 3                          |
+| 8 vCPU        | 6 or 7                     |
+| 16 vCPU       | 12 to 14                   |
+
+If `WORKER_POOL_SIZE` is left blank, the processing service defaults to about
+`3/4` of the CPUs visible to the container. On modern Kubernetes/JDK setups,
+that usually tracks the pod's CPU limit well enough to use as the default.
+
+For mixed-size machines, the usual pattern is:
+
+1. Label nodes by hardware class
+2. Run separate processing workloads per class, or pin specific processing pods
+   to specific nodes
+3. Give larger-node pods larger CPU limits instead of creating many tiny
+   one-worker pods
+
+The chart also supports `processingPools` in `k8s/values.yaml` for this case.
+Each pool renders its own processing `StatefulSet`, CPU limits, and optional
+`nodeSelector`, so `4`-CPU and `8`-CPU nodes no longer need to share the same
+pod size.
+
 ### View logs
 
 ```bash
