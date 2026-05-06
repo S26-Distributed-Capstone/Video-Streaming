@@ -1,7 +1,7 @@
 # ─── App image ──────────────────────────────────────────────────
 image:
   repository: tanigross/video-streaming-app
-  tag: "1.5"
+  tag: "1.6"
   pullPolicy: IfNotPresent
 
 # ─── Replica counts ────────────────────────────────────────────
