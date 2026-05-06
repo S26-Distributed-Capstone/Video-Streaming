@@ -502,7 +502,7 @@ public final class ProcessingRuntime {
             if (isVideoFailed(task.getJobId())) {
                 LOGGER.info("Skipping queued transcode task for failed videoId={} profile={} chunk={}",
                         task.getJobId(), task.getProfile().getName(), task.getChunkKey());
-                return false;
+                return true;
             }
             if (processingTaskClaimRepository != null) {
                 ProcessingTaskClaimRepository.ClaimResult claimResult = processingTaskClaimRepository.claim(
@@ -518,7 +518,7 @@ public final class ProcessingRuntime {
                         LOGGER.info("Skipping execution of transcode task already claimed elsewhere videoId={} profile={} chunk={}",
                                 task.getJobId(), task.getProfile().getName(), task.getChunkKey());
                     }
-                    return false;
+                    return true;
                 }
                 claimAcquired = true;
             }
@@ -547,7 +547,7 @@ public final class ProcessingRuntime {
                     Files.deleteIfExists(completed.localPath());
                     LOGGER.info("Discarded transcoded spool for failed videoId={} profile={} segment={}",
                             task.getJobId(), task.getProfile().getName(), segmentNumber);
-                    return false;
+                    return true;
                 }
                 processingUploadTaskRepository.upsertPending(
                         task.getJobId(),
