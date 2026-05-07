@@ -1,11 +1,47 @@
+{{- $defaultPool := dict
+      "name" "default"
+      "fullname" (printf "%s-processing" .Release.Name)
+      "appLabel" (printf "%s-processing" .Release.Name)
+      "replicas" .Values.processingService.replicas
+      "spoolStorageSize" .Values.processingService.spoolStorageSize
+      "resources" .Values.processingService.resources
+      "workerPoolSize" .Values.config.workerPoolSize
+      "threadsPerWorker" .Values.config.threadsPerWorker
+      "nodeSelector" dict
+      "root" .
+  -}}
+{{- $pools := list $defaultPool -}}
+{{- if .Values.processingPools }}
+  {{- $pools = list -}}
+  {{- range $pool := .Values.processingPools }}
+    {{- $poolName := required "processingPools[].name is required" $pool.name -}}
+    {{- $resources := required (printf "processingPools[%s].resources is required" $poolName) $pool.resources -}}
+    {{- $requests := required (printf "processingPools[%s].resources.requests is required" $poolName) $resources.requests -}}
+    {{- $limits := required (printf "processingPools[%s].resources.limits is required" $poolName) $resources.limits -}}
+    {{- $pools = append $pools (dict
+          "name" $poolName
+          "fullname" (printf "%s-processing-%s" $.Release.Name $poolName)
+          "appLabel" (printf "%s-processing-%s" $.Release.Name $poolName)
+          "replicas" (default 1 $pool.replicas)
+          "spoolStorageSize" (default $.Values.processingService.spoolStorageSize $pool.spoolStorageSize)
+          "resources" (dict "requests" $requests "limits" $limits)
+          "workerPoolSize" (default $.Values.config.workerPoolSize $pool.workerPoolSize)
+          "threadsPerWorker" (default $.Values.config.threadsPerWorker $pool.threadsPerWorker)
+          "nodeSelector" (default dict $pool.nodeSelector)
+          "root" $
+      ) -}}
+  {{- end }}
+{{- end }}
+{{- range $pool := $pools }}
+---
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ .Release.Name }}-processing
+  name: {{ $pool.fullname }}
 spec:
   type: ClusterIP
   selector:
-    app: {{ .Release.Name }}-processing
+    app: {{ $pool.appLabel }}
   ports:
     - port: 8082
       targetPort: 8082
@@ -13,17 +49,17 @@ spec:
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: {{ .Release.Name }}-processing
+  name: {{ $pool.fullname }}
 spec:
-  serviceName: {{ .Release.Name }}-processing
-  replicas: {{ .Values.processingService.replicas }}
+  serviceName: {{ $pool.fullname }}
+  replicas: {{ $pool.replicas }}
   selector:
     matchLabels:
-      app: {{ .Release.Name }}-processing
+      app: {{ $pool.appLabel }}
   template:
     metadata:
       labels:
-        app: {{ .Release.Name }}-processing
+        app: {{ $pool.appLabel }}
     spec:
       affinity:
         podAntiAffinity:
@@ -32,7 +68,7 @@ spec:
               podAffinityTerm:
                 labelSelector:
                   matchLabels:
-                    app: {{ .Release.Name }}-processing
+                    app: {{ $pool.appLabel }}
                 topologyKey: kubernetes.io/hostname
       topologySpreadConstraints:
         - maxSkew: 1
@@ -40,24 +76,36 @@ spec:
           whenUnsatisfiable: ScheduleAnyway
           labelSelector:
             matchLabels:
-              app: {{ .Release.Name }}-processing
+              app: {{ $pool.appLabel }}
+      {{- if $pool.nodeSelector }}
+      nodeSelector:
+{{ toYaml $pool.nodeSelector | indent 8 }}
+      {{- end }}
       initContainers:
-        {{- include "video-streaming.wait-for" (dict "name" "rabbitmq" "host" (printf "%s-rabbitmq" .Release.Name) "port" "5672") | nindent 8 }}
-        {{- include "video-streaming.wait-for" (dict "name" "postgres" "host" (printf "%s-postgres" .Release.Name) "port" "5432") | nindent 8 }}
+        {{- include "video-streaming.wait-for" (dict "name" "rabbitmq" "host" (printf "%s-rabbitmq" $pool.root.Release.Name) "port" "5672") | nindent 8 }}
+        {{- include "video-streaming.wait-for" (dict "name" "postgres" "host" (printf "%s-postgres" $pool.root.Release.Name) "port" "5432") | nindent 8 }}
       containers:
         - name: processing-service
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          image: "{{ $pool.root.Values.image.repository }}:{{ $pool.root.Values.image.tag }}"
+          imagePullPolicy: {{ $pool.root.Values.image.pullPolicy }}
           ports:
             - containerPort: 8082
           env:
             - name: SERVICE_MODE
               value: "processing"
+            {{- if $pool.workerPoolSize }}
+            - name: WORKER_POOL_SIZE
+              value: {{ $pool.workerPoolSize | quote }}
+            {{- end }}
+            {{- if $pool.threadsPerWorker }}
+            - name: THREADS_PER_WORKER
+              value: {{ $pool.threadsPerWorker | quote }}
+            {{- end }}
           envFrom:
             - configMapRef:
-                name: {{ .Release.Name }}-config
+                name: {{ $pool.root.Release.Name }}-config
             - secretRef:
-                name: {{ .Release.Name }}-secrets
+                name: {{ $pool.root.Release.Name }}-secrets
           volumeMounts:
             - name: processing-spool
               mountPath: /app/processing-spool
@@ -81,11 +129,11 @@ spec:
             periodSeconds: 5
           resources:
             requests:
-              memory: {{ .Values.processingService.resources.requests.memory | quote }}
-              cpu: {{ .Values.processingService.resources.requests.cpu | quote }}
+              memory: {{ $pool.resources.requests.memory | quote }}
+              cpu: {{ $pool.resources.requests.cpu | quote }}
             limits:
-              memory: {{ .Values.processingService.resources.limits.memory | quote }}
-              cpu: {{ .Values.processingService.resources.limits.cpu | quote }}
+              memory: {{ $pool.resources.limits.memory | quote }}
+              cpu: {{ $pool.resources.limits.cpu | quote }}
   volumeClaimTemplates:
     - metadata:
         name: processing-spool
@@ -93,4 +141,5 @@ spec:
         accessModes: ["ReadWriteOnce"]
         resources:
           requests:
-            storage: {{ .Values.processingService.spoolStorageSize }}
+            storage: {{ $pool.spoolStorageSize }}
+{{- end }}

@@ -1,7 +1,7 @@
 # ─── App image ──────────────────────────────────────────────────
 image:
-  repository: cp1:32000/video-streaming-app   # in-cluster registry, NodePort 32000
-  tag: "1.0"
+  repository: tanigross/video-streaming-app
+  tag: "1.7"
   pullPolicy: IfNotPresent
 
 # ─── Replica counts ────────────────────────────────────────────
@@ -18,11 +18,43 @@ statusService:
     limits:   { memory: "1Gi",   cpu: "1000m" }
 
 processingService:
-  replicas: 10
+  replicas: 13
   spoolStorageSize: 5Gi
   resources:
     requests: { memory: "1Gi",  cpu: "1000m" }
-    limits:   { memory: "2Gi",  cpu: "2000m" }
+    limits:   { memory: "2Gi",  cpu: "4000m" }
+
+processingPools:
+  - name: small
+    replicas: 6
+    nodeSelector:
+      processing-size: small
+    resources:
+      requests: { memory: "1Gi", cpu: "1000m" }
+      limits:   { memory: "2Gi", cpu: "4000m" }
+    workerPoolSize: "3"
+    threadsPerWorker: "1"
+
+  - name: medium
+    replicas: 1
+    nodeSelector:
+      processing-size: medium
+    resources:
+      requests: { memory: "1Gi", cpu: "1000m" }
+      limits:   { memory: "2Gi", cpu: "6000m" }
+    workerPoolSize: "4"
+    threadsPerWorker: "1"
+
+  - name: large
+    replicas: 6
+    nodeSelector:
+      processing-size: large
+    resources:
+      requests: { memory: "1Gi", cpu: "1000m" }
+      limits:   { memory: "2Gi", cpu: "7000m" }
+    workerPoolSize: "8"
+    threadsPerWorker: "1"
+
 
 streamingService:
   replicas: 1
@@ -40,6 +72,10 @@ rabbitmq:
 
 minio:
   storageSize: 10Gi
+  # Pin MinIO to a specific IP from your MetalLB address pool.
+  # Once set, MINIO_PUBLIC_ENDPOINT is auto-derived — no manual helm upgrade needed.
+  # Pick any free IP from your MetalLB range, e.g. 192.168.1.200
+  loadBalancerIP: ""
 
 # ─── Credentials ────────────────────────────────────────────────
 # DO NOT put real secrets here — this file is committed to git.
@@ -57,7 +93,9 @@ secrets:
 # ─── App config ─────────────────────────────────────────────────
 config:
   minioEndpoint: "http://minio:9000"
-  minioPublicEndpoint: "http://localhost:9000"
+  # minioPublicEndpoint is auto-derived from minio.loadBalancerIP when that is set.
+  # Only override this manually if you are NOT using minio.loadBalancerIP.
+  minioPublicEndpoint: ""
   minioBucketName: "uploads"
   minioRegion: "us-east-1"
   chunkDuration: "6"
@@ -74,7 +112,12 @@ config:
   statusPort: "8081"
   processingPort: "8082"
   streamingPort: "8083"
-  workerPoolSize: "2"
+  # Leave blank to let processing-service auto-size its local transcode worker pool
+  # from the CPUs visible to the container (the app defaults to ~3/4 of available CPUs).
+  workerPoolSize: ""
+  processingRecoveryReconciliationMillis: "60000"
+  processingRecoveryQueuedStaleMillis: "300000"
+  # Keep one FFmpeg thread per worker unless benchmarks prove otherwise.
   threadsPerWorker: "1"
   ffmpegPreset: "superfast"
   processingSpoolRoot: "/app/processing-spool"
@@ -85,9 +128,10 @@ config:
 
 # ─── Service exposure ──────────────────────────────────────────
 # LoadBalancer + "minikube tunnel" exposes services on localhost at their
-# real ports (8080, 8081, 8083) — no port-forward needed.
+# real ports (8080, 8081, 8083, 9000) — no port-forward needed.
 service:
   type: LoadBalancer
   uploadNodePort: 30080       # only used when type=NodePort
   statusNodePort: 30081
   streamingNodePort: 30083
+  minioNodePort: 30090        # only used when type=NodePort; set config.minioPublicEndpoint to http://<node-ip>:30090

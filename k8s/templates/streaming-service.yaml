@@ -40,6 +40,19 @@ spec:
           env:
             - name: SERVICE_MODE
               value: "streaming"
+            # Inject the node's own IP via the Downward API, then build
+            # MINIO_PUBLIC_ENDPOINT from it. In k3s (and most bare-metal clusters)
+            # every LoadBalancer service is reachable on any node IP, so the pod's
+            # host IP is always a valid external address for MinIO.
+            # This env entry overrides the empty value from the ConfigMap.
+            {{- if not .Values.minio.loadBalancerIP }}
+            - name: NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: MINIO_PUBLIC_ENDPOINT
+              value: "http://$(NODE_IP):9000"
+            {{- end }}
           envFrom:
             - configMapRef:
                 name: {{ .Release.Name }}-config

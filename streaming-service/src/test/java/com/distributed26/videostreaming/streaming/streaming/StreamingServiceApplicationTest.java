@@ -132,9 +132,10 @@ class StreamingServiceApplicationTest {
 
         HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
 
-        // Javalin may resolve the path or return 400; either way it must not be 302
-        assertTrue(response.statusCode() != HttpURLConnection.HTTP_MOVED_TEMP,
-                "Should not redirect for invalid segment name");
+        // Invalid segment names (containing path traversal or lacking .ts) must be rejected
+        assertTrue(response.statusCode() == HttpURLConnection.HTTP_BAD_REQUEST
+                        || response.statusCode() == HttpURLConnection.HTTP_NOT_FOUND,
+                "Expected 400 or 404 for invalid segment name, got: " + response.statusCode());
     }
 
     @Test

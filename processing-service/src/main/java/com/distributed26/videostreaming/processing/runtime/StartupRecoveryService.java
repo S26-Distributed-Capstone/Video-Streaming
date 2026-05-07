@@ -24,13 +24,15 @@ import org.apache.logging.log4j.Logger;
 public final class StartupRecoveryService {
     private static final Logger LOGGER = LogManager.getLogger(StartupRecoveryService.class);
     private static final java.util.regex.Pattern EXTINF_PATTERN = java.util.regex.Pattern.compile("^#EXTINF:([^,]+),?");
+    private static final long DEFAULT_QUEUED_RECOVERY_STALE_MILLIS = 300_000L;
 
     private final TranscodingProfile[] profiles;
     private final ProcessingRuntime runtime;
     private final boolean reconcileCompletedVideos;
+    private final long queuedRecoveryStaleMillis;
 
     public StartupRecoveryService(TranscodingProfile[] profiles, ProcessingRuntime runtime) {
-        this(profiles, runtime, false);
+        this(profiles, runtime, false, DEFAULT_QUEUED_RECOVERY_STALE_MILLIS);
     }
 
     public StartupRecoveryService(
@@ -38,9 +40,19 @@ public final class StartupRecoveryService {
             ProcessingRuntime runtime,
             boolean reconcileCompletedVideos
     ) {
+        this(profiles, runtime, reconcileCompletedVideos, DEFAULT_QUEUED_RECOVERY_STALE_MILLIS);
+    }
+
+    public StartupRecoveryService(
+            TranscodingProfile[] profiles,
+            ProcessingRuntime runtime,
+            boolean reconcileCompletedVideos,
+            long queuedRecoveryStaleMillis
+    ) {
         this.profiles = profiles;
         this.runtime = runtime;
         this.reconcileCompletedVideos = reconcileCompletedVideos;
+        this.queuedRecoveryStaleMillis = Math.max(1_000L, queuedRecoveryStaleMillis);
     }
 
     /**
@@ -71,7 +83,7 @@ public final class StartupRecoveryService {
         }
 
         int recovered = 0;
-        int skippedExisting = 0;
+        int reassignedExisting = 0;
         int skippedDone = 0;
         int cleanedPartFiles = 0;
 
@@ -132,12 +144,6 @@ public final class StartupRecoveryService {
                                     continue;
                                 }
 
-                                // Skip if an upload task already exists (upload workers will handle it)
-                                if (runtime.processingUploadTaskRepository().hasOpenTask(videoId, profileName, segmentNumber)) {
-                                    skippedExisting++;
-                                    continue;
-                                }
-
                                 // If already in object storage, clean up and mark DONE
                                 String outputKey = videoId + "/processed/" + profileName + "/" + fileName;
                                 if (safeFileExists(storageClient, outputKey)) {
@@ -157,8 +163,11 @@ public final class StartupRecoveryService {
                                 long sizeBytes = Files.size(file);
                                 double offsetSeconds = ProcessingRuntime.fallbackOffsetForSegment(segmentNumber);
 
+                                boolean existingTask = runtime.processingUploadTaskRepository()
+                                        .hasOpenTask(videoId, profileName, segmentNumber);
                                 runtime.processingUploadTaskRepository().upsertPending(
                                         videoId,
+                                        runtime.processorInstanceId(),
                                         profileName,
                                         segmentNumber,
                                         chunkKey,
@@ -167,9 +176,15 @@ public final class StartupRecoveryService {
                                         sizeBytes,
                                         offsetSeconds
                                 );
-                                recovered++;
-                                LOGGER.info("Spool recovery: created upload task for orphaned file videoId={} profile={} segment={} path={}",
-                                        videoId, profileName, segmentNumber, file);
+                                if (existingTask) {
+                                    reassignedExisting++;
+                                    LOGGER.info("Spool recovery: reassigned local upload task ownership videoId={} profile={} segment={} path={} owner={}",
+                                            videoId, profileName, segmentNumber, file, runtime.processorInstanceId());
+                                } else {
+                                    recovered++;
+                                    LOGGER.info("Spool recovery: created upload task for orphaned file videoId={} profile={} segment={} path={}",
+                                            videoId, profileName, segmentNumber, file);
+                                }
                             }
                         }
                     }
@@ -179,9 +194,9 @@ public final class StartupRecoveryService {
             LOGGER.warn("Spool recovery: error scanning spool directory", e);
         }
 
-        if (recovered > 0 || skippedDone > 0 || cleanedPartFiles > 0) {
-            LOGGER.info("Spool recovery complete: recovered={} alreadyUploaded={} existingTasks={} partFilesCleaned={}",
-                    recovered, skippedDone, skippedExisting, cleanedPartFiles);
+        if (recovered > 0 || reassignedExisting > 0 || skippedDone > 0 || cleanedPartFiles > 0) {
+            LOGGER.info("Spool recovery complete: recovered={} reassigned={} alreadyUploaded={} partFilesCleaned={}",
+                    recovered, reassignedExisting, skippedDone, cleanedPartFiles);
         } else {
             LOGGER.info("Spool recovery complete: no orphaned files found");
         }
@@ -341,7 +356,7 @@ public final class StartupRecoveryService {
                                     videoId,
                                     profile.getName(),
                                     TranscodeSegmentState.QUEUED,
-                                    runtime.claimStaleMillis()
+                                    queuedRecoveryStaleMillis
                             ));
                     inFlightSegments.addAll(runtime.transcodeStatusRepository()
                             .findSegmentNumbersByState(videoId, profile.getName(), TranscodeSegmentState.TRANSCODING));

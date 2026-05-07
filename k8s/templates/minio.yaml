@@ -4,12 +4,18 @@ metadata:
   name: {{ .Release.Name }}-minio
 spec:
   type: {{ .Values.service.type }}
+  {{- if and .Values.minio.loadBalancerIP (eq .Values.service.type "LoadBalancer") }}
+  loadBalancerIP: {{ .Values.minio.loadBalancerIP }}
+  {{- end }}
   selector:
     app: {{ .Release.Name }}-minio
   ports:
     - name: api
       port: 9000
       targetPort: 9000
+      {{- if eq .Values.service.type "NodePort" }}
+      nodePort: {{ .Values.service.minioNodePort }}
+      {{- end }}
     - name: console
       port: 9001
       targetPort: 9001

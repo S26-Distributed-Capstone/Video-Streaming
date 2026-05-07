@@ -1,0 +1,4 @@
+{{- if not .Values.minio.loadBalancerIP }}
+# MINIO_PUBLIC_ENDPOINT is now set directly in the streaming-service Deployment
+# using the Downward API (status.hostIP). No patcher Job needed.
+{{- end }}

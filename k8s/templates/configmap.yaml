@@ -7,7 +7,7 @@ metadata:
     helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
 data:
   MINIO_ENDPOINT: "http://{{ .Release.Name }}-minio:9000"
-  MINIO_PUBLIC_ENDPOINT: {{ .Values.config.minioPublicEndpoint | quote }}
+  MINIO_PUBLIC_ENDPOINT: {{ if .Values.minio.loadBalancerIP }}"http://{{ .Values.minio.loadBalancerIP }}:9000"{{ else }}{{ .Values.config.minioPublicEndpoint | quote }}{{ end }}
   MINIO_BUCKET_NAME: {{ .Values.config.minioBucketName | quote }}
   MINIO_REGION: {{ .Values.config.minioRegion | quote }}
   CHUNK_DURATION_SECONDS: {{ .Values.config.chunkDuration | quote }}
@@ -25,7 +25,11 @@ data:
   STATUS_PORT: {{ .Values.config.statusPort | quote }}
   PROCESSING_PORT: {{ .Values.config.processingPort | quote }}
   STREAMING_PORT: {{ .Values.config.streamingPort | quote }}
+  {{- if .Values.config.workerPoolSize }}
   WORKER_POOL_SIZE: {{ .Values.config.workerPoolSize | quote }}
+  {{- end }}
+  PROCESSING_RECOVERY_RECONCILIATION_MILLIS: {{ .Values.config.processingRecoveryReconciliationMillis | quote }}
+  PROCESSING_RECOVERY_QUEUED_STALE_MILLIS: {{ .Values.config.processingRecoveryQueuedStaleMillis | quote }}
   THREADS_PER_WORKER: {{ .Values.config.threadsPerWorker | quote }}
   FFMPEG_PRESET: {{ .Values.config.ffmpegPreset | quote }}
   PROCESSING_SPOOL_ROOT: {{ .Values.config.processingSpoolRoot | quote }}
@@ -33,4 +37,3 @@ data:
   STORAGE_RETRY_MAX_DELAY_MS: {{ .Values.config.storageRetryMaxDelayMs | quote }}
   STORAGE_RETRY_MAX_ATTEMPTS: {{ .Values.config.storageRetryMaxAttempts | quote }}
   DEV_LOG_MAX_PEEK: {{ .Values.config.devLogMaxPeek | quote }}
-

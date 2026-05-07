@@ -34,7 +34,7 @@ metadata:
     helm.sh/chart: video-streaming-0.1.0
 data:
   MINIO_ENDPOINT: "http://vs-minio:9000"
-  MINIO_PUBLIC_ENDPOINT: "http://localhost:9000"
+  MINIO_PUBLIC_ENDPOINT: ""
   MINIO_BUCKET_NAME: "uploads"
   MINIO_REGION: "us-east-1"
   CHUNK_DURATION_SECONDS: "6"
@@ -52,7 +52,8 @@ data:
   STATUS_PORT: "8081"
   PROCESSING_PORT: "8082"
   STREAMING_PORT: "8083"
-  WORKER_POOL_SIZE: "2"
+  PROCESSING_RECOVERY_RECONCILIATION_MILLIS: "60000"
+  PROCESSING_RECOVERY_QUEUED_STALE_MILLIS: "300000"
   THREADS_PER_WORKER: "1"
   FFMPEG_PRESET: "superfast"
   PROCESSING_SPOOL_ROOT: "/app/processing-spool"
@@ -103,6 +104,7 @@ data:
     CREATE TABLE IF NOT EXISTS processing_upload_task (
         id SERIAL PRIMARY KEY,
         video_id UUID NOT NULL REFERENCES video_upload(video_id) ON DELETE CASCADE,
+        spool_owner VARCHAR(128),
         profile VARCHAR(32) NOT NULL,
         segment_number INTEGER NOT NULL,
         chunk_key VARCHAR(512) NOT NULL,
@@ -116,6 +118,7 @@ data:
         updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
         UNIQUE (video_id, profile, segment_number)
     );
+    ALTER TABLE processing_upload_task ADD COLUMN IF NOT EXISTS spool_owner VARCHAR(128);
     CREATE INDEX IF NOT EXISTS idx_processing_upload_task_state_updated
         ON processing_upload_task(state, updated_at);
 
@@ -217,11 +220,37 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: vs-processing
+  name: vs-processing-small
 spec:
   type: ClusterIP
   selector:
-    app: vs-processing
+    app: vs-processing-small
+  ports:
+    - port: 8082
+      targetPort: 8082
+---
+# Source: video-streaming/templates/processing-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: vs-processing-medium
+spec:
+  type: ClusterIP
+  selector:
+    app: vs-processing-medium
+  ports:
+    - port: 8082
+      targetPort: 8082
+---
+# Source: video-streaming/templates/processing-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: vs-processing-large
+spec:
+  type: ClusterIP
+  selector:
+    app: vs-processing-large
   ports:
     - port: 8082
       targetPort: 8082
@@ -344,7 +373,7 @@ spec:
               echo "vs-postgres:5432 is up."
       containers:
         - name: status-service
-          image: "cp1:32000/video-streaming-app:1.0"
+          image: "tanigross/video-streaming-app:1.7"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8081
@@ -422,13 +451,24 @@ spec:
               echo "vs-minio:9000 is up."
       containers:
         - name: streaming-service
-          image: "cp1:32000/video-streaming-app:1.0"
+          image: "tanigross/video-streaming-app:1.7"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8083
           env:
             - name: SERVICE_MODE
               value: "streaming"
+            # Inject the node's own IP via the Downward API, then build
+            # MINIO_PUBLIC_ENDPOINT from it. In k3s (and most bare-metal clusters)
+            # every LoadBalancer service is reachable on any node IP, so the pod's
+            # host IP is always a valid external address for MinIO.
+            # This env entry overrides the empty value from the ConfigMap.
+            - name: NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: MINIO_PUBLIC_ENDPOINT
+              value: "http://$(NODE_IP):9000"
           envFrom:
             - configMapRef:
                 name: vs-config
@@ -500,7 +540,7 @@ spec:
               echo "vs-postgres:5432 is up."
       containers:
         - name: upload-service
-          image: "cp1:32000/video-streaming-app:1.0"
+          image: "tanigross/video-streaming-app:1.7"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
@@ -643,12 +683,12 @@ spec:
               readOnly: true
           readinessProbe:
             exec:
-              command: ["pg_isready", "-U", "CHANGE_ME"]
+              command: ["pg_isready", "-U", "admin"]
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             exec:
-              command: ["pg_isready", "-U", "CHANGE_ME"]
+              command: ["pg_isready", "-U", "admin"]
             initialDelaySeconds: 15
             periodSeconds: 20
       volumes:
@@ -668,17 +708,17 @@ spec:
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: vs-processing
+  name: vs-processing-small
 spec:
-  serviceName: vs-processing
-  replicas: 10
+  serviceName: vs-processing-small
+  replicas: 6
   selector:
     matchLabels:
-      app: vs-processing
+      app: vs-processing-small
   template:
     metadata:
       labels:
-        app: vs-processing
+        app: vs-processing-small
     spec:
       affinity:
         podAntiAffinity:
@@ -687,7 +727,7 @@ spec:
               podAffinityTerm:
                 labelSelector:
                   matchLabels:
-                    app: vs-processing
+                    app: vs-processing-small
                 topologyKey: kubernetes.io/hostname
       topologySpreadConstraints:
         - maxSkew: 1
@@ -695,7 +735,9 @@ spec:
           whenUnsatisfiable: ScheduleAnyway
           labelSelector:
             matchLabels:
-              app: vs-processing
+              app: vs-processing-small
+      nodeSelector:
+        processing-size: small
       initContainers:
         - name: wait-for-rabbitmq
           image: busybox:1.36
@@ -721,13 +763,17 @@ spec:
               echo "vs-postgres:5432 is up."
       containers:
         - name: processing-service
-          image: "cp1:32000/video-streaming-app:1.0"
+          image: "tanigross/video-streaming-app:1.7"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8082
           env:
             - name: SERVICE_MODE
               value: "processing"
+            - name: WORKER_POOL_SIZE
+              value: "3"
+            - name: THREADS_PER_WORKER
+              value: "1"
           envFrom:
             - configMapRef:
                 name: vs-config
@@ -760,7 +806,231 @@ spec:
               cpu: "1000m"
             limits:
               memory: "2Gi"
-              cpu: "2000m"
+              cpu: "4000m"
+  volumeClaimTemplates:
+    - metadata:
+        name: processing-spool
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+---
+# Source: video-streaming/templates/processing-service.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: vs-processing-medium
+spec:
+  serviceName: vs-processing-medium
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vs-processing-medium
+  template:
+    metadata:
+      labels:
+        app: vs-processing-medium
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: vs-processing-medium
+                topologyKey: kubernetes.io/hostname
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: vs-processing-medium
+      nodeSelector:
+        processing-size: medium
+      initContainers:
+        - name: wait-for-rabbitmq
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "Waiting for vs-rabbitmq:5672..."
+              until nc -z vs-rabbitmq 5672 2>/dev/null; do
+                sleep 2
+              done
+              echo "vs-rabbitmq:5672 is up."
+        - name: wait-for-postgres
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "Waiting for vs-postgres:5432..."
+              until nc -z vs-postgres 5432 2>/dev/null; do
+                sleep 2
+              done
+              echo "vs-postgres:5432 is up."
+      containers:
+        - name: processing-service
+          image: "tanigross/video-streaming-app:1.7"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8082
+          env:
+            - name: SERVICE_MODE
+              value: "processing"
+            - name: WORKER_POOL_SIZE
+              value: "4"
+            - name: THREADS_PER_WORKER
+              value: "1"
+          envFrom:
+            - configMapRef:
+                name: vs-config
+            - secretRef:
+                name: vs-secrets
+          volumeMounts:
+            - name: processing-spool
+              mountPath: /app/processing-spool
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8082
+            failureThreshold: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8082
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8082
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "1000m"
+            limits:
+              memory: "2Gi"
+              cpu: "6000m"
+  volumeClaimTemplates:
+    - metadata:
+        name: processing-spool
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+---
+# Source: video-streaming/templates/processing-service.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: vs-processing-large
+spec:
+  serviceName: vs-processing-large
+  replicas: 6
+  selector:
+    matchLabels:
+      app: vs-processing-large
+  template:
+    metadata:
+      labels:
+        app: vs-processing-large
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: vs-processing-large
+                topologyKey: kubernetes.io/hostname
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: vs-processing-large
+      nodeSelector:
+        processing-size: large
+      initContainers:
+        - name: wait-for-rabbitmq
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "Waiting for vs-rabbitmq:5672..."
+              until nc -z vs-rabbitmq 5672 2>/dev/null; do
+                sleep 2
+              done
+              echo "vs-rabbitmq:5672 is up."
+        - name: wait-for-postgres
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "Waiting for vs-postgres:5432..."
+              until nc -z vs-postgres 5432 2>/dev/null; do
+                sleep 2
+              done
+              echo "vs-postgres:5432 is up."
+      containers:
+        - name: processing-service
+          image: "tanigross/video-streaming-app:1.7"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8082
+          env:
+            - name: SERVICE_MODE
+              value: "processing"
+            - name: WORKER_POOL_SIZE
+              value: "8"
+            - name: THREADS_PER_WORKER
+              value: "1"
+          envFrom:
+            - configMapRef:
+                name: vs-config
+            - secretRef:
+                name: vs-secrets
+          volumeMounts:
+            - name: processing-spool
+              mountPath: /app/processing-spool
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8082
+            failureThreshold: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8082
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8082
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "1000m"
+            limits:
+              memory: "2Gi"
+              cpu: "7000m"
   volumeClaimTemplates:
     - metadata:
         name: processing-spool
@@ -871,3 +1141,7 @@ spec:
         resources:
           requests:
             storage: 2Gi
+---
+# Source: video-streaming/templates/minio-endpoint-patcher.yaml
+# MINIO_PUBLIC_ENDPOINT is now set directly in the streaming-service Deployment
+# using the Downward API (status.hostIP). No patcher Job needed.
