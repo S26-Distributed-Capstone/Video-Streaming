@@ -31,8 +31,10 @@
           "root" $
       ) -}}
   {{- end }}
-{{- end }}
+{{ end }}
 {{- range $pool := $pools }}
+{{- $processingScheduling := $pool.root.Values.scheduling.processing | default dict -}}
+{{- $affinity := mergeOverwrite (deepCopy (default dict $processingScheduling.affinity)) (dict "podAntiAffinity" (dict "preferredDuringSchedulingIgnoredDuringExecution" (list (dict "weight" 100 "podAffinityTerm" (dict "labelSelector" (dict "matchLabels" (dict "app" $pool.appLabel)) "topologyKey" "kubernetes.io/hostname"))))) -}}
 ---
 apiVersion: v1
 kind: Service
@@ -53,6 +55,7 @@ metadata:
 spec:
   serviceName: {{ $pool.fullname }}
   replicas: {{ $pool.replicas }}
+  podManagementPolicy: Parallel
   selector:
     matchLabels:
       app: {{ $pool.appLabel }}
@@ -61,15 +64,15 @@ spec:
       labels:
         app: {{ $pool.appLabel }}
     spec:
+      {{- if $pool.nodeSelector }}
+      nodeSelector:
+{{ toYaml $pool.nodeSelector | indent 8 }}
+      {{- else if $processingScheduling.nodeSelector }}
+      nodeSelector:
+{{ toYaml $processingScheduling.nodeSelector | indent 8 }}
+      {{- end }}
       affinity:
-        podAntiAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              podAffinityTerm:
-                labelSelector:
-                  matchLabels:
-                    app: {{ $pool.appLabel }}
-                topologyKey: kubernetes.io/hostname
+{{ toYaml $affinity | indent 8 }}
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
@@ -77,9 +80,9 @@ spec:
           labelSelector:
             matchLabels:
               app: {{ $pool.appLabel }}
-      {{- if $pool.nodeSelector }}
-      nodeSelector:
-{{ toYaml $pool.nodeSelector | indent 8 }}
+      {{- if $processingScheduling.tolerations }}
+      tolerations:
+{{ toYaml $processingScheduling.tolerations | indent 8 }}
       {{- end }}
       initContainers:
         {{- include "video-streaming.wait-for" (dict "name" "rabbitmq" "host" (printf "%s-rabbitmq" $pool.root.Release.Name) "port" "5672") | nindent 8 }}
@@ -142,4 +145,5 @@ spec:
         resources:
           requests:
             storage: {{ $pool.spoolStorageSize }}
-{{- end }}
+
+{{ end }}

@@ -123,6 +123,42 @@ kubectl rollout restart deployment vs-upload vs-status vs-streaming
 kubectl rollout restart statefulset vs-processing
 ```
 
+### Separate infra and app nodes
+
+The chart now defaults to:
+
+- `postgres`, `rabbitmq`, and `minio` on nodes labeled `workload-role=infra`
+- `upload`, `status`, and `streaming` on nodes labeled `workload-role=infra`
+- `processing` on nodes labeled `workload-role=app`
+
+This is controlled in [`k8s/values.yaml`](/Users/tani/Desktop/YUGithub/Capstone Project/Video-Streaming/k8s/values.yaml) under `scheduling`.
+
+Label your nodes once before deploying:
+
+```bash
+kubectl label node cp1.cluster.local workload-role=infra --overwrite
+kubectl label node cp2.cluster.local workload-role=infra --overwrite
+kubectl label node cp3.cluster.local workload-role=infra --overwrite
+
+```
+
+Scheduling is controlled in [`k8s/values.yaml`](/Users/tani/Desktop/YUGithub/Capstone Project/Video-Streaming/k8s/values.yaml) under `scheduling`:
+
+```yaml
+scheduling:
+  infra:
+    nodeSelector:
+      workload-role: infra
+  app:
+    {}
+  processing:
+    nodeSelector:
+      workload-role: app
+```
+
+The infra workloads also include tolerations for the usual control-plane taints:
+`node-role.kubernetes.io/control-plane:NoSchedule` and `node-role.kubernetes.io/master:NoSchedule`.
+
 ### Scale a service
 
 ```bash
@@ -168,10 +204,10 @@ For mixed-size machines, the usual pattern is:
 3. Give larger-node pods larger CPU limits instead of creating many tiny
    one-worker pods
 
-The chart also supports `processingPools` in `k8s/values.yaml` for this case.
-Each pool renders its own processing `StatefulSet`, CPU limits, and optional
-`nodeSelector`, so `4`-CPU and `8`-CPU nodes no longer need to share the same
-pod size.
+The current default is a single `vs-processing` StatefulSet pinned by
+`scheduling.processing` to nodes labeled `workload-role=app`. The template
+still supports `processingPools` if you decide to bring back per-node-class
+processing splits later.
 
 ### View logs
 

@@ -25,6 +25,7 @@ spec:
       labels:
         app: {{ .Release.Name }}-postgres
     spec:
+      {{- include "video-streaming.pod-scheduling" .Values.scheduling.infra | nindent 6 }}
       containers:
         - name: postgres
           image: postgres:16-alpine

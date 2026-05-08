@@ -27,6 +27,7 @@ spec:
       labels:
         app: {{ .Release.Name }}-upload
     spec:
+      {{- include "video-streaming.pod-scheduling" .Values.scheduling.infra | nindent 6 }}
       initContainers:
         {{- include "video-streaming.wait-for" (dict "name" "rabbitmq" "host" (printf "%s-rabbitmq" .Release.Name) "port" "5672") | nindent 8 }}
         {{- include "video-streaming.wait-for" (dict "name" "postgres" "host" (printf "%s-postgres" .Release.Name) "port" "5432") | nindent 8 }}

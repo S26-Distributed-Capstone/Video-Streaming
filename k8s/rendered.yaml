@@ -220,37 +220,11 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: vs-processing-small
+  name: vs-processing
 spec:
   type: ClusterIP
   selector:
-    app: vs-processing-small
-  ports:
-    - port: 8082
-      targetPort: 8082
----
-# Source: video-streaming/templates/processing-service.yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: vs-processing-medium
-spec:
-  type: ClusterIP
-  selector:
-    app: vs-processing-medium
-  ports:
-    - port: 8082
-      targetPort: 8082
----
-# Source: video-streaming/templates/processing-service.yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: vs-processing-large
-spec:
-  type: ClusterIP
-  selector:
-    app: vs-processing-large
+    app: vs-processing
   ports:
     - port: 8082
       targetPort: 8082
@@ -348,6 +322,16 @@ spec:
       labels:
         app: vs-status
     spec:
+      
+      nodeSelector:
+        workload-role: infra
+      tolerations:
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/control-plane
+          operator: Exists
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/master
+          operator: Exists
       initContainers:
         - name: wait-for-rabbitmq
           image: busybox:1.36
@@ -426,6 +410,16 @@ spec:
       labels:
         app: vs-streaming
     spec:
+      
+      nodeSelector:
+        workload-role: infra
+      tolerations:
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/control-plane
+          operator: Exists
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/master
+          operator: Exists
       initContainers:
         - name: wait-for-postgres
           image: busybox:1.36
@@ -515,6 +509,16 @@ spec:
       labels:
         app: vs-upload
     spec:
+      
+      nodeSelector:
+        workload-role: infra
+      tolerations:
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/control-plane
+          operator: Exists
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/master
+          operator: Exists
       initContainers:
         - name: wait-for-rabbitmq
           image: busybox:1.36
@@ -594,6 +598,16 @@ spec:
       labels:
         app: vs-minio
     spec:
+      
+      nodeSelector:
+        workload-role: infra
+      tolerations:
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/control-plane
+          operator: Exists
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/master
+          operator: Exists
       containers:
         - name: minio
           image: quay.io/minio/minio:latest
@@ -653,6 +667,16 @@ spec:
       labels:
         app: vs-postgres
     spec:
+      
+      nodeSelector:
+        workload-role: infra
+      tolerations:
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/control-plane
+          operator: Exists
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/master
+          operator: Exists
       containers:
         - name: postgres
           image: postgres:16-alpine
@@ -708,36 +732,37 @@ spec:
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: vs-processing-small
+  name: vs-processing
 spec:
-  serviceName: vs-processing-small
-  replicas: 6
+  serviceName: vs-processing
+  replicas: 72
+  podManagementPolicy: Parallel
   selector:
     matchLabels:
-      app: vs-processing-small
+      app: vs-processing
   template:
     metadata:
       labels:
-        app: vs-processing-small
+        app: vs-processing
     spec:
+      nodeSelector:
+        workload-role: app
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              podAffinityTerm:
-                labelSelector:
-                  matchLabels:
-                    app: vs-processing-small
-                topologyKey: kubernetes.io/hostname
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: vs-processing
+              topologyKey: kubernetes.io/hostname
+            weight: 100
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
           whenUnsatisfiable: ScheduleAnyway
           labelSelector:
             matchLabels:
-              app: vs-processing-small
-      nodeSelector:
-        processing-size: small
+              app: vs-processing
       initContainers:
         - name: wait-for-rabbitmq
           image: busybox:1.36
@@ -770,8 +795,6 @@ spec:
           env:
             - name: SERVICE_MODE
               value: "processing"
-            - name: WORKER_POOL_SIZE
-              value: "3"
             - name: THREADS_PER_WORKER
               value: "1"
           envFrom:
@@ -816,230 +839,6 @@ spec:
           requests:
             storage: 5Gi
 ---
-# Source: video-streaming/templates/processing-service.yaml
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: vs-processing-medium
-spec:
-  serviceName: vs-processing-medium
-  replicas: 1
-  selector:
-    matchLabels:
-      app: vs-processing-medium
-  template:
-    metadata:
-      labels:
-        app: vs-processing-medium
-    spec:
-      affinity:
-        podAntiAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              podAffinityTerm:
-                labelSelector:
-                  matchLabels:
-                    app: vs-processing-medium
-                topologyKey: kubernetes.io/hostname
-      topologySpreadConstraints:
-        - maxSkew: 1
-          topologyKey: kubernetes.io/hostname
-          whenUnsatisfiable: ScheduleAnyway
-          labelSelector:
-            matchLabels:
-              app: vs-processing-medium
-      nodeSelector:
-        processing-size: medium
-      initContainers:
-        - name: wait-for-rabbitmq
-          image: busybox:1.36
-          imagePullPolicy: IfNotPresent
-          command: ["sh", "-c"]
-          args:
-            - |
-              echo "Waiting for vs-rabbitmq:5672..."
-              until nc -z vs-rabbitmq 5672 2>/dev/null; do
-                sleep 2
-              done
-              echo "vs-rabbitmq:5672 is up."
-        - name: wait-for-postgres
-          image: busybox:1.36
-          imagePullPolicy: IfNotPresent
-          command: ["sh", "-c"]
-          args:
-            - |
-              echo "Waiting for vs-postgres:5432..."
-              until nc -z vs-postgres 5432 2>/dev/null; do
-                sleep 2
-              done
-              echo "vs-postgres:5432 is up."
-      containers:
-        - name: processing-service
-          image: "tanigross/video-streaming-app:1.7"
-          imagePullPolicy: IfNotPresent
-          ports:
-            - containerPort: 8082
-          env:
-            - name: SERVICE_MODE
-              value: "processing"
-            - name: WORKER_POOL_SIZE
-              value: "4"
-            - name: THREADS_PER_WORKER
-              value: "1"
-          envFrom:
-            - configMapRef:
-                name: vs-config
-            - secretRef:
-                name: vs-secrets
-          volumeMounts:
-            - name: processing-spool
-              mountPath: /app/processing-spool
-          startupProbe:
-            httpGet:
-              path: /health
-              port: 8082
-            failureThreshold: 30
-            periodSeconds: 10
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: 8082
-            initialDelaySeconds: 10
-            periodSeconds: 15
-          readinessProbe:
-            httpGet:
-              path: /health
-              port: 8082
-            initialDelaySeconds: 5
-            periodSeconds: 5
-          resources:
-            requests:
-              memory: "1Gi"
-              cpu: "1000m"
-            limits:
-              memory: "2Gi"
-              cpu: "6000m"
-  volumeClaimTemplates:
-    - metadata:
-        name: processing-spool
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        resources:
-          requests:
-            storage: 5Gi
----
-# Source: video-streaming/templates/processing-service.yaml
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: vs-processing-large
-spec:
-  serviceName: vs-processing-large
-  replicas: 6
-  selector:
-    matchLabels:
-      app: vs-processing-large
-  template:
-    metadata:
-      labels:
-        app: vs-processing-large
-    spec:
-      affinity:
-        podAntiAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              podAffinityTerm:
-                labelSelector:
-                  matchLabels:
-                    app: vs-processing-large
-                topologyKey: kubernetes.io/hostname
-      topologySpreadConstraints:
-        - maxSkew: 1
-          topologyKey: kubernetes.io/hostname
-          whenUnsatisfiable: ScheduleAnyway
-          labelSelector:
-            matchLabels:
-              app: vs-processing-large
-      nodeSelector:
-        processing-size: large
-      initContainers:
-        - name: wait-for-rabbitmq
-          image: busybox:1.36
-          imagePullPolicy: IfNotPresent
-          command: ["sh", "-c"]
-          args:
-            - |
-              echo "Waiting for vs-rabbitmq:5672..."
-              until nc -z vs-rabbitmq 5672 2>/dev/null; do
-                sleep 2
-              done
-              echo "vs-rabbitmq:5672 is up."
-        - name: wait-for-postgres
-          image: busybox:1.36
-          imagePullPolicy: IfNotPresent
-          command: ["sh", "-c"]
-          args:
-            - |
-              echo "Waiting for vs-postgres:5432..."
-              until nc -z vs-postgres 5432 2>/dev/null; do
-                sleep 2
-              done
-              echo "vs-postgres:5432 is up."
-      containers:
-        - name: processing-service
-          image: "tanigross/video-streaming-app:1.7"
-          imagePullPolicy: IfNotPresent
-          ports:
-            - containerPort: 8082
-          env:
-            - name: SERVICE_MODE
-              value: "processing"
-            - name: WORKER_POOL_SIZE
-              value: "8"
-            - name: THREADS_PER_WORKER
-              value: "1"
-          envFrom:
-            - configMapRef:
-                name: vs-config
-            - secretRef:
-                name: vs-secrets
-          volumeMounts:
-            - name: processing-spool
-              mountPath: /app/processing-spool
-          startupProbe:
-            httpGet:
-              path: /health
-              port: 8082
-            failureThreshold: 30
-            periodSeconds: 10
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: 8082
-            initialDelaySeconds: 10
-            periodSeconds: 15
-          readinessProbe:
-            httpGet:
-              path: /health
-              port: 8082
-            initialDelaySeconds: 5
-            periodSeconds: 5
-          resources:
-            requests:
-              memory: "1Gi"
-              cpu: "1000m"
-            limits:
-              memory: "2Gi"
-              cpu: "7000m"
-  volumeClaimTemplates:
-    - metadata:
-        name: processing-spool
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        resources:
-          requests:
-            storage: 5Gi
----
 # Source: video-streaming/templates/rabbitmq.yaml
 # ── StatefulSet: 3-node RabbitMQ cluster ──
 apiVersion: apps/v1
@@ -1060,6 +859,16 @@ spec:
     spec:
       serviceAccountName: vs-rabbitmq
       terminationGracePeriodSeconds: 120
+      
+      nodeSelector:
+        workload-role: infra
+      tolerations:
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/control-plane
+          operator: Exists
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/master
+          operator: Exists
       containers:
         - name: rabbitmq
           image: rabbitmq:3-management
