@@ -9,6 +9,7 @@ import com.distributed26.videostreaming.shared.upload.events.UploadFailedEvent;
 import com.distributed26.videostreaming.shared.upload.events.UploadMetaEvent;
 import com.distributed26.videostreaming.shared.upload.events.UploadProgressEvent;
 import com.distributed26.videostreaming.shared.upload.events.UploadStorageStatusEvent;
+import com.distributed26.videostreaming.shared.upload.events.NodeStatusEvent;
 import com.distributed26.videostreaming.upload.db.SegmentUploadRepository;
 import com.distributed26.videostreaming.upload.db.TranscodedSegmentStatusRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -38,6 +39,7 @@ public class UploadStatusWebSocket {
     private final TranscodedSegmentStatusRepository transcodedSegmentStatusRepository;
     private final Map<WsContext, JobEventListener> jobListenersByContext = new ConcurrentHashMap<>();
     private final Map<WsContext, String> jobIdByContext = new ConcurrentHashMap<>();
+    private final Map<WsContext, JobEventListener> clusterListenersByContext = new ConcurrentHashMap<>();
 
     public UploadStatusWebSocket(
             StatusEventBus statusEventBus,
@@ -57,10 +59,25 @@ public class UploadStatusWebSocket {
     }
 
     private void bindIfJobIdProvided(WsConnectContext ctx) {
+        // Always subscribe all connections to cluster-wide node status events
+        subscribeToCluster(ctx);
         String jobId = ctx.queryParam("jobId");
         if (jobId != null && !jobId.isBlank()) {
             bindJob(ctx, jobId.trim());
         }
+    }
+
+    private void subscribeToCluster(WsContext ctx) {
+        JobEventListener clusterListener = event -> {
+            try {
+                logger.debug("WS cluster send type={}", describeEventType(event));
+                ctx.send(objectMapper.writeValueAsString(event));
+            } catch (JsonProcessingException e) {
+                logger.warn("Failed to serialize cluster event", e);
+            }
+        };
+        clusterListenersByContext.put(ctx, clusterListener);
+        statusEventBus.subscribe("__cluster__", clusterListener);
     }
 
     private void handleMessage(WsMessageContext ctx) {
@@ -136,6 +153,10 @@ public class UploadStatusWebSocket {
             logger.info("Status-service instance={} disconnected jobId={}", instanceId, jobId);
             statusEventBus.unsubscribe(jobId, jobListener);
         }
+        JobEventListener clusterListener = clusterListenersByContext.remove(ctx);
+        if (clusterListener != null) {
+            statusEventBus.unsubscribe("__cluster__", clusterListener);
+        }
     }
 
 
@@ -156,6 +177,9 @@ public class UploadStatusWebSocket {
     }
 
     private String describeEventType(JobEvent event) {
+        if (event instanceof NodeStatusEvent) {
+            return "node_status";
+        }
         if (event instanceof UploadFailedEvent failed) {
             return failed.getType();
         }

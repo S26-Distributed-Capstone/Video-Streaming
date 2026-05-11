@@ -1,12 +1,15 @@
 package com.distributed26.videostreaming.shared.upload;
 
 import com.distributed26.videostreaming.shared.upload.events.JobEvent;
+import com.distributed26.videostreaming.shared.upload.events.NodeStatusEvent;
 import com.distributed26.videostreaming.shared.upload.events.TranscodeProgressEvent;
 import com.distributed26.videostreaming.shared.upload.events.TranscodeSegmentState;
 import com.distributed26.videostreaming.shared.upload.events.UploadFailedEvent;
 import com.distributed26.videostreaming.shared.upload.events.UploadMetaEvent;
 import com.distributed26.videostreaming.shared.upload.events.UploadStorageStatusEvent;
 import com.fasterxml.jackson.databind.JsonNode;
+import java.util.ArrayList;
+import java.util.List;
 
 final class RabbitMQStatusEventCodec {
     private RabbitMQStatusEventCodec() {
@@ -15,6 +18,21 @@ final class RabbitMQStatusEventCodec {
     static JobEvent toEvent(JsonNode node) {
         String jobId = node.path("jobId").asText();
         String type = node.path("type").asText();
+        if ("node_status".equals(type)) {
+            List<NodeStatusEvent.NodeInfo> nodes = new ArrayList<>();
+            JsonNode nodesNode = node.path("nodes");
+            if (nodesNode.isArray()) {
+                for (JsonNode n : nodesNode) {
+                    String name = n.path("name").asText("unknown");
+                    String state = n.path("state").asText("cordoned");
+                    nodes.add(new NodeStatusEvent.NodeInfo(name, state));
+                }
+            }
+            int queueDepth = node.path("queueDepth").asInt(0);
+            int activeCount = node.path("activeCount").asInt(0);
+            int totalCount = node.path("totalCount").asInt(0);
+            return new NodeStatusEvent(nodes, queueDepth, activeCount, totalCount);
+        }
         if ("failed".equals(type)) {
             String reason = node.path("reason").asText(null);
             String machineId = node.path("machineId").asText(null);
@@ -48,6 +66,9 @@ final class RabbitMQStatusEventCodec {
     }
 
     static String describeEventType(JobEvent event) {
+        if (event instanceof NodeStatusEvent) {
+            return "node_status";
+        }
         if (event instanceof UploadFailedEvent failed) {
             return failed.getType();
         }

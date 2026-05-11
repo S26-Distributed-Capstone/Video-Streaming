@@ -18,7 +18,9 @@ statusService:
     limits:   { memory: "1Gi",   cpu: "1000m" }
 
 processingService:
-  replicas: 72
+  # Set to MIN_ACTIVE_NODES × REPLICAS_PER_NODE (2 × 6 = 12).
+  # The autoscaler owns replica management after startup.
+  replicas: 12
   spoolStorageSize: 5Gi
   resources:
     requests: { memory: "1Gi",  cpu: "1000m" }
@@ -30,6 +32,32 @@ streamingService:
   resources:
     requests: { memory: "512Mi", cpu: "250m" }
     limits:   { memory: "1Gi",   cpu: "1000m" }
+
+# ─── Autoscaler ─────────────────────────────────────────────────
+autoscaler:
+  image:
+    repository: tanigross/video-streaming-autoscaler
+    tag: "1.0"
+    pullPolicy: IfNotPresent
+  # 2 replicas on CP nodes — only the leader acts via k8s Lease
+  replicas: 2
+  # Cluster topology — adjust to match your actual node count
+  totalNodes: 12
+  minActiveNodes: 2          # always keep at least this many nodes uncordoned
+  replicasPerNode: 6         # processing pods per active node
+  # Queue depth thresholds
+  scaleUpThreshold: 20       # uncordon a node when queue >= this value
+  scaleDownThreshold: 5      # cordon a node when queue <= this value
+  # Timing
+  pollIntervalSeconds: 15
+  scaleCooldownSeconds: 60   # minimum seconds between successive scale actions
+  # Node selector label for worker nodes (must match your node labels)
+  nodeLabelSelector: "workload-role=app"
+  statefulsetName: ""        # leave blank to default to <release>-processing
+  rabbitmqManagementPort: "15672"
+  resources:
+    requests: { cpu: "100m", memory: "128Mi" }
+    limits:   { cpu: "500m", memory: "256Mi" }
 
 # ─── Scheduling ────────────────────────────────────────────────
 scheduling:

@@ -53,6 +53,17 @@ SECRETS=(
 # ── Execute ────────────────────────────────────────────────────
 ACTION="${1:-install}"
 
+# ── Build & push autoscaler image (Python) ─────────────────────
+AUTOSCALER_IMAGE="tanigross/video-streaming-autoscaler:1.0"
+if command -v docker &>/dev/null; then
+  echo "Building autoscaler Docker image: ${AUTOSCALER_IMAGE}..."
+  docker build -t "$AUTOSCALER_IMAGE" "${SCRIPT_DIR}/autoscaler"
+  docker push "$AUTOSCALER_IMAGE"
+  echo "Autoscaler image pushed."
+else
+  echo "WARN: docker not found — skipping autoscaler image build. Pre-push the image manually."
+fi
+
 case "$ACTION" in
   install)
     echo "Installing Helm release '${RELEASE_NAME}'..."

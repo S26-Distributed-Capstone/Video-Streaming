@@ -1,0 +1,103 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-autoscaler
+spec:
+  replicas: {{ .Values.autoscaler.replicas }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-autoscaler
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-autoscaler
+    spec:
+      serviceAccountName: {{ .Release.Name }}-autoscaler
+      {{- include "video-streaming.pod-scheduling" .Values.scheduling.infra | nindent 6 }}
+      # Spread across different infra nodes for HA
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: {{ .Release.Name }}-autoscaler
+                topologyKey: kubernetes.io/hostname
+      initContainers:
+        {{- include "video-streaming.wait-for" (dict "name" "rabbitmq" "host" (printf "%s-rabbitmq" .Release.Name) "port" "5672") | nindent 8 }}
+      containers:
+        - name: autoscaler
+          image: "{{ .Values.autoscaler.image.repository }}:{{ .Values.autoscaler.image.tag }}"
+          imagePullPolicy: {{ .Values.autoscaler.image.pullPolicy | default "IfNotPresent" }}
+          ports:
+            - containerPort: 8084
+              name: health
+          env:
+            - name: KUBE_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: HELM_RELEASE_NAME
+              value: {{ .Release.Name | quote }}
+            - name: STATEFULSET_NAME
+              value: {{ if .Values.autoscaler.statefulsetName }}{{ .Values.autoscaler.statefulsetName | quote }}{{ else }}{{ printf "%s-processing" .Release.Name | quote }}{{ end }}
+            - name: TOTAL_NODES
+              value: {{ .Values.autoscaler.totalNodes | quote }}
+            - name: MIN_ACTIVE_NODES
+              value: {{ .Values.autoscaler.minActiveNodes | quote }}
+            - name: REPLICAS_PER_NODE
+              value: {{ .Values.autoscaler.replicasPerNode | quote }}
+            - name: SCALE_UP_THRESHOLD
+              value: {{ .Values.autoscaler.scaleUpThreshold | quote }}
+            - name: SCALE_DOWN_THRESHOLD
+              value: {{ .Values.autoscaler.scaleDownThreshold | quote }}
+            - name: POLL_INTERVAL_SECONDS
+              value: {{ .Values.autoscaler.pollIntervalSeconds | quote }}
+            - name: SCALE_COOLDOWN_SECONDS
+              value: {{ .Values.autoscaler.scaleCooldownSeconds | quote }}
+            - name: NODE_LABEL_SELECTOR
+              value: {{ .Values.autoscaler.nodeLabelSelector | quote }}
+            - name: RABBITMQ_HOST
+              value: {{ printf "%s-rabbitmq" .Release.Name | quote }}
+            - name: RABBITMQ_PORT
+              value: {{ .Values.config.rabbitmqPort | quote }}
+            - name: RABBITMQ_MANAGEMENT_PORT
+              value: {{ .Values.autoscaler.rabbitmqManagementPort | quote }}
+            - name: RABBITMQ_VHOST
+              value: {{ .Values.config.rabbitmqVhost | quote }}
+            - name: RABBITMQ_EXCHANGE
+              value: {{ .Values.config.rabbitmqExchange | quote }}
+            - name: RABBITMQ_TASK_QUEUE
+              value: "processing.tasks.queue"
+            - name: RABBITMQ_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: RABBITMQ_USER
+            - name: RABBITMQ_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: RABBITMQ_PASS
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8084
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8084
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              memory: {{ .Values.autoscaler.resources.requests.memory | quote }}
+              cpu: {{ .Values.autoscaler.resources.requests.cpu | quote }}
+            limits:
+              memory: {{ .Values.autoscaler.resources.limits.memory | quote }}
+              cpu: {{ .Values.autoscaler.resources.limits.cpu | quote }}
+

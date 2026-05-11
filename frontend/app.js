@@ -40,6 +40,10 @@ const playBtn = document.getElementById("playBtn");
 const refreshReadyBtn = document.getElementById("refreshReadyBtn");
 const deleteSelectedBtn = document.getElementById("deleteSelectedBtn");
 const readyList = document.getElementById("readyList");
+const clusterDashboard = document.getElementById("clusterDashboard");
+const nodeGrid = document.getElementById("nodeGrid");
+const queueDepthBar = document.getElementById("queueDepthBar");
+const queueDepthLabel = document.getElementById("queueDepthLabel");
 
 let ws = null;
 let currentVideoId = null;
@@ -80,6 +84,13 @@ const transcodeProfiles = {
 };
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+// ── Cluster dashboard state ─────────────────────────────────────────────────
+let clusterNodeStates = [];
+let clusterQueueDepth = 0;
+let clusterWs = null;
+let clusterWsReconnectTimer = null;
+const QUEUE_DEPTH_MAX = 150; // cap for the progress bar display
+
 function setPlayerVisible(visible) {
   if (!player) {
     return;
@@ -89,6 +100,96 @@ function setPlayerVisible(visible) {
 
 function isValidVideoId(videoId) {
   return typeof videoId === "string" && uuidPattern.test(videoId);
+}
+
+// ── Cluster Dashboard ───────────────────────────────────────────────────────
+
+function applyNodeStatusEvent(payload) {
+  if (!payload || payload.type !== "node_status") return;
+  clusterNodeStates = Array.isArray(payload.nodes) ? payload.nodes : [];
+  clusterQueueDepth = typeof payload.queueDepth === "number" ? payload.queueDepth : 0;
+  renderNodeGrid();
+  renderQueueDepth();
+}
+
+function renderNodeGrid() {
+  if (!nodeGrid) return;
+  nodeGrid.innerHTML = "";
+  if (clusterNodeStates.length === 0) return;
+  clusterNodeStates.forEach((node) => {
+    const el = document.createElement("div");
+    const stateClass = node.state === "active" ? "active" : "cordoned";
+    el.className = `node-icon ${stateClass}`;
+    const label = node.state === "active" ? "Active" : "Cordoned";
+    el.setAttribute("title", `${node.name} — ${label}`);
+    el.setAttribute("aria-label", `${node.name}: ${label}`);
+    nodeGrid.appendChild(el);
+  });
+}
+
+function renderQueueDepth() {
+  if (!queueDepthBar || !queueDepthLabel) return;
+  const pct = Math.min(100, Math.round((clusterQueueDepth / QUEUE_DEPTH_MAX) * 100));
+  queueDepthBar.style.width = `${pct}%`;
+  queueDepthLabel.textContent = clusterQueueDepth;
+  // Change bar colour when queue is deep
+  if (clusterQueueDepth >= QUEUE_DEPTH_MAX * 0.8) {
+    queueDepthBar.classList.add("queue-bar-danger");
+  } else {
+    queueDepthBar.classList.remove("queue-bar-danger");
+  }
+}
+
+function deriveClusterWsUrl() {
+  // Construct cluster WS URL from window.location — same host, status port 8081
+  const baseUrl = resolveBaseUrl ? resolveBaseUrl() : window.location.origin;
+  const scheme = baseUrl.startsWith("https://") ? "wss" : "ws";
+  const host = baseUrl.replace(/^https?:\/\//, "").replace(/:\d+$/, "");
+  return `${scheme}://${host}:8081/upload-status`;
+}
+
+function connectClusterWebSocket() {
+  if (clusterWs && (clusterWs.readyState === WebSocket.CONNECTING || clusterWs.readyState === WebSocket.OPEN)) {
+    return;
+  }
+  clearTimeout(clusterWsReconnectTimer);
+  const url = deriveClusterWsUrl();
+  try {
+    clusterWs = new WebSocket(url);
+  } catch (err) {
+    scheduleClusterWsReconnect();
+    return;
+  }
+
+  clusterWs.addEventListener("open", () => {
+    console.log("[cluster-ws] connected to", url);
+  });
+
+  clusterWs.addEventListener("message", (event) => {
+    try {
+      const payload = JSON.parse(event.data);
+      if (payload && payload.type === "node_status") {
+        applyNodeStatusEvent(payload);
+      }
+    } catch (_) {}
+  });
+
+  clusterWs.addEventListener("close", () => {
+    console.log("[cluster-ws] disconnected — will reconnect");
+    clusterWs = null;
+    scheduleClusterWsReconnect();
+  });
+
+  clusterWs.addEventListener("error", () => {
+    if (clusterWs) {
+      clusterWs.close();
+    }
+  });
+}
+
+function scheduleClusterWsReconnect() {
+  clearTimeout(clusterWsReconnectTimer);
+  clusterWsReconnectTimer = setTimeout(connectClusterWebSocket, 5000);
 }
 
 function getProcessingRouteVideoId() {
@@ -1317,6 +1418,10 @@ function connectWebSocket(wsUrl, videoId, { isReconnect = false } = {}) {
         scheduleProgressRefresh();
         return;
       }
+      if (payload && payload.type === "node_status") {
+        applyNodeStatusEvent(payload);
+        return;
+      }
       if (payload && payload.type === "failed") {
         if (payload.reason === "user_cancelled") {
           void exhaustUploadRetries("Processing cancelled.", { skipPersist: true });
@@ -1705,3 +1810,8 @@ if (routeVideoId) {
   setActiveTab("upload");
 }
 setPlayerVisible(false);
+
+// Connect a persistent cluster WebSocket for global node status updates.
+// This runs regardless of whether a video job is active.
+connectClusterWebSocket();
+

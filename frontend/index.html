@@ -116,6 +116,45 @@
               </div>
             </div>
           </article>
+
+          <article class="stage-card" id="clusterDashboard">
+            <div class="stage-heading">
+              <span class="stage-index cluster-icon">⬡</span>
+              <h2>Cluster</h2>
+            </div>
+
+            <div class="progress-block">
+              <div class="progress-labels">
+                <span>Queue Depth</span>
+                <span id="queueDepthLabel">—</span>
+              </div>
+              <div class="progress" id="queueDepthTrack">
+                <div id="queueDepthBar" class="bar queue-bar"></div>
+              </div>
+            </div>
+
+            <div class="node-grid" id="nodeGrid" aria-label="Worker node status">
+              <!-- Populated by app.js once NodeStatusEvent arrives -->
+              <div class="node-icon unknown" title="Connecting…" aria-label="Connecting"></div>
+              <div class="node-icon unknown" title="Connecting…" aria-label="Connecting"></div>
+              <div class="node-icon unknown" title="Connecting…" aria-label="Connecting"></div>
+              <div class="node-icon unknown" title="Connecting…" aria-label="Connecting"></div>
+              <div class="node-icon unknown" title="Connecting…" aria-label="Connecting"></div>
+              <div class="node-icon unknown" title="Connecting…" aria-label="Connecting"></div>
+              <div class="node-icon unknown" title="Connecting…" aria-label="Connecting"></div>
+              <div class="node-icon unknown" title="Connecting…" aria-label="Connecting"></div>
+              <div class="node-icon unknown" title="Connecting…" aria-label="Connecting"></div>
+              <div class="node-icon unknown" title="Connecting…" aria-label="Connecting"></div>
+              <div class="node-icon unknown" title="Connecting…" aria-label="Connecting"></div>
+              <div class="node-icon unknown" title="Connecting…" aria-label="Connecting"></div>
+            </div>
+
+            <p class="node-grid-legend">
+              <span class="node-dot active"></span> Active &nbsp;
+              <span class="node-dot cordoned"></span> Cordoned &nbsp;
+              <span class="node-dot unknown"></span> Unknown
+            </p>
+          </article>
         </div>
       </section>
 

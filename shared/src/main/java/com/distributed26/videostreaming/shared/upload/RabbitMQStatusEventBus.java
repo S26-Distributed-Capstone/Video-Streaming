@@ -18,6 +18,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import com.distributed26.videostreaming.shared.upload.events.UploadFailedEvent;
+import com.distributed26.videostreaming.shared.upload.events.NodeStatusEvent;
 
 /**
  * RabbitMQ-backed bus for status/progress events. This is the queue path used
@@ -67,6 +68,7 @@ public class RabbitMQStatusEventBus implements StatusEventBus {
             if (consumeStatus) {
                 this.consumerQueueName = declareConsumerQueue(config);
                 channel.queueBind(this.consumerQueueName, this.exchange, config.statusBinding());
+                channel.queueBind(this.consumerQueueName, this.exchange, "upload.cluster.*");
                 startConsumer(this.consumerQueueName);
                 this.failureQueueName = declareFailureQueue(config);
                 if (this.failureQueueName != null) {
@@ -88,12 +90,18 @@ public class RabbitMQStatusEventBus implements StatusEventBus {
         Objects.requireNonNull(event, "event is null");
         try {
             byte[] body = OBJECT_MAPPER.writeValueAsBytes(event);
-            String routingKey = "upload.status." + event.getJobId();
-            LOGGER.debug("Publishing status event jobId={} type={}",
-                    event.getJobId(), RabbitMQStatusEventCodec.describeEventType(event));
-            channel.basicPublish(exchange, routingKey, null, body);
-            if (event instanceof UploadFailedEvent) {
-                channel.basicPublish(exchange, "upload.failure", null, body);
+            if (event instanceof NodeStatusEvent) {
+                String routingKey = "upload.cluster.node_status";
+                LOGGER.debug("Publishing cluster node status event");
+                channel.basicPublish(exchange, routingKey, null, body);
+            } else {
+                String routingKey = "upload.status." + event.getJobId();
+                LOGGER.debug("Publishing status event jobId={} type={}",
+                        event.getJobId(), RabbitMQStatusEventCodec.describeEventType(event));
+                channel.basicPublish(exchange, routingKey, null, body);
+                if (event instanceof UploadFailedEvent) {
+                    channel.basicPublish(exchange, "upload.failure", null, body);
+                }
             }
         } catch (IOException e) {
             throw new RuntimeException("Failed to publish status event", e);
