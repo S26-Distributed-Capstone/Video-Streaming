@@ -16,3 +16,23 @@ Usage: {{ include "video-streaming.wait-for" (dict "name" "rabbitmq" "host" (pri
       done
       echo "{{ .host }}:{{ .port }} is up."
 {{- end -}}
+
+{{/*
+Render optional scheduling fields for a pod spec.
+Accepts a dict with any of: nodeSelector, affinity, tolerations.
+*/}}
+{{- define "video-streaming.pod-scheduling" -}}
+{{- $s := . -}}
+{{- if $s.nodeSelector }}
+nodeSelector:
+{{ toYaml $s.nodeSelector | indent 2 }}
+{{- end }}
+{{- if $s.affinity }}
+affinity:
+{{ toYaml $s.affinity | indent 2 }}
+{{- end }}
+{{- if $s.tolerations }}
+tolerations:
+{{ toYaml $s.tolerations | indent 2 }}
+{{- end }}
+{{- end -}}

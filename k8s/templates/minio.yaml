@@ -35,6 +35,7 @@ spec:
       labels:
         app: {{ .Release.Name }}-minio
     spec:
+      {{- include "video-streaming.pod-scheduling" .Values.scheduling.infra | nindent 6 }}
       containers:
         - name: minio
           image: quay.io/minio/minio:latest
@@ -77,4 +78,3 @@ spec:
         resources:
           requests:
             storage: {{ .Values.minio.storageSize }}
-

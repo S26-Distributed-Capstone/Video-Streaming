@@ -107,6 +107,7 @@ spec:
     spec:
       serviceAccountName: {{ .Release.Name }}-rabbitmq
       terminationGracePeriodSeconds: 120
+      {{- include "video-streaming.pod-scheduling" .Values.scheduling.infra | nindent 6 }}
       containers:
         - name: rabbitmq
           image: rabbitmq:3-management

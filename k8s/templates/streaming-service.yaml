@@ -28,6 +28,7 @@ spec:
       labels:
         app: {{ .Release.Name }}-streaming
     spec:
+      {{- include "video-streaming.pod-scheduling" .Values.scheduling.infra | nindent 6 }}
       initContainers:
         {{- include "video-streaming.wait-for" (dict "name" "postgres" "host" (printf "%s-postgres" .Release.Name) "port" "5432") | nindent 8 }}
         {{- include "video-streaming.wait-for" (dict "name" "minio" "host" (printf "%s-minio" .Release.Name) "port" "9000") | nindent 8 }}
