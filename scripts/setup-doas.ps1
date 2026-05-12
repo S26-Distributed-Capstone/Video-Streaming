@@ -6,11 +6,10 @@
 # This still prompts for the `sack` password ONCE per node — that's the
 # password `doas` itself asks for to elevate while writing the conf file.
 
-$controlPlanes = @("192.168.8.11", "192.168.8.12", "192.168.8.13")
+$controlPlanes = @(å)
 $workerNodes = @(
-    "192.168.8.101", "192.168.8.102", "192.168.8.103",
-    "192.168.8.104", "192.168.8.105", "192.168.8.106",
-    "192.168.8.108", "192.168.8.109", "192.168.8.110",
+
+    "192.168.8.109", "192.168.8.110",
     "192.168.8.111", "192.168.8.112"
 )
 $nodes = $controlPlanes + $workerNodes

@@ -117,10 +117,11 @@
             </div>
           </article>
 
-          <article class="stage-card" id="clusterDashboard">
+          <article class="stage-card hidden" id="clusterDashboard">
             <div class="stage-heading">
               <span class="stage-index cluster-icon">⬡</span>
               <h2>Cluster</h2>
+              <button id="autoscalerToggleBtn" type="button" class="autoscaler-toggle-btn secondary" title="Pause or resume the autoscaler">—</button>
             </div>
 
             <div class="progress-block">
@@ -135,18 +136,6 @@
 
             <div class="node-grid" id="nodeGrid" aria-label="Worker node status">
               <!-- Populated by app.js once NodeStatusEvent arrives -->
-              <div class="node-icon unknown" title="Connecting…" aria-label="Connecting"></div>
-              <div class="node-icon unknown" title="Connecting…" aria-label="Connecting"></div>
-              <div class="node-icon unknown" title="Connecting…" aria-label="Connecting"></div>
-              <div class="node-icon unknown" title="Connecting…" aria-label="Connecting"></div>
-              <div class="node-icon unknown" title="Connecting…" aria-label="Connecting"></div>
-              <div class="node-icon unknown" title="Connecting…" aria-label="Connecting"></div>
-              <div class="node-icon unknown" title="Connecting…" aria-label="Connecting"></div>
-              <div class="node-icon unknown" title="Connecting…" aria-label="Connecting"></div>
-              <div class="node-icon unknown" title="Connecting…" aria-label="Connecting"></div>
-              <div class="node-icon unknown" title="Connecting…" aria-label="Connecting"></div>
-              <div class="node-icon unknown" title="Connecting…" aria-label="Connecting"></div>
-              <div class="node-icon unknown" title="Connecting…" aria-label="Connecting"></div>
             </div>
 
             <p class="node-grid-legend">

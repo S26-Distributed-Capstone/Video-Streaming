@@ -69,7 +69,7 @@ spec:
             - name: RABBITMQ_EXCHANGE
               value: {{ .Values.config.rabbitmqExchange | quote }}
             - name: RABBITMQ_TASK_QUEUE
-              value: "processing.tasks.queue"
+              value: "upload.task.queue"
             - name: RABBITMQ_USER
               valueFrom:
                 secretKeyRef:

@@ -44,6 +44,12 @@ const clusterDashboard = document.getElementById("clusterDashboard");
 const nodeGrid = document.getElementById("nodeGrid");
 const queueDepthBar = document.getElementById("queueDepthBar");
 const queueDepthLabel = document.getElementById("queueDepthLabel");
+const autoscalerToggleBtn = document.getElementById("autoscalerToggleBtn");
+
+// ── Autoscaler pause/resume state ───────────────────────────────────────────
+// Default to paused=false — matches the Python autoscaler's startup default.
+// The button is immediately usable; fetchAutoscalerStatus() will correct if needed.
+let autoscalerPaused = false;
 
 let ws = null;
 let currentVideoId = null;
@@ -91,6 +97,12 @@ let clusterWs = null;
 let clusterWsReconnectTimer = null;
 const QUEUE_DEPTH_MAX = 150; // cap for the progress bar display
 
+// Canonical status-service WebSocket base (e.g. "ws://192.168.1.101:8081").
+// Set once from the first known-good connectWebSocket() call and never cleared,
+// so the cluster WS always connects to the right host even in k8s multi-IP
+// deployments where vs-upload and vs-status have different LoadBalancer IPs.
+let statusServiceWsBase = null;
+
 function setPlayerVisible(visible) {
   if (!player) {
     return;
@@ -115,16 +127,58 @@ function applyNodeStatusEvent(payload) {
 function renderNodeGrid() {
   if (!nodeGrid) return;
   nodeGrid.innerHTML = "";
-  if (clusterNodeStates.length === 0) return;
+  if (clusterNodeStates.length === 0) {
+    const placeholder = document.createElement("div");
+    placeholder.className = "node-grid-placeholder";
+    placeholder.textContent = "Waiting for cluster status…";
+    nodeGrid.appendChild(placeholder);
+    return;
+  }
   clusterNodeStates.forEach((node) => {
     const el = document.createElement("div");
-    const stateClass = node.state === "active" ? "active" : "cordoned";
+    const isCordoned = node.state !== "active";
+    const stateClass = isCordoned ? "cordoned" : "active";
     el.className = `node-icon ${stateClass}`;
-    const label = node.state === "active" ? "Active" : "Cordoned";
-    el.setAttribute("title", `${node.name} — ${label}`);
-    el.setAttribute("aria-label", `${node.name}: ${label}`);
+    // Strip common suffixes like ".cluster.local" to get short name (e.g. "n5", "cp1")
+    const shortName = (node.name || "").replace(/\.cluster\.local$/, "").replace(/\..+$/, "");
+    const stateLabel = isCordoned ? "Cordoned" : "Active";
+    el.setAttribute("title", `${node.name} — ${stateLabel}`);
+    el.setAttribute("aria-label", `${node.name}: ${stateLabel}`);
+
+    const nameSpan = document.createElement("span");
+    nameSpan.className = "node-name";
+    nameSpan.textContent = shortName || node.name;
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "node-cordon-btn";
+    btn.textContent = isCordoned ? "Uncordon" : "Cordon";
+    btn.title = isCordoned ? `Uncordon ${node.name}` : `Cordon ${node.name}`;
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      cordonNode(node.name, !isCordoned, btn);
+    });
+
+    el.appendChild(nameSpan);
+    el.appendChild(btn);
     nodeGrid.appendChild(el);
   });
+}
+
+async function cordonNode(nodeName, shouldCordon, btn) {
+  if (btn) btn.disabled = true;
+  const endpoint = shouldCordon ? `/cordon/${encodeURIComponent(nodeName)}` : `/uncordon/${encodeURIComponent(nodeName)}`;
+  try {
+    const resp = await fetch(deriveAutoscalerUrl(endpoint), { method: "POST" });
+    if (!resp.ok) {
+      console.warn(`[cluster] ${shouldCordon ? "cordon" : "uncordon"} ${nodeName} failed: ${resp.status}`);
+    }
+    // Node grid will refresh automatically on next status event from autoscaler
+  } catch (err) {
+    console.warn(`[cluster] ${shouldCordon ? "cordon" : "uncordon"} ${nodeName} error:`, err);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 function renderQueueDepth() {
@@ -141,7 +195,14 @@ function renderQueueDepth() {
 }
 
 function deriveClusterWsUrl() {
-  // Construct cluster WS URL from window.location — same host, status port 8081
+  // Prefer the canonical status-service base saved from the upload response.
+  // This is critical in k8s deployments where vs-upload and vs-status have
+  // different MetalLB IPs — window.location.origin has the upload-service IP
+  // which does NOT serve port 8081.
+  if (statusServiceWsBase) {
+    return `${statusServiceWsBase}/upload-status`;
+  }
+  // Fallback for local / Docker Compose where all services share a single IP.
   const baseUrl = resolveBaseUrl ? resolveBaseUrl() : window.location.origin;
   const scheme = baseUrl.startsWith("https://") ? "wss" : "ws";
   const host = baseUrl.replace(/^https?:\/\//, "").replace(/:\d+$/, "");
@@ -190,6 +251,57 @@ function connectClusterWebSocket() {
 function scheduleClusterWsReconnect() {
   clearTimeout(clusterWsReconnectTimer);
   clusterWsReconnectTimer = setTimeout(connectClusterWebSocket, 5000);
+}
+
+// ── Autoscaler pause/resume ─────────────────────────────────────────────────
+
+function deriveAutoscalerUrl(path) {
+  const baseUrl = resolveBaseUrl ? resolveBaseUrl() : window.location.origin;
+  const scheme = baseUrl.startsWith("https://") ? "https" : "http";
+  const host = baseUrl.replace(/^https?:\/\//, "").replace(/:\d+$/, "");
+  return `${scheme}://${host}:8084${path}`;
+}
+
+function setAutoscalerPaused(paused) {
+  autoscalerPaused = paused;
+  if (!autoscalerToggleBtn) return;
+  autoscalerToggleBtn.disabled = false;
+  if (paused) {
+    autoscalerToggleBtn.textContent = "▶ Resume Autoscaler";
+    autoscalerToggleBtn.classList.add("autoscaler-paused");
+  } else {
+    autoscalerToggleBtn.textContent = "⏸ Pause Autoscaler";
+    autoscalerToggleBtn.classList.remove("autoscaler-paused");
+  }
+}
+
+async function fetchAutoscalerStatus() {
+  try {
+    const resp = await fetch(deriveAutoscalerUrl("/status"));
+    if (!resp.ok) { return; } // keep current known state
+    const data = await resp.json();
+    setAutoscalerPaused(Boolean(data.paused));
+  } catch (_) {
+    // unreachable — keep current known state, button stays enabled
+  }
+}
+
+async function toggleAutoscaler() {
+  if (!autoscalerToggleBtn || autoscalerToggleBtn.disabled) return;
+  const prevPaused = autoscalerPaused;
+  autoscalerToggleBtn.disabled = true;
+  const endpoint = autoscalerPaused ? "/resume" : "/pause";
+  try {
+    const resp = await fetch(deriveAutoscalerUrl(endpoint), { method: "POST" });
+    if (!resp.ok) {
+      setAutoscalerPaused(prevPaused); // restore — but keep enabled
+      return;
+    }
+    const data = await resp.json();
+    setAutoscalerPaused(Boolean(data.paused));
+  } catch (_) {
+    setAutoscalerPaused(prevPaused); // restore — keep enabled even if unreachable
+  }
 }
 
 function getProcessingRouteVideoId() {
@@ -269,6 +381,9 @@ function enterProcessingRoute(videoId) {
   }
   if (transcodeBlock) {
     transcodeBlock.classList.remove("hidden");
+  }
+  if (clusterDashboard) {
+    clusterDashboard.classList.remove("hidden");
   }
   setDoneMessage("", { success: true, hidden: true });
   hideRouteState();
@@ -1367,6 +1482,29 @@ function connectWebSocket(wsUrl, videoId, { isReconnect = false } = {}) {
     wsUrlLabel.textContent = wsUrl;
   }
 
+  // Save the status-service base URL the first time we get a real connection URL.
+  // This lets deriveClusterWsUrl() use the correct IP in k8s multi-IP deployments.
+  if (wsUrl && !statusServiceWsBase) {
+    try {
+      const u = new URL(wsUrl);
+      statusServiceWsBase = `${u.protocol}//${u.host}`;
+      console.log("[upload-ui] resolved statusServiceWsBase =", statusServiceWsBase);
+      // If the cluster WS already connected using the fallback (wrong) URL, bounce it
+      // so it reconnects to the now-known correct status-service host.
+      if (clusterWs) {
+        const correctClusterUrl = deriveClusterWsUrl();
+        const currentClusterUrl = clusterWs.url;
+        if (currentClusterUrl && currentClusterUrl !== correctClusterUrl) {
+          console.log("[cluster-ws] reconnecting to correct host", correctClusterUrl);
+          clearTimeout(clusterWsReconnectTimer);
+          clusterWs.close();
+          clusterWs = null;
+          // connectClusterWebSocket will be called by the close handler after clusterWs = null
+        }
+      }
+    } catch (_) {}
+  }
+
   ws = new WebSocket(wsUrl);
 
   ws.addEventListener("open", () => {
@@ -1814,4 +1952,11 @@ setPlayerVisible(false);
 // Connect a persistent cluster WebSocket for global node status updates.
 // This runs regardless of whether a video job is active.
 connectClusterWebSocket();
+
+// ── Autoscaler toggle ───────────────────────────────────────────────────────
+setAutoscalerPaused(false); // show enabled "Pause" button immediately
+fetchAutoscalerStatus();    // async-correct if actual state differs
+if (autoscalerToggleBtn) {
+  autoscalerToggleBtn.addEventListener("click", toggleAutoscaler);
+}
 

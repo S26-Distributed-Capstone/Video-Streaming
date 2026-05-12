@@ -7,6 +7,10 @@
 dist/
 
 */target/
+# Re-include the pre-built JARs needed by Dockerfile.prebuilt
+!upload-service/target/upload-service-all.jar
+!processing-service/target/processing-service-all.jar
+!streaming-service/target/streaming-service-all.jar
 */logs/
 
 README.md

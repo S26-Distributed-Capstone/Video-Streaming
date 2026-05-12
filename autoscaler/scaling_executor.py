@@ -56,8 +56,8 @@ class ScalingExecutor:
 
     def scale_down_one_node(self, topology: TopologyManager) -> Optional[str]:
         """
-        Evict processing pods from one active worker node, cordon it, then
-        reduce StatefulSet replicas.
+        Cordon one active worker node first (so evicted pods reschedule elsewhere),
+        then evict processing pods from it, then reduce StatefulSet replicas.
         Returns the node name that was deactivated, or None if no action taken.
         """
         node_name = topology.pick_node_to_deactivate()
@@ -65,9 +65,12 @@ class ScalingExecutor:
             log.warning("scale_down requested but no active nodes to deactivate")
             return None
 
+        # Cordon FIRST — prevents the StatefulSet controller from rescheduling
+        # evicted pods back onto this node while they are terminating.
+        topology.cordon_node(node_name)
+
         app_label = self._cfg.statefulset_name
         topology.evict_pods_on_node(node_name, self._cfg.kube_namespace, app_label)
-        topology.cordon_node(node_name)
 
         current = self.get_statefulset_replicas()
         target = max(
@@ -92,12 +95,14 @@ class ScalingExecutor:
         excess = len(active_nodes) - target_active
 
         if excess > 0:
-            # Cordon the excess active nodes (last N in sorted order)
+            # Cordon excess nodes FIRST so evicted pods don't reschedule back onto them,
+            # then evict their pods.
             to_cordon = active_nodes[target_active:]
+            for node_name in to_cordon:
+                topology.cordon_node(node_name)
             for node_name in to_cordon:
                 app_label = self._cfg.statefulset_name
                 topology.evict_pods_on_node(node_name, self._cfg.kube_namespace, app_label)
-                topology.cordon_node(node_name)
         elif excess < 0:
             # Uncordon enough to reach target
             to_uncordon = cordoned_nodes[:(-excess)]

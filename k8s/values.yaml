@@ -1,7 +1,7 @@
 # ─── App image ──────────────────────────────────────────────────
 image:
-  repository: tanigross/video-streaming-app
-  tag: "1.7"
+  repository: jasonroth03/video-streaming-app
+  tag: "8.67"
   pullPolicy: IfNotPresent
 
 # ─── Replica counts ────────────────────────────────────────────
@@ -36,8 +36,8 @@ streamingService:
 # ─── Autoscaler ─────────────────────────────────────────────────
 autoscaler:
   image:
-    repository: tanigross/video-streaming-autoscaler
-    tag: "1.0"
+    repository: jasonroth03/video-streaming-autoscaler
+    tag: "1.1"
     pullPolicy: IfNotPresent
   # 2 replicas on CP nodes — only the leader acts via k8s Lease
   replicas: 2
@@ -49,8 +49,8 @@ autoscaler:
   scaleUpThreshold: 20       # uncordon a node when queue >= this value
   scaleDownThreshold: 5      # cordon a node when queue <= this value
   # Timing
-  pollIntervalSeconds: 15
-  scaleCooldownSeconds: 60   # minimum seconds between successive scale actions
+  pollIntervalSeconds: 10
+  scaleCooldownSeconds: 10   # minimum seconds between successive scale actions
   # Node selector label for worker nodes (must match your node labels)
   nodeLabelSelector: "workload-role=app"
   statefulsetName: ""        # leave blank to default to <release>-processing

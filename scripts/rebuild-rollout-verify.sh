@@ -4,18 +4,13 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CONTROL_PLANE="sack@192.168.8.11"
+SSH_KEY="${HOME}/.ssh/cluster_key"
 REMOTE_K8S_DIR="/home/sack/videostreaming/k8s"
-KUBECTL_PREFIX="doas env KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl"
+KUBECTL_PREFIX="doas env KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl -n video-streaming"
 VALUES_FILE="${ROOT_DIR}/k8s/values.yaml"
 RENDERED_FILE="${ROOT_DIR}/k8s/rendered.yaml"
-DIST_TAR="${ROOT_DIR}/dist/images-amd64.tar"
-IMAGE_REPO="tanigross/video-streaming-app"
-BASE_IMAGES=(
-  "rabbitmq:3-management"
-  "quay.io/minio/minio:latest"
-  "postgres:16-alpine"
-  "busybox:1.36"
-)
+IMAGE_REPO="jasonroth03/video-streaming-app"
+AUTOSCALER_IMAGE="jasonroth03/video-streaming-autoscaler:1.3"
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -43,7 +38,7 @@ update_tag_files() {
 }
 
 remote_run() {
-  ssh "$CONTROL_PLANE" "$1"
+  ssh -i "$SSH_KEY" "$CONTROL_PLANE" "$1"
 }
 
 remote_kubectl() {
@@ -81,48 +76,34 @@ cd "$ROOT_DIR"
 echo "==> Building Maven artifacts"
 mvn -pl upload-service,processing-service,streaming-service -am -DskipTests clean package
 
-echo "==> Building amd64 image ${IMAGE}"
-docker buildx build --platform linux/amd64 -t "$IMAGE" --load .
+echo "==> Building & pushing amd64 image ${IMAGE}"
+docker buildx build --platform linux/amd64 -f Dockerfile.prebuilt -t "$IMAGE" --push .
 
-echo "==> Verifying local image architecture"
-LOCAL_ARCH="$(docker image inspect "$IMAGE" --format '{{.Architecture}}/{{.Os}}')"
-echo "Local image architecture: ${LOCAL_ARCH}"
-if [[ "$LOCAL_ARCH" != "amd64/linux" ]]; then
-  echo "Expected amd64/linux but got ${LOCAL_ARCH}" >&2
-  exit 1
-fi
-
-mkdir -p "${ROOT_DIR}/dist"
-
-echo "==> Saving image bundle to ${DIST_TAR}"
-docker save -o "$DIST_TAR" "$IMAGE" "${BASE_IMAGES[@]}"
-
-echo "==> Distributing image bundle to cluster nodes"
-"${ROOT_DIR}/scripts/distribute-images.sh"
+echo "==> Building & pushing autoscaler image ${AUTOSCALER_IMAGE}"
+docker buildx build --platform linux/amd64 -f autoscaler/Dockerfile -t "$AUTOSCALER_IMAGE" --push autoscaler/
 
 echo "==> Syncing k8s manifests to control plane"
 remote_run "rm -rf ${REMOTE_K8S_DIR}"
-scp -r "${ROOT_DIR}/k8s" "${CONTROL_PLANE}:${REMOTE_K8S_DIR}"
+scp -i "$SSH_KEY" -r "${ROOT_DIR}/k8s" "${CONTROL_PLANE}:${REMOTE_K8S_DIR}"
 
 echo "==> Applying manifests"
 remote_kubectl "apply -k ${REMOTE_K8S_DIR}/"
 
 echo "==> Restarting app workloads"
-remote_kubectl "rollout restart deployment/vs-upload deployment/vs-status deployment/vs-streaming"
-remote_kubectl "rollout restart statefulset/vs-processing"
+remote_kubectl "rollout restart deployment/vs-upload deployment/vs-status deployment/vs-streaming deployment/vs-autoscaler"
+# Note: vs-processing StatefulSet is managed by the autoscaler — do not force-restart it.
 
 echo "==> Waiting for rollouts"
 remote_kubectl "rollout status deployment/vs-upload --timeout=10m"
 remote_kubectl "rollout status deployment/vs-status --timeout=10m"
 remote_kubectl "rollout status deployment/vs-streaming --timeout=10m"
-remote_kubectl "rollout status statefulset/vs-processing --timeout=20m"
+remote_kubectl "rollout status deployment/vs-autoscaler --timeout=10m"
+# StatefulSet rollout is autoscaler-driven — skipped here.
 
 echo "==> Current pod placement"
 remote_kubectl "get pods -o wide"
 
 echo "==> Verifying running image IDs"
-LOCAL_IMAGE_ID="$(docker image inspect "$IMAGE" --format '{{.Id}}' | sed 's|^sha256:||')"
-echo "Local image ID: ${LOCAL_IMAGE_ID}"
 for selector in app=vs-upload app=vs-status app=vs-streaming app=vs-processing; do
   echo "-- ${selector}"
   remote_kubectl "get pods -l ${selector} -o jsonpath='{range .items[*]}{.metadata.name}{\" \"}{.status.containerStatuses[0].imageID}{\"\\n\"}{end}'"
@@ -148,7 +129,7 @@ fi
 echo
 echo "Rollout complete."
 echo "Verified:"
-echo "  - local image built as amd64"
+echo "  - image pushed to Docker Hub as ${IMAGE}"
 echo "  - manifests applied from ${REMOTE_K8S_DIR}"
 echo "  - app workloads restarted"
 echo "  - live app.js includes the new status-update code"

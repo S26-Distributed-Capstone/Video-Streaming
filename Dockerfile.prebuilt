@@ -1,0 +1,30 @@
+# Fast-build variant: JARs are pre-built on the host by Maven before this
+# Dockerfile is invoked. No Maven stage runs inside the container, so
+# cross-compiling for linux/amd64 on an Apple Silicon Mac takes ~2 min
+# instead of 30+ min.
+#
+# Pinned to jammy (Ubuntu 22.04 / Python 3.10) so psycopg2-binary 2.9.9
+# has a pre-built wheel and does not try to compile from source.
+FROM eclipse-temurin:17-jre-jammy
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ffmpeg python3 python3-pip python3-venv \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY node-watcher /app/node-watcher
+COPY frontend     /app/frontend
+COPY upload-service/target/upload-service-all.jar     /app/upload-service.jar
+COPY processing-service/target/processing-service-all.jar /app/processing-service.jar
+COPY streaming-service/target/streaming-service-all.jar   /app/streaming-service.jar
+
+RUN python3 -m venv /opt/venv \
+  && /opt/venv/bin/pip install --no-cache-dir -r /app/node-watcher/requirements.txt
+
+ENV PATH="/opt/venv/bin:${PATH}"
+
+EXPOSE 8080 8081
+
+CMD ["/bin/sh", "-c", "case \"${SERVICE_MODE:-upload}\" in upload|status) exec java -jar /app/upload-service.jar ;; processing) exec java -jar /app/processing-service.jar ;; streaming) exec java -jar /app/streaming-service.jar ;; *) echo \"Unknown SERVICE_MODE=${SERVICE_MODE:-upload}\" >&2; exit 1 ;; esac"]
+

@@ -57,13 +57,13 @@ def load() -> Config:
         node_label_selector=_get("NODE_LABEL_SELECTOR", "workload-role=app"),
         lease_name=_get("LEASE_NAME", "autoscaler-leader"),
 
-        total_nodes=_get_int("TOTAL_NODES", 12),
+        total_nodes=_get_int("TOTAL_NODES", 11),
         min_active_nodes=_get_int("MIN_ACTIVE_NODES", 2),
         replicas_per_node=_get_int("REPLICAS_PER_NODE", 6),
         scale_up_threshold=_get_int("SCALE_UP_THRESHOLD", 20),
         scale_down_threshold=_get_int("SCALE_DOWN_THRESHOLD", 5),
-        poll_interval_seconds=_get_int("POLL_INTERVAL_SECONDS", 15),
-        scale_cooldown_seconds=_get_int("SCALE_COOLDOWN_SECONDS", 60),
+        poll_interval_seconds=_get_int("POLL_INTERVAL_SECONDS", 10),
+        scale_cooldown_seconds=_get_int("SCALE_COOLDOWN_SECONDS", 10),
 
         rabbitmq_host=_get("RABBITMQ_HOST", "localhost"),
         rabbitmq_port=_get_int("RABBITMQ_PORT", 5672),

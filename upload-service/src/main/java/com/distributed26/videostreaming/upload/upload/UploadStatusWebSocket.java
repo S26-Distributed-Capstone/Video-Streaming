@@ -34,6 +34,11 @@ public class UploadStatusWebSocket {
     private static final ObjectMapper objectMapper = new ObjectMapper()
             .registerModule(new JavaTimeModule())
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+
+    // Cache the last NodeStatusEvent so newly connected browsers see the current
+    // cluster state immediately rather than waiting for the next autoscaler poll.
+    private static volatile String lastNodeStatusJson = null;
+
     private final StatusEventBus statusEventBus;
     private final SegmentUploadRepository segmentUploadRepository;
     private final TranscodedSegmentStatusRepository transcodedSegmentStatusRepository;
@@ -68,10 +73,24 @@ public class UploadStatusWebSocket {
     }
 
     private void subscribeToCluster(WsContext ctx) {
+        // Replay the last known state immediately — no waiting for next poll
+        String cached = lastNodeStatusJson;
+        if (cached != null) {
+            try {
+                ctx.send(cached);
+            } catch (Exception e) {
+                logger.warn("Failed to send cached node status on connect", e);
+            }
+        }
+
         JobEventListener clusterListener = event -> {
             try {
+                String json = objectMapper.writeValueAsString(event);
+                if (event instanceof NodeStatusEvent) {
+                    lastNodeStatusJson = json;  // keep cache fresh
+                }
                 logger.debug("WS cluster send type={}", describeEventType(event));
-                ctx.send(objectMapper.writeValueAsString(event));
+                ctx.send(json);
             } catch (JsonProcessingException e) {
                 logger.warn("Failed to serialize cluster event", e);
             }

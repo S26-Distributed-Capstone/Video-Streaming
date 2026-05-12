@@ -16,7 +16,7 @@ COPY . .
 RUN --mount=type=cache,target=/root/.m2 \
   mvn -pl upload-service,processing-service,streaming-service -am -DskipTests package
 
-FROM eclipse-temurin:17-jre
+FROM eclipse-temurin:17-jre-jammy
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ffmpeg python3 python3-pip python3-venv \

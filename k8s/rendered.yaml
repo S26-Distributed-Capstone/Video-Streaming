@@ -1,15 +1,23 @@
 ---
+# Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: video-streaming
+---
 # Source: video-streaming/templates/rabbitmq.yaml
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: vs-rabbitmq
+  namespace: video-streaming
 ---
 # Source: video-streaming/templates/secrets.yaml
 apiVersion: v1
 kind: Secret
 metadata:
   name: vs-secrets
+  namespace: video-streaming
   labels:
     app.kubernetes.io/managed-by: Helm
 type: Opaque
@@ -29,6 +37,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: vs-config
+  namespace: video-streaming
   labels:
     app.kubernetes.io/managed-by: Helm
     helm.sh/chart: video-streaming-0.1.0
@@ -67,6 +76,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: vs-postgres-init
+  namespace: video-streaming
 data:
   schema.sql: |
     CREATE TABLE IF NOT EXISTS video_upload (
@@ -141,6 +151,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: vs-rabbitmq-config
+  namespace: video-streaming
 data:
   enabled_plugins: |
     [rabbitmq_management,rabbitmq_peer_discovery_k8s].
@@ -150,7 +161,7 @@ data:
     cluster_formation.k8s.host = kubernetes.default.svc.cluster.local
     cluster_formation.k8s.address_type = hostname
     cluster_formation.k8s.service_name = vs-rabbitmq-headless
-    cluster_formation.k8s.hostname_suffix = .vs-rabbitmq-headless.default.svc.cluster.local
+    cluster_formation.k8s.hostname_suffix = .vs-rabbitmq-headless.video-streaming.svc.cluster.local
     cluster_formation.node_cleanup.interval = 30
     cluster_formation.node_cleanup.only_log_warning = true
 
@@ -168,6 +179,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: vs-rabbitmq
+  namespace: video-streaming
 rules:
   - apiGroups: [""]
     resources: ["endpoints", "pods"]
@@ -178,9 +190,11 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: vs-rabbitmq
+  namespace: video-streaming
 subjects:
   - kind: ServiceAccount
     name: vs-rabbitmq
+    namespace: video-streaming
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -191,6 +205,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: vs-minio
+  namespace: video-streaming
 spec:
   type: LoadBalancer
   selector:
@@ -208,6 +223,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: vs-postgres
+  namespace: video-streaming
 spec:
   type: ClusterIP
   selector:
@@ -221,6 +237,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: vs-processing
+  namespace: video-streaming
 spec:
   type: ClusterIP
   selector:
@@ -237,6 +254,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: vs-rabbitmq-headless
+  namespace: video-streaming
 spec:
   clusterIP: None
   publishNotReadyAddresses: true
@@ -256,6 +274,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: vs-rabbitmq
+  namespace: video-streaming
 spec:
   type: LoadBalancer
   selector:
@@ -273,6 +292,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: vs-status
+  namespace: video-streaming
 spec:
   type: LoadBalancer
   selector:
@@ -286,6 +306,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: vs-streaming
+  namespace: video-streaming
 spec:
   type: LoadBalancer
   selector:
@@ -299,6 +320,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: vs-upload
+  namespace: video-streaming
 spec:
   type: LoadBalancer
   selector:
@@ -312,6 +334,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: vs-status
+  namespace: video-streaming
 spec:
   replicas: 1
   selector:
@@ -357,7 +380,7 @@ spec:
               echo "vs-postgres:5432 is up."
       containers:
         - name: status-service
-          image: "tanigross/video-streaming-app:1.7"
+          image: "jasonroth03/video-streaming-app:2.0"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8081
@@ -400,6 +423,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: vs-streaming
+  namespace: video-streaming
 spec:
   replicas: 1
   selector:
@@ -445,7 +469,7 @@ spec:
               echo "vs-minio:9000 is up."
       containers:
         - name: streaming-service
-          image: "tanigross/video-streaming-app:1.7"
+          image: "jasonroth03/video-streaming-app:2.0"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8083
@@ -499,6 +523,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: vs-upload
+  namespace: video-streaming
 spec:
   replicas: 1
   selector:
@@ -544,7 +569,7 @@ spec:
               echo "vs-postgres:5432 is up."
       containers:
         - name: upload-service
-          image: "tanigross/video-streaming-app:1.7"
+          image: "jasonroth03/video-streaming-app:2.0"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
@@ -587,6 +612,7 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: vs-minio
+  namespace: video-streaming
 spec:
   serviceName: vs-minio
   replicas: 1
@@ -656,6 +682,7 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: vs-postgres
+  namespace: video-streaming
 spec:
   serviceName: vs-postgres
   replicas: 1
@@ -733,9 +760,10 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: vs-processing
+  namespace: video-streaming
 spec:
   serviceName: vs-processing
-  replicas: 72
+  replicas: 55
   podManagementPolicy: Parallel
   selector:
     matchLabels:
@@ -788,7 +816,7 @@ spec:
               echo "vs-postgres:5432 is up."
       containers:
         - name: processing-service
-          image: "tanigross/video-streaming-app:1.7"
+          image: "jasonroth03/video-streaming-app:2.0"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8082
@@ -845,6 +873,7 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: vs-rabbitmq
+  namespace: video-streaming
 spec:
   serviceName: vs-rabbitmq-headless
   replicas: 1
@@ -903,7 +932,7 @@ spec:
                 fieldRef:
                   fieldPath: metadata.name
             - name: RABBITMQ_NODENAME
-              value: "rabbit@$(POD_NAME).vs-rabbitmq-headless.default.svc.cluster.local"
+              value: "rabbit@$(POD_NAME).vs-rabbitmq-headless.video-streaming.svc.cluster.local"
             - name: RABBITMQ_USE_LONGNAME
               value: "true"
           volumeMounts:
@@ -954,3 +983,180 @@ spec:
 # Source: video-streaming/templates/minio-endpoint-patcher.yaml
 # MINIO_PUBLIC_ENDPOINT is now set directly in the streaming-service Deployment
 # using the Downward API (status.hostIP). No patcher Job needed.
+---
+# Source: video-streaming/templates/autoscaler-rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vs-autoscaler
+  namespace: video-streaming
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: vs-autoscaler
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/eviction"]
+    verbs: ["create"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vs-autoscaler
+subjects:
+  - kind: ServiceAccount
+    name: vs-autoscaler
+    namespace: video-streaming
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: vs-autoscaler
+---
+# Source: video-streaming/templates/autoscaler.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: vs-autoscaler
+  namespace: video-streaming
+spec:
+  type: ClusterIP
+  selector:
+    app: vs-autoscaler
+  ports:
+    - port: 8084
+      targetPort: 8084
+      name: health
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vs-autoscaler
+  namespace: video-streaming
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: vs-autoscaler
+  template:
+    metadata:
+      labels:
+        app: vs-autoscaler
+    spec:
+      serviceAccountName: vs-autoscaler
+      nodeSelector:
+        workload-role: infra
+      tolerations:
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/control-plane
+          operator: Exists
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/master
+          operator: Exists
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: vs-autoscaler
+                topologyKey: kubernetes.io/hostname
+      initContainers:
+        - name: wait-for-rabbitmq
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "Waiting for vs-rabbitmq:5672..."
+              until nc -z vs-rabbitmq 5672 2>/dev/null; do
+                sleep 2
+              done
+              echo "vs-rabbitmq:5672 is up."
+      containers:
+        - name: autoscaler
+          image: "jasonroth03/video-streaming-autoscaler:1.3"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8084
+              name: health
+          env:
+            - name: KUBE_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: HELM_RELEASE_NAME
+              value: "vs"
+            - name: STATEFULSET_NAME
+              value: "vs-processing"
+            - name: TOTAL_NODES
+              value: "9"
+            - name: MIN_ACTIVE_NODES
+              value: "2"
+            - name: REPLICAS_PER_NODE
+              value: "6"
+            - name: SCALE_UP_THRESHOLD
+              value: "20"
+            - name: SCALE_DOWN_THRESHOLD
+              value: "5"
+            - name: POLL_INTERVAL_SECONDS
+              value: "10"
+            - name: SCALE_COOLDOWN_SECONDS
+              value: "10"
+            - name: NODE_LABEL_SELECTOR
+              value: "workload-role=app"
+            - name: RABBITMQ_HOST
+              value: "vs-rabbitmq"
+            - name: RABBITMQ_PORT
+              value: "5672"
+            - name: RABBITMQ_MANAGEMENT_PORT
+              value: "15672"
+            - name: RABBITMQ_VHOST
+              value: "/"
+            - name: RABBITMQ_EXCHANGE
+              value: "upload.events"
+            - name: RABBITMQ_TASK_QUEUE
+              value: "upload.task.queue"
+            - name: RABBITMQ_USER
+              valueFrom:
+                secretKeyRef:
+                  name: vs-secrets
+                  key: RABBITMQ_USER
+            - name: RABBITMQ_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: vs-secrets
+                  key: RABBITMQ_PASS
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8084
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8084
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"

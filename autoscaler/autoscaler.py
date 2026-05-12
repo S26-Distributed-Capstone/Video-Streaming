@@ -13,6 +13,7 @@ Polling loop:
   4. If leadership is lost, step back to election loop.
 """
 
+import json
 import logging
 import signal
 import sys
@@ -41,6 +42,9 @@ log = logging.getLogger("autoscaler")
 
 _shutdown = threading.Event()
 
+# ── Pause flag — when set, scaling decisions are skipped ────────────────────
+_paused = threading.Event()
+
 
 def _setup_signals() -> None:
     def _handler(sig, _frame):
@@ -50,13 +54,73 @@ def _setup_signals() -> None:
     signal.signal(signal.SIGINT, _handler)
 
 
-def _start_health_server(port: int) -> None:
-    """Simple HTTP health endpoint on port 8084."""
+def _start_health_server(port: int, topology: "TopologyManager") -> None:
+    """HTTP server on port 8084 — health check + pause/resume + manual cordon/uncordon."""
+
     class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
+        def _send_json(self, status: int, body: dict) -> None:
+            data = json.dumps(body).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
-            self.wfile.write(b"OK")
+            self.wfile.write(data)
+
+        def do_OPTIONS(self):
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.end_headers()
+
+        def do_GET(self):
+            if self.path in ("/health", "/ready", "/"):
+                self.send_response(200)
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(b"OK")
+            elif self.path == "/status":
+                self._send_json(200, {"paused": _paused.is_set()})
+            else:
+                self._send_json(404, {"error": "not found"})
+
+        def do_POST(self):
+            if self.path == "/pause":
+                _paused.set()
+                log.info("Autoscaler paused via API")
+                self._send_json(200, {"paused": True})
+            elif self.path == "/resume":
+                _paused.clear()
+                log.info("Autoscaler resumed via API")
+                self._send_json(200, {"paused": False})
+            elif self.path.startswith("/cordon/"):
+                node_name = self.path[len("/cordon/"):]
+                if not node_name:
+                    self._send_json(400, {"error": "missing node name"})
+                    return
+                try:
+                    topology.cordon_node(node_name)
+                    log.info("Manually cordoned node %s via API", node_name)
+                    self._send_json(200, {"node": node_name, "cordoned": True})
+                except Exception as exc:
+                    log.error("Failed to cordon node %s: %s", node_name, exc)
+                    self._send_json(500, {"error": str(exc)})
+            elif self.path.startswith("/uncordon/"):
+                node_name = self.path[len("/uncordon/"):]
+                if not node_name:
+                    self._send_json(400, {"error": "missing node name"})
+                    return
+                try:
+                    topology.uncordon_node(node_name)
+                    log.info("Manually uncordoned node %s via API", node_name)
+                    self._send_json(200, {"node": node_name, "cordoned": False})
+                except Exception as exc:
+                    log.error("Failed to uncordon node %s: %s", node_name, exc)
+                    self._send_json(500, {"error": str(exc)})
+            else:
+                self._send_json(404, {"error": "not found"})
+
         def log_message(self, *args):
             pass  # suppress HTTP access logs
 
@@ -118,37 +182,41 @@ def run_poll_loop(
         log.info("queue_depth=%d active_nodes=%d/%d", queue_depth, active_nodes, cfg.total_nodes)
 
         # ── Scaling decision ────────────────────────────────────────────────
-        decision = engine.decide(queue_depth, active_nodes)
+        if _paused.is_set():
+            log.info("Autoscaler is paused — skipping scaling decision")
+        else:
+            decision = engine.decide(queue_depth, active_nodes)
 
-        if decision != "noop" and not store.is_cooldown_active(cfg.scale_cooldown_seconds):
-            try:
-                if decision == "scale_up":
-                    log.info("Decision: scale_up (queue_depth=%d >= threshold=%d)",
-                             queue_depth, cfg.scale_up_threshold)
-                    executor.scale_up_one_node(topology)
-                else:
-                    log.info("Decision: scale_down (queue_depth=%d <= threshold=%d)",
-                             queue_depth, cfg.scale_down_threshold)
-                    executor.scale_down_one_node(topology)
+            if decision != "noop" and not store.is_cooldown_active(cfg.scale_cooldown_seconds):
+                try:
+                    if decision == "scale_up":
+                        log.info("Decision: scale_up (queue_depth=%d >= threshold=%d)",
+                                 queue_depth, cfg.scale_up_threshold)
+                        executor.scale_up_one_node(topology)
+                    else:
+                        log.info("Decision: scale_down (queue_depth=%d <= threshold=%d)",
+                                 queue_depth, cfg.scale_down_threshold)
+                        executor.scale_down_one_node(topology)
 
-                store.record_scale_event()
-                node_states = topology.get_node_states()  # refresh after change
-            except Exception as exc:
-                log.error("Scale action failed: %s", exc)
-        elif decision != "noop":
-            remaining = cfg.scale_cooldown_seconds - (
-                int(time.monotonic()) -
-                int(getattr(store, "_last_scale_time", 0))
-            )
-            log.info("Decision: %s but cooldown active (~%ds remaining)", decision, max(0, remaining))
+                    store.record_scale_event()
+                    node_states = topology.get_node_states()  # refresh after change
+                except Exception as exc:
+                    log.error("Scale action failed: %s", exc)
+            elif decision != "noop":
+                remaining = cfg.scale_cooldown_seconds - (
+                    int(time.monotonic()) -
+                    int(getattr(store, "_last_scale_time", 0))
+                )
+                log.info("Decision: %s but cooldown active (~%ds remaining)", decision, max(0, remaining))
 
-        # ── Publish topology if changed ─────────────────────────────────────
-        if store.node_states_changed(node_states):
-            try:
-                pub.publish_node_status(node_states, queue_depth)
-                store.record_publish(node_states)
-            except Exception as exc:
-                log.warning("Failed to publish node status: %s", exc)
+        # ── Publish topology every poll ─────────────────────────────────────
+        # Always publish (not just on change) so newly connected browsers
+        # receive current state within one poll interval of connecting.
+        try:
+            pub.publish_node_status(node_states, queue_depth)
+            store.record_publish(node_states)
+        except Exception as exc:
+            log.warning("Failed to publish node status: %s", exc)
 
         _shutdown.wait(cfg.poll_interval_seconds)
 
@@ -161,9 +229,9 @@ def main() -> None:
     log.info("Config: %s", cfg)
 
     _load_kube()
-    _start_health_server(cfg.health_port)
 
     topology = TopologyManager(cfg)
+    _start_health_server(cfg.health_port, topology)
     executor = ScalingExecutor(cfg)
     metrics  = MetricsCollector(cfg)
     engine   = DecisionEngine(cfg)

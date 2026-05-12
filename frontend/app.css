@@ -302,6 +302,7 @@ body.processing-route.processing-route-terminal .stage-grid {
   align-items: center;
   gap: 14px;
   margin-bottom: 14px;
+  flex-wrap: wrap;
 }
 
 .stage-heading h2 {
@@ -512,6 +513,37 @@ body.processing-route.processing-route-terminal .stage-grid {
   color: var(--accent-3);
 }
 
+/* Autoscaler pause/resume toggle button */
+.autoscaler-toggle-btn {
+  margin-left: auto;
+  padding: 7px 14px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
+}
+
+.autoscaler-toggle-btn:hover:not(:disabled) {
+  background: rgba(201, 109, 68, 0.12);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.autoscaler-toggle-btn.autoscaler-paused {
+  background: rgba(79, 138, 120, 0.12);
+  border-color: var(--accent-3);
+  color: var(--accent-3);
+}
+
+.autoscaler-toggle-btn.autoscaler-paused:hover:not(:disabled) {
+  background: rgba(79, 138, 120, 0.22);
+}
+
 /* Queue depth bar — uses accent-3 (green) and shifts to red when deep */
 .bar.queue-bar {
   background: linear-gradient(90deg, var(--accent-3), var(--accent-2));
@@ -524,27 +556,61 @@ body.processing-route.processing-route-terminal .stage-grid {
 /* 6-column grid for 12 nodes */
 .node-grid {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
-  gap: 10px;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
   margin: 16px 0 10px;
 }
 
 .node-icon {
   position: relative;
-  aspect-ratio: 1;
-  border-radius: 12px;
+  border-radius: 10px;
   border: 2px solid transparent;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  font-size: 1.4rem;
+  gap: 5px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
   cursor: default;
+  min-height: 68px;
+  padding: 6px 4px;
   transition: background 0.35s ease, border-color 0.35s ease, opacity 0.35s ease;
+  overflow: hidden;
+  text-align: center;
+  line-height: 1;
 }
 
-/* Unicode server/node glyph */
-.node-icon::after {
-  content: "⬡";
+.node-name {
+  pointer-events: none;
+  line-height: 1;
+}
+
+.node-cordon-btn {
+  width: 100%;
+  padding: 3px 4px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.75;
+  line-height: 1.2;
+  transition: opacity 0.15s, background 0.15s;
+  white-space: nowrap;
+}
+
+.node-cordon-btn:hover:not(:disabled) {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.node-cordon-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
 .node-icon.active {
@@ -567,7 +633,14 @@ body.processing-route.processing-route-terminal .stage-grid {
   opacity: 0.4;
 }
 
-.node-grid-legend {
+.node-grid-placeholder {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 0.82rem;
+  padding: 10px 0;
+  text-align: center;
+  opacity: 0.6;
+}
   margin: 4px 0 0;
   font-size: 0.78rem;
   color: var(--muted);
