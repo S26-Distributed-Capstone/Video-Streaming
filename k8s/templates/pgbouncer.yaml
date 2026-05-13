@@ -1,0 +1,113 @@
+{{- if .Values.pgbouncer.enabled }}
+# ── PgBouncer — connection pooler between app pods and Postgres ──────────────
+#
+# Why this exists:
+#   With autoscaling, total DB connections = pods × pool_size_per_pod.
+#   At full scale (e.g. 12 nodes × 6 replicas × pool_size=10 = 720 connections)
+#   this easily exceeds Postgres's max_connections.
+#
+#   PgBouncer runs in TRANSACTION mode between apps and Postgres:
+#     - App pods connect to PgBouncer (cheap — just a socket)
+#     - PgBouncer maintains pgbouncer.serverPoolSize real Postgres connections
+#     - So Postgres only sees pgbouncer.serverPoolSize connections, regardless of pod count
+#
+# Connection flow:
+#   processing-service (HikariCP pool) → pgbouncer-service:5432 → postgres:5432
+#
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-pgbouncer
+  labels:
+    app: {{ .Release.Name }}-pgbouncer
+spec:
+  type: ClusterIP
+  selector:
+    app: {{ .Release.Name }}-pgbouncer
+  ports:
+    - name: pgbouncer
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-pgbouncer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-pgbouncer
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-pgbouncer
+    spec:
+      {{- include "video-streaming.pod-scheduling" .Values.scheduling.infra | nindent 6 }}
+      initContainers:
+        {{- include "video-streaming.wait-for" (dict "name" "postgres" "host" (printf "%s-postgres" .Release.Name) "port" "5432") | nindent 8 }}
+      containers:
+        - name: pgbouncer
+          image: "{{ .Values.pgbouncer.image.repository }}:{{ .Values.pgbouncer.image.tag }}"
+          imagePullPolicy: {{ .Values.pgbouncer.image.pullPolicy | default "IfNotPresent" }}
+          ports:
+            - containerPort: 5432
+              name: pgbouncer
+          env:
+            # ── Upstream Postgres ──────────────────────────────────────────────
+            - name: DB_HOST
+              value: {{ printf "%s-postgres" .Release.Name | quote }}
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Release.Name }}-config
+                  key: PG_DB
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: POSTGRES_USER
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: POSTGRES_PASSWORD
+            # ── PgBouncer tuning ───────────────────────────────────────────────
+            # TRANSACTION mode: connection is released back to the pool after each
+            # transaction — ideal for short-lived queries with no session state.
+            - name: POOL_MODE
+              value: "transaction"
+            # Real Postgres connections kept open by PgBouncer.
+            - name: DEFAULT_POOL_SIZE
+              value: {{ .Values.pgbouncer.serverPoolSize | quote }}
+            - name: MIN_POOL_SIZE
+              value: {{ .Values.pgbouncer.minPoolSize | quote }}
+            # Max inbound connections from all app pods combined.
+            - name: MAX_CLIENT_CONN
+              value: {{ .Values.pgbouncer.maxClientConn | quote }}
+            - name: SERVER_IDLE_TIMEOUT
+              value: "300"
+            - name: AUTH_TYPE
+              value: "scram-sha-256"
+          livenessProbe:
+            tcpSocket:
+              port: 5432
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket:
+              port: 5432
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: {{ .Values.pgbouncer.resources.requests.cpu | quote }}
+              memory: {{ .Values.pgbouncer.resources.requests.memory | quote }}
+            limits:
+              cpu: {{ .Values.pgbouncer.resources.limits.cpu | quote }}
+              memory: {{ .Values.pgbouncer.resources.limits.memory | quote }}
+{{- end }}
+

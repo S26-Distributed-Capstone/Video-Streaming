@@ -2,6 +2,7 @@
 topology_manager.py — Kubernetes node cordon/uncordon and pod eviction.
 """
 import logging
+import math
 import time
 from typing import Dict, List, Optional
 
@@ -32,18 +33,60 @@ class TopologyManager:
         )
         return resp.items
 
+    @staticmethod
+    def _parse_cpu(cpu_str: str) -> int:
+        """
+        Parse a Kubernetes CPU quantity string to an integer core count.
+        Handles millicores ("4000m" → 4) and plain integers/floats ("4" → 4).
+        Always returns at least 1.
+        """
+        if not cpu_str:
+            return 1
+        cpu_str = cpu_str.strip()
+        if cpu_str.endswith("m"):
+            return max(1, int(cpu_str[:-1]) // 1000)
+        try:
+            return max(1, int(float(cpu_str)))
+        except (ValueError, TypeError):
+            return 1
+
     def get_node_states(self) -> Dict[str, dict]:
         """
-        Returns {node_name: {"cordoned": bool}} for all worker nodes,
-        sorted by name for deterministic ordering.
+        Returns {node_name: {"cordoned": bool, "cpu_count": int}} for all worker
+        nodes, sorted by name for deterministic ordering.
+        cpu_count is derived from node.status.allocatable["cpu"].
         """
         nodes = self.list_worker_nodes()
         states = {}
         for n in nodes:
             name = n.metadata.name
             cordoned = bool(n.spec.unschedulable)
-            states[name] = {"cordoned": cordoned}
+            allocatable = (n.status.allocatable or {}) if n.status else {}
+            cpu_str = allocatable.get("cpu", "1")
+            cpu_count = self._parse_cpu(cpu_str)
+            states[name] = {"cordoned": cordoned, "cpu_count": cpu_count}
         return dict(sorted(states.items()))
+
+    def replicas_for_node(self, cpu_count: int) -> int:
+        """
+        Compute the desired processing-pod replica count for a node with the
+        given CPU core count.
+        Formula: max(replicas_per_node, floor(cpu_count * replicas_per_cpu))
+        replicas_per_node acts as the minimum floor.
+        """
+        return max(
+            self._cfg.replicas_per_node,
+            math.floor(cpu_count * self._cfg.replicas_per_cpu),
+        )
+
+    def total_replicas_for_active_nodes(self) -> int:
+        """Sum replicas_for_node across all currently uncordoned worker nodes."""
+        states = self.get_node_states()
+        return sum(
+            self.replicas_for_node(s["cpu_count"])
+            for s in states.values()
+            if not s["cordoned"]
+        )
 
     def get_active_node_count(self) -> int:
         """Count of worker nodes that are NOT cordoned."""
@@ -55,18 +98,30 @@ class TopologyManager:
         return sum(1 for s in states.values() if s["cordoned"])
 
     def pick_node_to_activate(self) -> Optional[str]:
-        """Return the name of the first cordoned worker node, or None."""
+        """
+        Return the cordoned worker node with the most CPUs, so we gain the most
+        capacity per scale-up step.  Falls back to alphabetical order on a tie.
+        """
         states = self.get_node_states()
-        for name, state in states.items():
-            if state["cordoned"]:
-                return name
-        return None
+        candidates = [(n, s["cpu_count"]) for n, s in states.items() if s["cordoned"]]
+        if not candidates:
+            return None
+        # Sort descending by cpu_count, then ascending by name for tie-breaking
+        candidates.sort(key=lambda x: (-x[1], x[0]))
+        return candidates[0][0]
 
     def pick_node_to_deactivate(self) -> Optional[str]:
-        """Return the name of the last active worker node (reverse order), or None."""
+        """
+        Return the active worker node with the fewest CPUs, so we lose the least
+        capacity per scale-down step.  Falls back to reverse alphabetical on a tie.
+        """
         states = self.get_node_states()
-        active = [n for n, s in states.items() if not s["cordoned"]]
-        return active[-1] if active else None
+        candidates = [(n, s["cpu_count"]) for n, s in states.items() if not s["cordoned"]]
+        if not candidates:
+            return None
+        # Sort ascending by cpu_count, then descending by name for tie-breaking
+        candidates.sort(key=lambda x: (x[1], [-ord(c) for c in x[0]]))
+        return candidates[0][0]
 
     # ── Cordon / Uncordon ────────────────────────────────────────────────────
 

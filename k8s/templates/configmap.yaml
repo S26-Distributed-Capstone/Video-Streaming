@@ -12,7 +12,13 @@ data:
   MINIO_REGION: {{ .Values.config.minioRegion | quote }}
   CHUNK_DURATION_SECONDS: {{ .Values.config.chunkDuration | quote }}
   PG_DB: {{ .Values.config.pgDb | quote }}
-  PG_URL: "jdbc:postgresql://{{ .Release.Name }}-postgres:5432/{{ .Values.config.pgDb }}"
+  # When pgbouncer.enabled=true, services connect to PgBouncer which multiplexes
+  # connections onto a small fixed pool toward Postgres.
+  PG_URL: {{ if .Values.pgbouncer.enabled -}}
+    "jdbc:postgresql://{{ .Release.Name }}-pgbouncer:5432/{{ .Values.config.pgDb }}"
+  {{- else -}}
+    "jdbc:postgresql://{{ .Release.Name }}-postgres:5432/{{ .Values.config.pgDb }}"
+  {{- end }}
   RABBITMQ_HOST: "{{ .Release.Name }}-rabbitmq"
   RABBITMQ_PORT: {{ .Values.config.rabbitmqPort | quote }}
   RABBITMQ_VHOST: {{ .Values.config.rabbitmqVhost | quote }}
@@ -27,6 +33,15 @@ data:
   STREAMING_PORT: {{ .Values.config.streamingPort | quote }}
   {{- if .Values.config.workerPoolSize }}
   WORKER_POOL_SIZE: {{ .Values.config.workerPoolSize | quote }}
+  {{- end }}
+  {{- if .Values.config.uploadThreadPoolSize }}
+  UPLOAD_THREAD_POOL_SIZE: {{ .Values.config.uploadThreadPoolSize | quote }}
+  {{- end }}
+  {{- if .Values.config.maxInFlightSegmentUploads }}
+  MAX_IN_FLIGHT_SEGMENT_UPLOADS: {{ .Values.config.maxInFlightSegmentUploads | quote }}
+  {{- end }}
+  {{- if .Values.config.pgPoolSize }}
+  PG_POOL_SIZE: {{ .Values.config.pgPoolSize | quote }}
   {{- end }}
   PROCESSING_RECOVERY_RECONCILIATION_MILLIS: {{ .Values.config.processingRecoveryReconciliationMillis | quote }}
   PROCESSING_RECOVERY_QUEUED_STALE_MILLIS: {{ .Values.config.processingRecoveryQueuedStaleMillis | quote }}

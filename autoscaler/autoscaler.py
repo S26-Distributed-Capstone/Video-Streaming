@@ -185,18 +185,22 @@ def run_poll_loop(
         if _paused.is_set():
             log.info("Autoscaler is paused — skipping scaling decision")
         else:
-            decision = engine.decide(queue_depth, active_nodes)
+            decision, steps = engine.decide(queue_depth, active_nodes)
 
             if decision != "noop" and not store.is_cooldown_active(cfg.scale_cooldown_seconds):
                 try:
                     if decision == "scale_up":
-                        log.info("Decision: scale_up (queue_depth=%d >= threshold=%d)",
-                                 queue_depth, cfg.scale_up_threshold)
-                        executor.scale_up_one_node(topology)
+                        log.info(
+                            "Decision: scale_up ×%d (queue_depth=%d >= threshold=%d)",
+                            steps, queue_depth, cfg.scale_up_threshold,
+                        )
+                        executor.scale_up_nodes(topology, steps)
                     else:
-                        log.info("Decision: scale_down (queue_depth=%d <= threshold=%d)",
-                                 queue_depth, cfg.scale_down_threshold)
-                        executor.scale_down_one_node(topology)
+                        log.info(
+                            "Decision: scale_down ×%d (queue_depth=%d <= threshold=%d)",
+                            steps, queue_depth, cfg.scale_down_threshold,
+                        )
+                        executor.scale_down_nodes(topology, steps)
 
                     store.record_scale_event()
                     node_states = topology.get_node_states()  # refresh after change
@@ -207,7 +211,7 @@ def run_poll_loop(
                     int(time.monotonic()) -
                     int(getattr(store, "_last_scale_time", 0))
                 )
-                log.info("Decision: %s but cooldown active (~%ds remaining)", decision, max(0, remaining))
+                log.info("Decision: %s ×%d but cooldown active (~%ds remaining)", decision, steps, max(0, remaining))
 
         # ── Publish topology every poll ─────────────────────────────────────
         # Always publish (not just on change) so newly connected browsers

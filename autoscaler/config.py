@@ -27,9 +27,12 @@ class Config:
     # Scaling logic
     total_nodes: int
     min_active_nodes: int
-    replicas_per_node: int
+    replicas_per_node: int    # minimum / floor replicas for any node
+    replicas_per_cpu: float   # desired replicas per CPU core; actual = max(replicas_per_node, floor(cpus * replicas_per_cpu))
     scale_up_threshold: int
     scale_down_threshold: int
+    max_scale_up_step: int    # max nodes to activate in a single poll cycle
+    max_scale_down_step: int  # max nodes to deactivate in a single poll cycle (keep conservative)
     poll_interval_seconds: int
     scale_cooldown_seconds: int
 
@@ -59,9 +62,12 @@ def load() -> Config:
 
         total_nodes=_get_int("TOTAL_NODES", 11),
         min_active_nodes=_get_int("MIN_ACTIVE_NODES", 2),
-        replicas_per_node=_get_int("REPLICAS_PER_NODE", 6),
+        replicas_per_node=_get_int("REPLICAS_PER_NODE", 1),
+        replicas_per_cpu=float(os.environ.get("REPLICAS_PER_CPU", "1.0")),
         scale_up_threshold=_get_int("SCALE_UP_THRESHOLD", 20),
         scale_down_threshold=_get_int("SCALE_DOWN_THRESHOLD", 5),
+        max_scale_up_step=_get_int("MAX_SCALE_UP_STEP", 3),
+        max_scale_down_step=_get_int("MAX_SCALE_DOWN_STEP", 1),
         poll_interval_seconds=_get_int("POLL_INTERVAL_SECONDS", 10),
         scale_cooldown_seconds=_get_int("SCALE_COOLDOWN_SECONDS", 10),
 

@@ -2,7 +2,6 @@ package com.distributed26.videostreaming.processing.db;
 
 import com.distributed26.videostreaming.processing.LocalSpoolUploadTask;
 import java.sql.Connection;
-import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -12,31 +11,18 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import javax.sql.DataSource;
 
 public class ProcessingUploadTaskRepository {
-    private final String jdbcUrl;
-    private final String username;
-    private final String password;
+    private final DataSource dataSource;
 
-    public ProcessingUploadTaskRepository(String jdbcUrl, String username, String password) {
-        this.jdbcUrl = jdbcUrl;
-        this.username = username;
-        this.password = password;
+    public ProcessingUploadTaskRepository(DataSource dataSource) {
+        this.dataSource = dataSource;
         ensureSpoolOwnerColumn();
     }
 
     public static ProcessingUploadTaskRepository fromEnv() {
-        String url = System.getenv("PG_URL");
-        String user = System.getenv("PG_USER");
-        String pass = System.getenv("PG_PASSWORD");
-
-        if (url == null || url.isBlank()) {
-            throw new IllegalStateException("PG_URL is not set");
-        }
-        if (user == null || user.isBlank()) {
-            throw new IllegalStateException("PG_USER is not set");
-        }
-        return new ProcessingUploadTaskRepository(url, user, pass);
+        return new ProcessingUploadTaskRepository(ProcessingDataSource.create());
     }
 
     public void upsertPending(
@@ -77,7 +63,7 @@ public class ProcessingUploadTaskRepository {
                 claimed_by = NULL,
                 updated_at = NOW()
             """;
-        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+        try (Connection conn = dataSource.getConnection();
             PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setObject(1, UUID.fromString(videoId));
             ps.setString(2, spoolOwner);
@@ -127,7 +113,7 @@ public class ProcessingUploadTaskRepository {
                       t.output_ts_offset_seconds,
                       t.attempt_count
             """;
-        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+        try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, claimedBy);
             ps.setLong(2, staleMillis);
@@ -153,7 +139,7 @@ public class ProcessingUploadTaskRepository {
             SET state = 'PENDING', claimed_by = NULL, updated_at = NOW()
             WHERE state = 'UPLOADING'
             """;
-        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+        try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             return ps.executeUpdate();
         } catch (SQLException e) {
@@ -163,7 +149,7 @@ public class ProcessingUploadTaskRepository {
 
     public void deleteById(long id) {
         String sql = "DELETE FROM processing_upload_task WHERE id = ?";
-        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+        try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setLong(1, id);
             ps.executeUpdate();
@@ -179,7 +165,7 @@ public class ProcessingUploadTaskRepository {
             WHERE video_id = ? AND profile = ? AND segment_number = ?
             LIMIT 1
             """;
-        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+        try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setObject(1, UUID.fromString(videoId));
             ps.setString(2, profile);
@@ -199,7 +185,7 @@ public class ProcessingUploadTaskRepository {
             WHERE video_id = ? AND profile = ?
             """;
         Set<Integer> segmentNumbers = new HashSet<>();
-        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+        try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setObject(1, UUID.fromString(videoId));
             ps.setString(2, profile);
@@ -217,7 +203,7 @@ public class ProcessingUploadTaskRepository {
     public List<String> findVideoIdsWithOpenTasks() {
         String sql = "SELECT DISTINCT video_id FROM processing_upload_task";
         List<String> videoIds = new ArrayList<>();
-        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+        try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql);
              ResultSet rs = ps.executeQuery()) {
             while (rs.next()) {
@@ -231,7 +217,7 @@ public class ProcessingUploadTaskRepository {
 
     public int countByState(String state) {
         String sql = "SELECT COUNT(*) FROM processing_upload_task WHERE state = ?";
-        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+        try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, state);
             try (ResultSet rs = ps.executeQuery()) {
@@ -251,7 +237,7 @@ public class ProcessingUploadTaskRepository {
             SET state = ?, claimed_by = NULL, updated_at = NOW()
             WHERE id = ?
             """;
-        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+        try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, state);
             ps.setLong(2, id);
@@ -282,7 +268,7 @@ public class ProcessingUploadTaskRepository {
             ALTER TABLE processing_upload_task
             ADD COLUMN IF NOT EXISTS spool_owner VARCHAR(128)
             """;
-        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+        try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.executeUpdate();
         } catch (SQLException e) {

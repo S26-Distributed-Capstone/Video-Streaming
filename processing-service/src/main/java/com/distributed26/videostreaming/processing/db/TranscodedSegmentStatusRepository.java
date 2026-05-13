@@ -2,37 +2,23 @@ package com.distributed26.videostreaming.processing.db;
 
 import com.distributed26.videostreaming.shared.upload.events.TranscodeSegmentState;
 import java.sql.Connection;
-import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
+import javax.sql.DataSource;
 
 public class TranscodedSegmentStatusRepository {
-    private final String jdbcUrl;
-    private final String username;
-    private final String password;
+    private final DataSource dataSource;
 
-    public TranscodedSegmentStatusRepository(String jdbcUrl, String username, String password) {
-        this.jdbcUrl = jdbcUrl;
-        this.username = username;
-        this.password = password;
+    public TranscodedSegmentStatusRepository(DataSource dataSource) {
+        this.dataSource = dataSource;
     }
 
     public static TranscodedSegmentStatusRepository fromEnv() {
-        String url = System.getenv("PG_URL");
-        String user = System.getenv("PG_USER");
-        String pass = System.getenv("PG_PASSWORD");
-
-        if (url == null || url.isBlank()) {
-            throw new IllegalStateException("PG_URL is not set");
-        }
-        if (user == null || user.isBlank()) {
-            throw new IllegalStateException("PG_USER is not set");
-        }
-        return new TranscodedSegmentStatusRepository(url, user, pass);
+        return new TranscodedSegmentStatusRepository(ProcessingDataSource.create());
     }
 
     public void upsertState(String videoId, String profile, int segmentNumber, TranscodeSegmentState state) {
@@ -47,7 +33,7 @@ public class TranscodedSegmentStatusRepository {
             END,
             updated_at = NOW()
             """;
-        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+        try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setObject(1, UUID.fromString(videoId));
             ps.setString(2, profile);
@@ -64,7 +50,7 @@ public class TranscodedSegmentStatusRepository {
             SELECT COUNT(*) FROM transcoded_segment_status
             WHERE video_id = ? AND profile = ? AND state = ?
             """;
-        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+        try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setObject(1, UUID.fromString(videoId));
             ps.setString(2, profile);
@@ -86,7 +72,7 @@ public class TranscodedSegmentStatusRepository {
             WHERE video_id = ? AND profile = ? AND segment_number = ? AND state = ?
             LIMIT 1
             """;
-        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+        try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setObject(1, UUID.fromString(videoId));
             ps.setString(2, profile);
@@ -106,7 +92,7 @@ public class TranscodedSegmentStatusRepository {
             WHERE video_id = ? AND profile = ? AND state = ?
             """;
         Set<Integer> segmentNumbers = new HashSet<>();
-        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+        try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setObject(1, UUID.fromString(videoId));
             ps.setString(2, profile);
@@ -134,7 +120,7 @@ public class TranscodedSegmentStatusRepository {
               AND updated_at >= NOW() - (? * INTERVAL '1 millisecond')
             """;
         Set<Integer> segmentNumbers = new HashSet<>();
-        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+        try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setObject(1, UUID.fromString(videoId));
             ps.setString(2, profile);

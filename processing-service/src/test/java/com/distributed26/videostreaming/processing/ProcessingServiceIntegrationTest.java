@@ -11,6 +11,8 @@ import com.distributed26.videostreaming.processing.db.ProcessingTaskClaimReposit
 import com.distributed26.videostreaming.processing.db.ProcessingUploadTaskRepository;
 import com.distributed26.videostreaming.processing.db.TranscodedSegmentStatusRepository;
 import com.distributed26.videostreaming.processing.db.VideoProcessingRepository;
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
 import com.distributed26.videostreaming.processing.runtime.LocalSpoolUploadWorkerPool;
 import com.distributed26.videostreaming.processing.runtime.ProcessingRuntime;
 import com.distributed26.videostreaming.processing.runtime.StartupRecoveryService;
@@ -61,6 +63,23 @@ class ProcessingServiceIntegrationTest {
     private String username;
     private String password;
 
+    /**
+     * Creates a minimal HikariCP DataSource for a single integration test.
+     * Pool size 2 is enough for sequential test operations and avoids exhausting
+     * Postgres connections when several test methods run in a suite.
+     */
+    private HikariDataSource testDs() {
+        HikariConfig cfg = new HikariConfig();
+        cfg.setJdbcUrl(jdbcUrl);
+        cfg.setUsername(username);
+        cfg.setPassword(password);
+        cfg.setMaximumPoolSize(2);
+        cfg.setMinimumIdle(1);
+        cfg.setConnectionTimeout(5_000);
+        cfg.setPoolName("test-pool");
+        return new HikariDataSource(cfg);
+    }
+
     @AfterEach
     void tearDown() {
         // per-test cleanup is handled explicitly once videoId is known
@@ -81,12 +100,12 @@ class ProcessingServiceIntegrationTest {
         seedVideoRecord(videoId, 1, "PROCESSING");
 
         TranscodedSegmentStatusRepository transcodeRepo =
-                new TranscodedSegmentStatusRepository(jdbcUrl, username, password);
-        VideoProcessingRepository videoRepo = new VideoProcessingRepository(jdbcUrl, username, password);
+                new TranscodedSegmentStatusRepository(testDs());
+        VideoProcessingRepository videoRepo = new VideoProcessingRepository(testDs());
         ProcessingUploadTaskRepository uploadTaskRepo =
-                new ProcessingUploadTaskRepository(jdbcUrl, username, password);
+                new ProcessingUploadTaskRepository(testDs());
         ProcessingTaskClaimRepository claimRepo =
-                new ProcessingTaskClaimRepository(jdbcUrl, username, password);
+                new ProcessingTaskClaimRepository(testDs());
 
         TestStatusEventBus statusBus = new TestStatusEventBus();
         RecordingTranscodeTaskBus transcodeBus = new RecordingTranscodeTaskBus();
@@ -178,12 +197,12 @@ class ProcessingServiceIntegrationTest {
         seedVideoRecord(videoId, 1, "PROCESSING");
 
         TranscodedSegmentStatusRepository transcodeRepo =
-                new TranscodedSegmentStatusRepository(jdbcUrl, username, password);
-        VideoProcessingRepository videoRepo = new VideoProcessingRepository(jdbcUrl, username, password);
+                new TranscodedSegmentStatusRepository(testDs());
+        VideoProcessingRepository videoRepo = new VideoProcessingRepository(testDs());
         ProcessingUploadTaskRepository uploadTaskRepo =
-                new ProcessingUploadTaskRepository(jdbcUrl, username, password);
+                new ProcessingUploadTaskRepository(testDs());
         ProcessingTaskClaimRepository claimRepo =
-                new ProcessingTaskClaimRepository(jdbcUrl, username, password);
+                new ProcessingTaskClaimRepository(testDs());
 
         TestStatusEventBus statusBus = new TestStatusEventBus();
         RecordingTranscodeTaskBus transcodeBus = new RecordingTranscodeTaskBus();
@@ -233,7 +252,7 @@ class ProcessingServiceIntegrationTest {
         seedVideoRecord(videoId, 1, "PROCESSING");
 
         ProcessingUploadTaskRepository uploadTaskRepo =
-                new ProcessingUploadTaskRepository(jdbcUrl, username, password);
+                new ProcessingUploadTaskRepository(testDs());
         Path spoolRoot = Files.createTempDirectory("processing-reset-uploading-");
         Path spoolFile = spoolRoot.resolve(videoId).resolve("low").resolve("output0.ts");
         Files.createDirectories(spoolFile.getParent());
@@ -279,12 +298,12 @@ class ProcessingServiceIntegrationTest {
         seedVideoRecord(videoId, 1, "PROCESSING");
 
         TranscodedSegmentStatusRepository transcodeRepo =
-                new TranscodedSegmentStatusRepository(jdbcUrl, username, password);
-        VideoProcessingRepository videoRepo = new VideoProcessingRepository(jdbcUrl, username, password);
+                new TranscodedSegmentStatusRepository(testDs());
+        VideoProcessingRepository videoRepo = new VideoProcessingRepository(testDs());
         ProcessingUploadTaskRepository uploadTaskRepo =
-                new ProcessingUploadTaskRepository(jdbcUrl, username, password);
+                new ProcessingUploadTaskRepository(testDs());
         ProcessingTaskClaimRepository claimRepo =
-                new ProcessingTaskClaimRepository(jdbcUrl, username, password);
+                new ProcessingTaskClaimRepository(testDs());
 
         TestStatusEventBus statusBus = new TestStatusEventBus();
         RecordingTranscodeTaskBus transcodeBus = new RecordingTranscodeTaskBus();
@@ -341,12 +360,12 @@ class ProcessingServiceIntegrationTest {
         seedVideoRecord(videoId, 1, "PROCESSING");
 
         TranscodedSegmentStatusRepository transcodeRepo =
-                new TranscodedSegmentStatusRepository(jdbcUrl, username, password);
-        VideoProcessingRepository videoRepo = new VideoProcessingRepository(jdbcUrl, username, password);
+                new TranscodedSegmentStatusRepository(testDs());
+        VideoProcessingRepository videoRepo = new VideoProcessingRepository(testDs());
         ProcessingUploadTaskRepository uploadTaskRepo =
-                new ProcessingUploadTaskRepository(jdbcUrl, username, password);
+                new ProcessingUploadTaskRepository(testDs());
         ProcessingTaskClaimRepository claimRepo =
-                new ProcessingTaskClaimRepository(jdbcUrl, username, password);
+                new ProcessingTaskClaimRepository(testDs());
 
         TestStatusEventBus statusBus = new TestStatusEventBus();
         RecordingTranscodeTaskBus transcodeBus = new RecordingTranscodeTaskBus();
@@ -416,12 +435,12 @@ class ProcessingServiceIntegrationTest {
         seedVideoRecord(videoId, 1, "PROCESSING");
 
         TranscodedSegmentStatusRepository transcodeRepo =
-                new TranscodedSegmentStatusRepository(jdbcUrl, username, password);
-        VideoProcessingRepository videoRepo = new VideoProcessingRepository(jdbcUrl, username, password);
+                new TranscodedSegmentStatusRepository(testDs());
+        VideoProcessingRepository videoRepo = new VideoProcessingRepository(testDs());
         ProcessingUploadTaskRepository uploadTaskRepo =
-                new ProcessingUploadTaskRepository(jdbcUrl, username, password);
+                new ProcessingUploadTaskRepository(testDs());
         ProcessingTaskClaimRepository claimRepo =
-                new ProcessingTaskClaimRepository(jdbcUrl, username, password);
+                new ProcessingTaskClaimRepository(testDs());
 
         TestStatusEventBus statusBus = new TestStatusEventBus();
         RecordingTranscodeTaskBus transcodeBus = new RecordingTranscodeTaskBus();
@@ -557,12 +576,12 @@ class ProcessingServiceIntegrationTest {
         seedVideoRecord(videoId, 1, "PROCESSING");
 
         TranscodedSegmentStatusRepository transcodeRepo =
-                new TranscodedSegmentStatusRepository(jdbcUrl, username, password);
-        VideoProcessingRepository videoRepo = new VideoProcessingRepository(jdbcUrl, username, password);
+                new TranscodedSegmentStatusRepository(testDs());
+        VideoProcessingRepository videoRepo = new VideoProcessingRepository(testDs());
         ProcessingUploadTaskRepository uploadTaskRepo =
-                new ProcessingUploadTaskRepository(jdbcUrl, username, password);
+                new ProcessingUploadTaskRepository(testDs());
         ProcessingTaskClaimRepository claimRepo =
-                new ProcessingTaskClaimRepository(jdbcUrl, username, password);
+                new ProcessingTaskClaimRepository(testDs());
 
         TestStatusEventBus statusBus = new TestStatusEventBus();
         RecordingTranscodeTaskBus transcodeBus = new RecordingTranscodeTaskBus();

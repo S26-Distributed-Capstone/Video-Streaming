@@ -1,7 +1,6 @@
 package com.distributed26.videostreaming.processing.db;
 
 import java.sql.Connection;
-import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -10,35 +9,22 @@ import java.util.List;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.UUID;
+import javax.sql.DataSource;
 
 public class VideoProcessingRepository {
-    private final String jdbcUrl;
-    private final String username;
-    private final String password;
+    private final DataSource dataSource;
 
-    public VideoProcessingRepository(String jdbcUrl, String username, String password) {
-        this.jdbcUrl = jdbcUrl;
-        this.username = username;
-        this.password = password;
+    public VideoProcessingRepository(DataSource dataSource) {
+        this.dataSource = dataSource;
     }
 
     public static VideoProcessingRepository fromEnv() {
-        String url = System.getenv("PG_URL");
-        String user = System.getenv("PG_USER");
-        String pass = System.getenv("PG_PASSWORD");
-
-        if (url == null || url.isBlank()) {
-            throw new IllegalStateException("PG_URL is not set");
-        }
-        if (user == null || user.isBlank()) {
-            throw new IllegalStateException("PG_USER is not set");
-        }
-        return new VideoProcessingRepository(url, user, pass);
+        return new VideoProcessingRepository(ProcessingDataSource.create());
     }
 
     public OptionalInt findTotalSegments(String videoId) {
         String sql = "SELECT total_segments FROM video_upload WHERE video_id = ?";
-        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+        try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setObject(1, UUID.fromString(videoId));
             try (ResultSet rs = ps.executeQuery()) {
@@ -54,7 +40,7 @@ public class VideoProcessingRepository {
 
     public Optional<String> findStatusByVideoId(String videoId) {
         String sql = "SELECT status FROM video_upload WHERE video_id = ?";
-        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+        try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setObject(1, UUID.fromString(videoId));
             try (ResultSet rs = ps.executeQuery()) {
@@ -71,7 +57,7 @@ public class VideoProcessingRepository {
     public List<String> findVideoIdsByStatus(String status) {
         String sql = "SELECT video_id FROM video_upload WHERE status = ?";
         List<String> videoIds = new ArrayList<>();
-        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+        try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, status);
             try (ResultSet rs = ps.executeQuery()) {
@@ -87,7 +73,7 @@ public class VideoProcessingRepository {
 
     public void updateStatus(String videoId, String status) {
         String sql = "UPDATE video_upload SET status = ? WHERE video_id = ?";
-        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+        try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, status);
             ps.setObject(2, UUID.fromString(videoId));
@@ -104,7 +90,7 @@ public class VideoProcessingRepository {
                 WHERE video_id = ?
                   AND status IN ('UPLOADED', 'WAITING_FOR_STORAGE')
                 """;
-        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+        try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setObject(1, UUID.fromString(videoId));
             return ps.executeUpdate() > 0;
@@ -115,7 +101,7 @@ public class VideoProcessingRepository {
 
     public boolean isFailed(String videoId) {
         String sql = "SELECT 1 FROM video_upload WHERE video_id = ? AND status = 'FAILED' LIMIT 1";
-        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+        try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setObject(1, UUID.fromString(videoId));
             try (ResultSet rs = ps.executeQuery()) {

@@ -57,7 +57,7 @@ class ProcessingStorageStateTrackerTest {
         private final List<String> statusUpdates = new ArrayList<>();
 
         private RecordingVideoProcessingRepository() {
-            super("jdbc:unused", "unused", "unused");
+            super(null); // all methods are overridden; DataSource is never used
         }
 
         @Override

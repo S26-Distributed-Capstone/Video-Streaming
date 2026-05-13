@@ -39,7 +39,8 @@ class ScalingExecutor:
 
     def scale_up_one_node(self, topology: TopologyManager) -> Optional[str]:
         """
-        Uncordon one cordoned worker node and increase StatefulSet replicas.
+        Uncordon one cordoned worker node and increase StatefulSet replicas by
+        that node's CPU-derived replica count.
         Returns the node name that was activated, or None if no action taken.
         """
         node_name = topology.pick_node_to_activate()
@@ -47,23 +48,36 @@ class ScalingExecutor:
             log.warning("scale_up requested but no cordoned nodes available")
             return None
 
+        # Fetch CPU count before uncordoning (state still has the node as cordoned)
+        states = topology.get_node_states()
+        cpu_count = states.get(node_name, {}).get("cpu_count", 1)
+        node_replicas = topology.replicas_for_node(cpu_count)
+
         topology.uncordon_node(node_name)
         current = self.get_statefulset_replicas()
-        self.set_statefulset_replicas(current + self._cfg.replicas_per_node)
-        log.info("Scaled UP: activated node=%s replicas %d→%d",
-                 node_name, current, current + self._cfg.replicas_per_node)
+        self.set_statefulset_replicas(current + node_replicas)
+        log.info(
+            "Scaled UP: activated node=%s cpus=%d node_replicas=%d replicas %d→%d",
+            node_name, cpu_count, node_replicas, current, current + node_replicas,
+        )
         return node_name
 
     def scale_down_one_node(self, topology: TopologyManager) -> Optional[str]:
         """
         Cordon one active worker node first (so evicted pods reschedule elsewhere),
-        then evict processing pods from it, then reduce StatefulSet replicas.
+        then evict processing pods from it, then reduce StatefulSet replicas by
+        that node's CPU-derived replica count.
         Returns the node name that was deactivated, or None if no action taken.
         """
         node_name = topology.pick_node_to_deactivate()
         if node_name is None:
             log.warning("scale_down requested but no active nodes to deactivate")
             return None
+
+        # Fetch CPU count BEFORE cordoning so we know what to subtract
+        states = topology.get_node_states()
+        cpu_count = states.get(node_name, {}).get("cpu_count", 1)
+        node_replicas = topology.replicas_for_node(cpu_count)
 
         # Cordon FIRST — prevents the StatefulSet controller from rescheduling
         # evicted pods back onto this node while they are terminating.
@@ -72,20 +86,47 @@ class ScalingExecutor:
         app_label = self._cfg.statefulset_name
         topology.evict_pods_on_node(node_name, self._cfg.kube_namespace, app_label)
 
+        # Floor = sum of replicas for the remaining active (non-cordoned) nodes
+        min_replicas = topology.total_replicas_for_active_nodes()
         current = self.get_statefulset_replicas()
-        target = max(
-            self._cfg.min_active_nodes * self._cfg.replicas_per_node,
-            current - self._cfg.replicas_per_node,
-        )
+        target = max(min_replicas, current - node_replicas)
         self.set_statefulset_replicas(target)
-        log.info("Scaled DOWN: deactivated node=%s replicas %d→%d",
-                 node_name, current, target)
+        log.info(
+            "Scaled DOWN: deactivated node=%s cpus=%d node_replicas=%d replicas %d→%d",
+            node_name, cpu_count, node_replicas, current, target,
+        )
         return node_name
+
+    def scale_up_nodes(self, topology: TopologyManager, count: int) -> list:
+        """
+        Activate up to `count` cordoned nodes in one go.
+        Returns a list of node names that were activated.
+        """
+        activated = []
+        for _ in range(count):
+            name = self.scale_up_one_node(topology)
+            if name is None:
+                break
+            activated.append(name)
+        return activated
+
+    def scale_down_nodes(self, topology: TopologyManager, count: int) -> list:
+        """
+        Deactivate up to `count` active nodes in one go.
+        Returns a list of node names that were deactivated.
+        """
+        deactivated = []
+        for _ in range(count):
+            name = self.scale_down_one_node(topology)
+            if name is None:
+                break
+            deactivated.append(name)
+        return deactivated
 
     def enforce_initial_state(self, topology: TopologyManager) -> None:
         """
-        On startup, cordon all nodes except MIN_ACTIVE_NODES and set replicas
-        to MIN_ACTIVE_NODES × REPLICAS_PER_NODE. Idempotent.
+        On startup, cordon all nodes except MIN_ACTIVE_NODES and set replicas to
+        the sum of CPU-derived replica counts across the active nodes. Idempotent.
         """
         states = topology.get_node_states()
         active_nodes = [n for n, s in states.items() if not s["cordoned"]]
@@ -109,7 +150,8 @@ class ScalingExecutor:
             for node_name in to_uncordon:
                 topology.uncordon_node(node_name)
 
-        target_replicas = target_active * self._cfg.replicas_per_node
+        # Compute target replicas as the sum across the nodes that will be active
+        target_replicas = topology.total_replicas_for_active_nodes()
         self.set_statefulset_replicas(target_replicas)
         log.info(
             "Initial state enforced: active_nodes=%d target_active=%d replicas=%d",

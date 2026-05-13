@@ -52,8 +52,8 @@ current_tag() {
 
 update_tag_files() {
   local new_tag="$1"
+  # Update values.yaml — helm template will re-render rendered.yaml from it
   perl -0pi -e 's/(tag:\s*")[^"]+(")/${1}'"$new_tag"'${2}/' "$VALUES_FILE"
-  perl -0pi -e 's|(image: "tanigross/video-streaming-app:)[^"]+(")|${1}'"$new_tag"'${2}|g' "$RENDERED_FILE"
 }
 
 remote_run() {
@@ -116,6 +116,7 @@ require_cmd curl
 require_cmd perl
 require_cmd awk
 require_cmd grep
+require_cmd helm
 
 TAG="${1:-$(current_tag)}"
 IMAGE="${IMAGE_REPO}:${TAG}"
@@ -142,6 +143,19 @@ echo "==> Building & pushing autoscaler image ${AUTOSCALER_IMAGE}"
 docker buildx build --platform linux/amd64 -f autoscaler/Dockerfile -t "$AUTOSCALER_IMAGE" --push autoscaler/
 
 echo "==> Syncing k8s manifests to control plane"
+
+# Re-render Helm templates into rendered.yaml so every chart change
+# (new resources, configmap updates, etc.) is included in the deploy.
+# values.secret.yaml is included if present (contains passwords/keys).
+echo "  Re-rendering Helm templates → k8s/rendered.yaml"
+SECRET_VALUES=""
+if [[ -f "${ROOT_DIR}/k8s/values.secret.yaml" ]]; then
+  SECRET_VALUES="-f ${ROOT_DIR}/k8s/values.secret.yaml"
+fi
+helm template vs "${ROOT_DIR}/k8s" ${SECRET_VALUES} --namespace video-streaming \
+  > "${RENDERED_FILE}"
+echo "  rendered.yaml updated"
+
 remote_run "rm -rf ${REMOTE_K8S_DIR}"
 scp -i "$SSH_KEY" -r "${ROOT_DIR}/k8s" "${CONTROL_PLANE}:${REMOTE_K8S_DIR}"
 

@@ -1,10 +1,10 @@
 package com.distributed26.videostreaming.processing.db;
 
 import java.sql.Connection;
-import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.UUID;
+import javax.sql.DataSource;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -17,28 +17,14 @@ public class ProcessingTaskClaimRepository {
         ERROR
     }
 
-    private final String jdbcUrl;
-    private final String username;
-    private final String password;
+    private final DataSource dataSource;
 
-    public ProcessingTaskClaimRepository(String jdbcUrl, String username, String password) {
-        this.jdbcUrl = jdbcUrl;
-        this.username = username;
-        this.password = password;
+    public ProcessingTaskClaimRepository(DataSource dataSource) {
+        this.dataSource = dataSource;
     }
 
     public static ProcessingTaskClaimRepository fromEnv() {
-        String url = System.getenv("PG_URL");
-        String user = System.getenv("PG_USER");
-        String pass = System.getenv("PG_PASSWORD");
-
-        if (url == null || url.isBlank()) {
-            throw new IllegalStateException("PG_URL is not set");
-        }
-        if (user == null || user.isBlank()) {
-            throw new IllegalStateException("PG_USER is not set");
-        }
-        return new ProcessingTaskClaimRepository(url, user, pass);
+        return new ProcessingTaskClaimRepository(ProcessingDataSource.create());
     }
 
     public ClaimResult claim(String videoId, String profile, int segmentNumber, String stage, String claimedBy, long staleMillis) {
@@ -60,7 +46,7 @@ public class ProcessingTaskClaimRepository {
                OR processing_task_claim.updated_at < NOW() - (? * INTERVAL '1 millisecond')
             RETURNING id
             """;
-        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+        try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setObject(1, UUID.fromString(videoId));
             ps.setString(2, profile);
@@ -88,7 +74,7 @@ public class ProcessingTaskClaimRepository {
               AND updated_at >= NOW() - (? * INTERVAL '1 millisecond')
             LIMIT 1
             """;
-        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+        try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setObject(1, UUID.fromString(videoId));
             ps.setString(2, profile);
@@ -114,7 +100,7 @@ public class ProcessingTaskClaimRepository {
               AND segment_number = ?
               AND claimed_by = ?
             """;
-        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+        try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, stage);
             ps.setObject(2, UUID.fromString(videoId));
@@ -138,7 +124,7 @@ public class ProcessingTaskClaimRepository {
               AND updated_at >= NOW() - (? * INTERVAL '1 millisecond')
             """;
         java.util.Set<Integer> segmentNumbers = new java.util.HashSet<>();
-        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+        try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setObject(1, UUID.fromString(videoId));
             ps.setString(2, profile);
@@ -161,7 +147,7 @@ public class ProcessingTaskClaimRepository {
             DELETE FROM processing_task_claim
             WHERE video_id = ? AND profile = ? AND segment_number = ?
             """;
-        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+        try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setObject(1, UUID.fromString(videoId));
             ps.setString(2, profile);

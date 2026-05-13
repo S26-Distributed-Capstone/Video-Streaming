@@ -48,10 +48,16 @@ spec:
               value: {{ .Values.autoscaler.minActiveNodes | quote }}
             - name: REPLICAS_PER_NODE
               value: {{ .Values.autoscaler.replicasPerNode | quote }}
+            - name: REPLICAS_PER_CPU
+              value: {{ .Values.autoscaler.replicasPerCpu | quote }}
             - name: SCALE_UP_THRESHOLD
               value: {{ .Values.autoscaler.scaleUpThreshold | quote }}
             - name: SCALE_DOWN_THRESHOLD
               value: {{ .Values.autoscaler.scaleDownThreshold | quote }}
+            - name: MAX_SCALE_UP_STEP
+              value: {{ .Values.autoscaler.maxScaleUpStep | quote }}
+            - name: MAX_SCALE_DOWN_STEP
+              value: {{ .Values.autoscaler.maxScaleDownStep | quote }}
             - name: POLL_INTERVAL_SECONDS
               value: {{ .Values.autoscaler.pollIntervalSeconds | quote }}
             - name: SCALE_COOLDOWN_SECONDS

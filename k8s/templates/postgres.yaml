@@ -30,6 +30,9 @@ spec:
         - name: postgres
           image: postgres:16-alpine
           imagePullPolicy: IfNotPresent
+          # Pass max_connections as an arg — entrypoint forwards it to the postgres binary.
+          # Using `command` would bypass docker-entrypoint.sh and run as root (not allowed).
+          args: ["-c", "max_connections={{ .Values.postgres.maxConnections }}"]
           ports:
             - containerPort: 5432
           env:

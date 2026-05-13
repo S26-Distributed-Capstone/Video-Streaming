@@ -60,42 +60,98 @@ class TestDecisionEngine:
 
     def test_noop_when_idle(self):
         # queue empty, minimum nodes active → do nothing
-        assert self.engine.decide(0, 2) == "noop"
+        action, steps = self.engine.decide(0, 2)
+        assert action == "noop"
+        assert steps == 0
 
     def test_noop_when_middle_range(self):
         # queue between thresholds
-        assert self.engine.decide(10, 4) == "noop"
+        action, steps = self.engine.decide(10, 4)
+        assert action == "noop"
+        assert steps == 0
 
     def test_scale_up_at_threshold(self):
-        assert self.engine.decide(20, 4) == "scale_up"
+        # queue == threshold → ceil(20/20) = 1 node
+        action, steps = self.engine.decide(20, 4)
+        assert action == "scale_up"
+        assert steps == 1
 
     def test_scale_up_above_threshold(self):
-        assert self.engine.decide(50, 4) == "scale_up"
+        # queue 2× threshold → ceil(50/20) = 3, capped at max_scale_up_step=3
+        action, steps = self.engine.decide(50, 4)
+        assert action == "scale_up"
+        assert steps == 3
+
+    def test_scale_up_proportional_two_steps(self):
+        # queue exactly 2× threshold → ceil(40/20) = 2 nodes
+        action, steps = self.engine.decide(40, 4)
+        assert action == "scale_up"
+        assert steps == 2
+
+    def test_scale_up_capped_at_max_step(self):
+        # queue 5× threshold → ceil(100/20)=5, but capped at max_scale_up_step=3
+        action, steps = self.engine.decide(100, 4)
+        assert action == "scale_up"
+        assert steps == 3
+
+    def test_scale_up_capped_by_available_nodes(self):
+        # Only 1 cordoned node left (total=12, active=11)
+        action, steps = self.engine.decide(100, 11)
+        assert action == "scale_up"
+        assert steps == 1
 
     def test_no_scale_up_when_all_nodes_active(self):
         # all 12 nodes already active
-        assert self.engine.decide(100, 12) == "noop"
+        action, steps = self.engine.decide(100, 12)
+        assert action == "noop"
+        assert steps == 0
 
     def test_scale_down_at_threshold(self):
-        assert self.engine.decide(5, 4) == "scale_down"
+        action, steps = self.engine.decide(5, 4)
+        assert action == "scale_down"
+        assert steps == 1
 
     def test_scale_down_below_threshold(self):
-        assert self.engine.decide(0, 6) == "scale_down"
+        action, steps = self.engine.decide(0, 6)
+        assert action == "scale_down"
+        assert steps == 1
 
     def test_no_scale_down_at_minimum_nodes(self):
         # already at MIN_ACTIVE_NODES=2, don't go lower
-        assert self.engine.decide(0, 2) == "noop"
+        action, steps = self.engine.decide(0, 2)
+        assert action == "noop"
+        assert steps == 0
 
     def test_scale_up_takes_priority_over_down(self):
         # queue at 20 and active_nodes < total → scale up even if > min
-        result = self.engine.decide(20, 6)
-        assert result == "scale_up"
+        action, steps = self.engine.decide(20, 6)
+        assert action == "scale_up"
+        assert steps == 1
 
     def test_boundary_just_below_scale_up(self):
-        assert self.engine.decide(19, 4) == "noop"
+        action, steps = self.engine.decide(19, 4)
+        assert action == "noop"
+        assert steps == 0
 
     def test_boundary_just_above_scale_down(self):
-        assert self.engine.decide(6, 4) == "noop"
+        action, steps = self.engine.decide(6, 4)
+        assert action == "noop"
+        assert steps == 0
+
+    def test_custom_max_scale_up_step(self):
+        # With max_scale_up_step=5 and huge queue, should allow up to 5 nodes
+        cfg = make_cfg(max_scale_up_step=5)
+        engine = DecisionEngine(cfg)
+        action, steps = engine.decide(200, 2)  # ceil(200/20)=10, capped at 5, available=10
+        assert action == "scale_up"
+        assert steps == 5
+
+    def test_custom_max_scale_down_step(self):
+        cfg = make_cfg(max_scale_down_step=2)
+        engine = DecisionEngine(cfg)
+        action, steps = engine.decide(0, 6)
+        assert action == "scale_down"
+        assert steps == 2
 
 
 # ── StateStore tests ──────────────────────────────────────────────────────────
@@ -156,6 +212,8 @@ class TestConfig:
         assert cfg.min_active_nodes == 2
         assert cfg.scale_up_threshold == 20
         assert cfg.scale_down_threshold == 5
+        assert cfg.max_scale_up_step == 3
+        assert cfg.max_scale_down_step == 1
 
     def test_custom_values(self):
         cfg = make_cfg(total_nodes=6, min_active_nodes=1, replicas_per_node=3)
@@ -178,4 +236,6 @@ class TestConfig:
     def test_equal_thresholds_raises(self):
         with pytest.raises(ValueError, match="SCALE_DOWN_THRESHOLD"):
             make_cfg(scale_up_threshold=10, scale_down_threshold=10)
+
+
 

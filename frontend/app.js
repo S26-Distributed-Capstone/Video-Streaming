@@ -1297,7 +1297,9 @@ async function deleteSingleVideo(video) {
   if (!window.confirm(`Delete "${label}" from object storage?`)) {
     return;
   }
-  setReadyListBusy(true);
+  // Optimistically remove from UI immediately so there's no grayed-out delay.
+  applyReadyVideoRemoval([video.videoId]);
+  renderReadyList(readyVideosState);
   try {
     const resp = await fetch(deriveDeleteVideoUrl(resolveBaseUrl(), video.videoId), {
       method: "DELETE"
@@ -1305,15 +1307,10 @@ async function deleteSingleVideo(video) {
     if (!resp.ok) {
       await refreshReadyList();
       setPlayerStatus(`Failed to delete video (${resp.status})`, { success: false });
-      return;
     }
-    applyReadyVideoRemoval([video.videoId]);
-    renderReadyList(readyVideosState);
   } catch (_) {
     await refreshReadyList();
     setPlayerStatus("Failed to delete video.", { success: false });
-  } finally {
-    setReadyListBusy(false);
   }
 }
 

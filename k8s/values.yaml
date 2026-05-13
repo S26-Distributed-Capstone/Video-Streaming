@@ -1,7 +1,7 @@
 # ─── App image ──────────────────────────────────────────────────
 image:
   repository: jasonroth03/video-streaming-app
-  tag: "8.67"
+  tag: "10"
   pullPolicy: IfNotPresent
 
 # ─── Replica counts ────────────────────────────────────────────
@@ -18,8 +18,9 @@ statusService:
     limits:   { memory: "1Gi",   cpu: "1000m" }
 
 processingService:
-  # Set to MIN_ACTIVE_NODES × REPLICAS_PER_NODE (2 × 6 = 12).
-  # The autoscaler owns replica management after startup.
+  # Initial replica count — the autoscaler takes ownership immediately after
+  # bootstrap and adjusts based on each node's CPU count × replicasPerCpu.
+  # A safe starting value is MIN_ACTIVE_NODES × (expected CPUs per node).
   replicas: 12
   spoolStorageSize: 5Gi
   resources:
@@ -44,10 +45,15 @@ autoscaler:
   # Cluster topology — adjust to match your actual node count
   totalNodes: 12
   minActiveNodes: 2          # always keep at least this many nodes uncordoned
-  replicasPerNode: 6         # processing pods per active node
+  replicasPerNode: 1         # minimum processing pods per node (floor)
+  replicasPerCpu: 1.0        # processing pods per CPU core; actual = max(replicasPerNode, floor(cpus * replicasPerCpu))
   # Queue depth thresholds
-  scaleUpThreshold: 20       # uncordon a node when queue >= this value
+  scaleUpThreshold: 20       # uncordon node(s) when queue >= this value
   scaleDownThreshold: 5      # cordon a node when queue <= this value
+  # Multi-node burst scaling: nodes activated = min(maxScaleUpStep, ceil(queueDepth / scaleUpThreshold))
+  # e.g. queue=60 → ceil(60/20)=3 nodes activated at once (capped at maxScaleUpStep)
+  maxScaleUpStep: 3          # max nodes to activate per poll cycle
+  maxScaleDownStep: 1        # max nodes to deactivate per poll cycle (conservative)
   # Timing
   pollIntervalSeconds: 10
   scaleCooldownSeconds: 10   # minimum seconds between successive scale actions
@@ -82,6 +88,43 @@ scheduling:
 # ─── Infrastructure ────────────────────────────────────────────
 postgres:
   storageSize: 5Gi
+  # Explicit max_connections for the Postgres pod.
+  # With PgBouncer enabled this only needs to cover pgbouncer.serverPoolSize
+  # plus a small admin buffer (~10). Without PgBouncer raise this to:
+  #   total_nodes × max_replicas_per_node × pgPoolSize + 20
+  maxConnections: 100
+
+# PgBouncer — connection pooler that decouples pod count from Postgres connections.
+#
+# How the math works with autoscaling:
+#   Without PgBouncer:  connections = pods × pgPoolSize
+#                       e.g. 72 pods × 10 = 720  (>> postgres max_connections)
+#
+#   With PgBouncer:     connections Postgres sees = serverPoolSize (fixed, e.g. 25)
+#                       pods can have large HikariCP pools without limit concerns
+#                       e.g. 72 pods × 10 app connections → PgBouncer → 25 real PG connections
+#
+# Tuning guide:
+#   serverPoolSize: set to ~80% of postgres.maxConnections, leaving headroom for
+#                   admin tools and the other services (upload, streaming, status).
+#                   Recommended: maxConnections=100, serverPoolSize=25 leaves 75 for others.
+#   maxClientConn:  must be >= total_nodes × max_replicas_per_node × config.pgPoolSize
+#                   e.g. 12 nodes × 8 replicas × 10 pool = 960 → set to 1000.
+#   pgPoolSize:     with PgBouncer, set this freely per-pod (10–20 is fine); PgBouncer
+#                   queues excess requests rather than opening new Postgres connections.
+#
+pgbouncer:
+  enabled: true
+  image:
+    repository: edoburu/pgbouncer
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  serverPoolSize: 25       # real Postgres connections maintained by PgBouncer
+  minPoolSize: 5           # minimum warm connections even when idle
+  maxClientConn: 1000      # max inbound app connections across ALL pods
+  resources:
+    requests: { cpu: "50m",  memory: "64Mi" }
+    limits:   { cpu: "200m", memory: "128Mi" }
 
 rabbitmq:
   replicas: 1
@@ -131,7 +174,21 @@ config:
   streamingPort: "8083"
   # Leave blank to let processing-service auto-size its local transcode worker pool
   # from the CPUs visible to the container (the app defaults to ~3/4 of available CPUs).
+  # Postgres connection pool size per pod (HikariCP).
+  # With pgbouncer.enabled=true: set freely — PgBouncer absorbs the load.
+  #   Recommended: 10 (gives each pod headroom for concurrent workers)
+  # Without PgBouncer: must satisfy  pods × pgPoolSize <= postgres.maxConnections - 20
+  #   e.g. maxConnections=100, max pods=12 → pgPoolSize <= 6
+  pgPoolSize: "10"
   workerPoolSize: ""
+  # Number of concurrent segment uploads to MinIO from the upload-service.
+  # Default formula: max(2, min(4, CPUs/2)) — hard-capped at 4 regardless of CPUs.
+  # Since uploads are pure network I/O, this is NOT CPU-bound — raise it freely.
+  # Recommended: 8–16 for fast MinIO. Leave blank to use the default formula.
+  uploadThreadPoolSize: "16"
+  # Max segments queued in-flight at once (default: uploadThreadPoolSize * 2).
+  # Leave blank to use the default.
+  maxInFlightSegmentUploads: ""
   processingRecoveryReconciliationMillis: "60000"
   processingRecoveryQueuedStaleMillis: "300000"
   # Keep one FFmpeg thread per worker unless benchmarks prove otherwise.

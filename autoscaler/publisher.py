@@ -63,7 +63,11 @@ class Publisher:
             s = "cordoned" if cordoned else "active"
             if not cordoned:
                 active_count += 1
-            nodes.append({"name": name, "state": s})
+            nodes.append({
+                "name": name,
+                "state": s,
+                "cpuCount": state.get("cpu_count", 0),
+            })
 
         payload = {
             "jobId": "__cluster__",

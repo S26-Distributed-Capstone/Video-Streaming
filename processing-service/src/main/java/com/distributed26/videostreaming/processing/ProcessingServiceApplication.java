@@ -1,9 +1,11 @@
 package com.distributed26.videostreaming.processing;
 
+import com.distributed26.videostreaming.processing.db.ProcessingDataSource;
 import com.distributed26.videostreaming.processing.db.ProcessingUploadTaskRepository;
 import com.distributed26.videostreaming.processing.db.ProcessingTaskClaimRepository;
 import com.distributed26.videostreaming.processing.db.TranscodedSegmentStatusRepository;
 import com.distributed26.videostreaming.processing.db.VideoProcessingRepository;
+import com.zaxxer.hikari.HikariDataSource;
 import com.distributed26.videostreaming.processing.runtime.LocalSpoolUploadWorkerPool;
 import com.distributed26.videostreaming.processing.runtime.ProcessingRuntime;
 import com.distributed26.videostreaming.processing.runtime.StartupRecoveryService;
@@ -102,10 +104,24 @@ public class ProcessingServiceApplication {
             int poolSize = Integer.parseInt(getEnvOrDotenv(dotenv, "WORKER_POOL_SIZE", String.valueOf(dynamicDefault)));
             LOGGER.info("Detected {} available CPU(s); transcoding worker pool size = {} (default would be {})",
                     availableCpus, poolSize, dynamicDefault);
-            TranscodedSegmentStatusRepository transcodeStatusRepository = createTranscodeStatusRepository();
-            VideoProcessingRepository videoProcessingRepository = createVideoProcessingRepository();
-            ProcessingUploadTaskRepository processingUploadTaskRepository = createProcessingUploadTaskRepository();
-            ProcessingTaskClaimRepository processingTaskClaimRepository = createProcessingTaskClaimRepository();
+            TranscodedSegmentStatusRepository transcodeStatusRepository;
+            VideoProcessingRepository videoProcessingRepository;
+            ProcessingUploadTaskRepository processingUploadTaskRepository;
+            ProcessingTaskClaimRepository processingTaskClaimRepository;
+            HikariDataSource sharedDataSource;
+            try {
+                sharedDataSource = ProcessingDataSource.create();
+                LOGGER.info("Postgres connection pool created (maxPoolSize={})",
+                        sharedDataSource.getMaximumPoolSize());
+            } catch (IllegalStateException e) {
+                LOGGER.warn("Postgres not configured — all DB-backed features disabled: {}", e.getMessage());
+                sharedDataSource = null;
+            }
+            transcodeStatusRepository        = sharedDataSource != null ? createTranscodeStatusRepository(sharedDataSource)        : null;
+            videoProcessingRepository        = sharedDataSource != null ? createVideoProcessingRepository(sharedDataSource)        : null;
+            processingUploadTaskRepository   = sharedDataSource != null ? createProcessingUploadTaskRepository(sharedDataSource)   : null;
+            processingTaskClaimRepository    = sharedDataSource != null ? createProcessingTaskClaimRepository(sharedDataSource)    : null;
+            final HikariDataSource dataSourceToClose = sharedDataSource;
             Path localUploadSpoolRoot = initializeSpoolRoot(getEnvOrDotenv(dotenv, "PROCESSING_SPOOL_ROOT", "processing-spool"));
             String processorInstanceId = getEnvOrDotenv(dotenv, "HOSTNAME", "processing-service");
             long claimStaleMillis = Long.parseLong(getEnvOrDotenv(
@@ -226,6 +242,9 @@ public class ProcessingServiceApplication {
                 try { transcodeTaskBus.close(); } catch (Exception e) { LOGGER.warn("Error closing transcode task bus", e); }
                 try { statusEventBus.close(); } catch (Exception e) { LOGGER.warn("Error closing status event bus", e); }
                 try { storageClient.close(); } catch (Exception e) { LOGGER.warn("Error closing storage client", e); }
+                if (dataSourceToClose != null) {
+                    try { dataSourceToClose.close(); } catch (Exception e) { LOGGER.warn("Error closing DB connection pool", e); }
+                }
                 closeDevLogPublisher(devLogPublisher);
             }));
             devLogPublisherOwnedByShutdownHook = true;
@@ -481,36 +500,36 @@ public class ProcessingServiceApplication {
     }
 
 
-    private static TranscodedSegmentStatusRepository createTranscodeStatusRepository() {
+    private static TranscodedSegmentStatusRepository createTranscodeStatusRepository(HikariDataSource ds) {
         try {
-            return TranscodedSegmentStatusRepository.fromEnv();
-        } catch (IllegalStateException e) {
+            return new TranscodedSegmentStatusRepository(ds);
+        } catch (RuntimeException e) {
             LOGGER.warn("Postgres not configured; transcoding progress disabled: {}", e.getMessage());
             return null;
         }
     }
 
-    private static VideoProcessingRepository createVideoProcessingRepository() {
+    private static VideoProcessingRepository createVideoProcessingRepository(HikariDataSource ds) {
         try {
-            return VideoProcessingRepository.fromEnv();
+            return new VideoProcessingRepository(ds);
         } catch (IllegalStateException e) {
             LOGGER.warn("Postgres not configured; video metadata lookups disabled: {}", e.getMessage());
             return null;
         }
     }
 
-    private static ProcessingUploadTaskRepository createProcessingUploadTaskRepository() {
+    private static ProcessingUploadTaskRepository createProcessingUploadTaskRepository(HikariDataSource ds) {
         try {
-            return ProcessingUploadTaskRepository.fromEnv();
+            return new ProcessingUploadTaskRepository(ds);
         } catch (IllegalStateException e) {
             LOGGER.warn("Postgres not configured; cannot start local upload queue: {}", e.getMessage());
             return null;
         }
     }
 
-    private static ProcessingTaskClaimRepository createProcessingTaskClaimRepository() {
+    private static ProcessingTaskClaimRepository createProcessingTaskClaimRepository(HikariDataSource ds) {
         try {
-            return ProcessingTaskClaimRepository.fromEnv();
+            return new ProcessingTaskClaimRepository(ds);
         } catch (IllegalStateException e) {
             LOGGER.warn("Postgres not configured; cannot track processing task claims: {}", e.getMessage());
             return null;
