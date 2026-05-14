@@ -1,7 +1,7 @@
 # ─── App image ──────────────────────────────────────────────────
 image:
-  repository: tanigross/video-streaming-app
-  tag: "10"
+  repository: jasonroth03/video-streaming-app
+  tag: "10-recovery-fix-20260514-1432"
   pullPolicy: IfNotPresent
 
 # ─── Replica counts ────────────────────────────────────────────
@@ -18,14 +18,14 @@ statusService:
     limits:   { memory: "1Gi",   cpu: "1000m" }
 
 processingService:
-  # Initial replica count — the autoscaler takes ownership immediately after
-  # bootstrap and adjusts based on each node's CPU count × replicasPerCpu.
-  # A safe starting value is MIN_ACTIVE_NODES × (expected CPUs per node).
+  # Temporary replica count before the autoscaler leader bootstraps. Autoscaling OFF
+  # then pins processing pods to minActiveNodes nodes filled with 1-CPU pods,
+  # without cordoning any Kubernetes nodes.
   replicas: 2
   spoolStorageSize: 5Gi
   resources:
     requests: { memory: "1Gi",  cpu: "1000m" }
-    limits:   { memory: "2Gi",  cpu: "4000m" }
+    limits:   { memory: "2Gi",  cpu: "1000m" }
 
 
 streamingService:
@@ -37,8 +37,8 @@ streamingService:
 # ─── Autoscaler ─────────────────────────────────────────────────
 autoscaler:
   image:
-    repository: tanigross/video-streaming-autoscaler
-    tag: "1.4"
+    repository: jasonroth03/video-streaming-autoscaler
+    tag: "1.5-autoscaling-fix-20260514"
     pullPolicy: IfNotPresent
   # 2 replicas on CP nodes — only the leader acts via k8s Lease
   replicas: 2
@@ -46,7 +46,7 @@ autoscaler:
   totalNodes: 12
   minActiveNodes: 2          # always keep at least this many nodes uncordoned
   replicasPerNode: 1         # minimum processing pods per node (floor)
-  replicasPerCpu: 1.0        # processing pods per CPU core; actual = max(replicasPerNode, floor(cpus * replicasPerCpu))
+  replicasPerCpu: 1.0        # with 1 CPU requests/limits on processing pods, this means 1 processing pod per allocatable CPU core
   # Queue depth thresholds
   scaleUpThreshold: 20       # uncordon node(s) when queue >= this value
   scaleDownThreshold: 5      # cordon a node when queue <= this value
@@ -58,6 +58,9 @@ autoscaler:
   pollIntervalSeconds: 10
   scaleCooldownSeconds: 10   # minimum seconds between successive scale actions
   scaleDownIdlePolls: 6      # require 6 idle polls before scale-down so emptyDir spool uploads can drain
+  # Autoscaling starts OFF. In OFF mode, the leader pins only the processing
+  # StatefulSet to minActiveNodes nodes filled with 1-CPU pods; it does not
+  # cordon worker nodes. Turning it ON enables queue-based node cordon/uncordon.
   # Node selector label for worker nodes (must match your node labels)
   nodeLabelSelector: "workload-role=app"
   statefulsetName: ""        # leave blank to default to <release>-processing
@@ -133,6 +136,12 @@ rabbitmq:
 
 minio:
   storageSize: 10Gi
+  resources:
+    # First tuning step for suspected storage pressure: give the single MinIO pod
+    # stronger guaranteed CPU/memory so it is less likely to fall behind while
+    # many processing pods flush local spool files concurrently.
+    requests: { cpu: "1000m", memory: "1Gi" }
+    limits:   { cpu: "2000m", memory: "2Gi" }
   # Pin MinIO to a specific IP from your MetalLB address pool.
   # Once set, MINIO_PUBLIC_ENDPOINT is auto-derived — no manual helm upgrade needed.
   # Pick any free IP from your MetalLB range, e.g. 192.168.1.200
@@ -173,15 +182,15 @@ config:
   statusPort: "8081"
   processingPort: "8082"
   streamingPort: "8083"
-  # Leave blank to let processing-service auto-size its local transcode worker pool
-  # from the CPUs visible to the container (the app defaults to ~3/4 of available CPUs).
+  # Explicitly pin one transcoding worker per processing pod so each pod stays a
+  # single-core worker and the autoscaler can pack one pod per allocatable CPU.
   # Postgres connection pool size per pod (HikariCP).
   # With pgbouncer.enabled=true: set freely — PgBouncer absorbs the load.
   #   Recommended: 10 (gives each pod headroom for concurrent workers)
   # Without PgBouncer: must satisfy  pods × pgPoolSize <= postgres.maxConnections - 20
   #   e.g. maxConnections=100, max pods=12 → pgPoolSize <= 6
   pgPoolSize: "10"
-  workerPoolSize: ""
+  workerPoolSize: "1"
   # Number of concurrent segment uploads to MinIO from the upload-service.
   # Default formula: max(2, min(4, CPUs/2)) — hard-capped at 4 regardless of CPUs.
   # Since uploads are pure network I/O, this is NOT CPU-bound — raise it freely.
@@ -210,4 +219,5 @@ service:
   uploadNodePort: 30080       # only used when type=NodePort
   statusNodePort: 30081
   streamingNodePort: 30083
+  autoscalerNodePort: 30084
   minioNodePort: 30090        # only used when type=NodePort; set config.minioPublicEndpoint to http://<node-ip>:30090

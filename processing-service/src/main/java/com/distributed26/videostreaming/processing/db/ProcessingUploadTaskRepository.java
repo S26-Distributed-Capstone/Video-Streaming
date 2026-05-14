@@ -16,6 +16,14 @@ import javax.sql.DataSource;
 public class ProcessingUploadTaskRepository {
     private final DataSource dataSource;
 
+    public record UploadTaskMetadata(
+            String spoolOwner,
+            String spoolPath,
+            String state,
+            String claimedBy
+    ) {
+    }
+
     public ProcessingUploadTaskRepository(DataSource dataSource) {
         this.dataSource = dataSource;
         ensureSpoolOwnerColumn();
@@ -175,6 +183,34 @@ public class ProcessingUploadTaskRepository {
             }
         } catch (SQLException e) {
             throw new RuntimeException("Failed to query processing_upload_task", e);
+        }
+    }
+
+    public Optional<UploadTaskMetadata> findTask(String videoId, String profile, int segmentNumber) {
+        String sql = """
+            SELECT spool_owner, spool_path, state, claimed_by
+            FROM processing_upload_task
+            WHERE video_id = ? AND profile = ? AND segment_number = ?
+            LIMIT 1
+            """;
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setObject(1, UUID.fromString(videoId));
+            ps.setString(2, profile);
+            ps.setInt(3, segmentNumber);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) {
+                    return Optional.empty();
+                }
+                return Optional.of(new UploadTaskMetadata(
+                        rs.getString("spool_owner"),
+                        rs.getString("spool_path"),
+                        rs.getString("state"),
+                        rs.getString("claimed_by")
+                ));
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to query processing_upload_task metadata", e);
         }
     }
 

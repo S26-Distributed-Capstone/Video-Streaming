@@ -3,11 +3,11 @@ autoscaler.py — Main entrypoint.
 
 Polling loop:
   1. Acquire Kubernetes Lease (blocks until we become leader).
-  2. Enforce initial cluster state (cordon excess nodes, set StatefulSet replicas).
+  2. Start with autoscaling OFF; pin processing pods to the fixed MIN_ACTIVE_NODES baseline without cordoning nodes.
   3. Every POLL_INTERVAL_SECONDS:
        - Read queue depth from RabbitMQ Management API.
        - Count active (uncordoned) worker nodes.
-       - Decide whether to scale up or down.
+       - If autoscaling is ON, decide whether to scale up or down.
        - Execute scale action if cooldown allows.
        - Publish NodeStatusEvent if topology changed.
   4. If leadership is lost, step back to election loop.
@@ -23,6 +23,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from kubernetes import config as kube_config
 
+from autoscaling_state import AutoscalingStateStore
 import config as cfg_module
 from config import Config
 from decision_engine import DecisionEngine
@@ -44,6 +45,17 @@ _shutdown = threading.Event()
 
 # ── Pause flag — when set, scaling decisions are skipped ────────────────────
 _paused = threading.Event()
+_paused.set()
+
+
+def _apply_startup_pause() -> None:
+    _paused.set()
+    log.info("Autoscaler starting OFF — bootstrap, replica reconciliation, and scaling decisions are disabled until turned on")
+
+
+def _resolve_resume_active_nodes(cfg: Config, store: StateStore, autoscaling_state: AutoscalingStateStore) -> int:
+    restore_count = autoscaling_state.get_restore_active_nodes() or store.get_restore_active_nodes() or cfg.min_active_nodes
+    return max(cfg.min_active_nodes, min(restore_count, cfg.total_nodes))
 
 
 def _setup_signals() -> None:
@@ -54,8 +66,14 @@ def _setup_signals() -> None:
     signal.signal(signal.SIGINT, _handler)
 
 
-def _start_health_server(port: int, topology: "TopologyManager") -> None:
-    """HTTP server on port 8084 — health check + pause/resume + manual cordon/uncordon."""
+def _start_health_server(
+    cfg: Config,
+    topology: "TopologyManager",
+    executor: "ScalingExecutor",
+    store: StateStore,
+    autoscaling_state: AutoscalingStateStore,
+) -> None:
+    """HTTP server on port 8084 — health check + autoscaling on/off + manual cordon/uncordon."""
 
     class Handler(BaseHTTPRequestHandler):
         def _send_json(self, status: int, body: dict) -> None:
@@ -81,19 +99,38 @@ def _start_health_server(port: int, topology: "TopologyManager") -> None:
                 self.end_headers()
                 self.wfile.write(b"OK")
             elif self.path == "/status":
-                self._send_json(200, {"paused": _paused.is_set()})
+                autoscaling_on = autoscaling_state.get_autoscaling_on()
+                self._send_json(200, {"paused": not autoscaling_on, "autoscalingOn": autoscaling_on})
             else:
                 self._send_json(404, {"error": "not found"})
 
         def do_POST(self):
             if self.path == "/pause":
+                try:
+                    node_states = topology.get_node_states()
+                    active_nodes = sum(1 for s in node_states.values() if not s["cordoned"])
+                    store.record_autoscaling_off_active_nodes(active_nodes)
+                    autoscaling_state.set_autoscaling_on(False, active_nodes)
+                except Exception as exc:
+                    log.warning("Failed to persist autoscaling OFF state: %s", exc)
+                    self._send_json(500, {"error": str(exc), "paused": False, "autoscalingOn": True})
+                    return
                 _paused.set()
-                log.info("Autoscaler paused via API")
-                self._send_json(200, {"paused": True})
+                log.info("Autoscaling turned OFF via API")
+                self._send_json(200, {"paused": True, "autoscalingOn": False})
             elif self.path == "/resume":
-                _paused.clear()
-                log.info("Autoscaler resumed via API")
-                self._send_json(200, {"paused": False})
+                try:
+                    restore_count = _resolve_resume_active_nodes(cfg, store, autoscaling_state)
+                    autoscaling_state.set_autoscaling_on(True, restore_count)
+                    log.info("Autoscaling ON requested via API with target_active_nodes=%d", restore_count)
+                    self._send_json(200, {
+                        "paused": False,
+                        "autoscalingOn": True,
+                        "targetActiveNodes": restore_count,
+                    })
+                except Exception as exc:
+                    log.error("Failed to turn autoscaling on: %s", exc)
+                    self._send_json(500, {"error": str(exc), "paused": True, "autoscalingOn": False})
             elif self.path.startswith("/cordon/"):
                 node_name = self.path[len("/cordon/"):]
                 if not node_name:
@@ -124,10 +161,10 @@ def _start_health_server(port: int, topology: "TopologyManager") -> None:
         def log_message(self, *args):
             pass  # suppress HTTP access logs
 
-    server = HTTPServer(("", port), Handler)
+    server = HTTPServer(("", cfg.health_port), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True, name="health-server")
     thread.start()
-    log.info("Health server listening on :%d", port)
+    log.info("Health server listening on :%d", cfg.health_port)
 
 
 def _load_kube() -> None:
@@ -148,6 +185,7 @@ def run_poll_loop(
     store: StateStore,
     pub: Publisher,
     election: LeaderElection,
+    autoscaling_state: AutoscalingStateStore,
 ) -> None:
     """Main polling loop — runs only while we are leader."""
     log.info("Poll loop started (interval=%ds)", cfg.poll_interval_seconds)
@@ -158,16 +196,48 @@ def run_poll_loop(
             store.reset_bootstrap()
             return
 
+        try:
+            desired_autoscaling_on = autoscaling_state.get_autoscaling_on()
+            if desired_autoscaling_on and _paused.is_set():
+                restore_count = _resolve_resume_active_nodes(cfg, store, autoscaling_state)
+                log.info("Autoscaling shared state is ON — enabling leader with target_active_nodes=%d", restore_count)
+                executor.clear_processing_node_constraint()
+                executor.enforce_active_node_count(topology, restore_count)
+                store.mark_bootstrapped()
+                _paused.clear()
+            elif not desired_autoscaling_on and not _paused.is_set():
+                log.info("Autoscaling shared state is OFF — disabling leader and enforcing no-cordon baseline")
+                executor.enforce_processing_baseline_without_cordoning(topology, cfg.min_active_nodes)
+                store.mark_bootstrapped()
+                _paused.set()
+        except Exception as exc:
+            log.error("Failed to apply shared autoscaling state: %s", exc)
+            time.sleep(cfg.poll_interval_seconds)
+            continue
+
         # ── Bootstrap once per leadership term ─────────────────────────────
         if not store.has_bootstrapped():
-            log.info("Bootstrapping initial cluster state...")
-            try:
-                executor.enforce_initial_state(topology)
-                store.mark_bootstrapped()
-            except Exception as exc:
-                log.error("Bootstrap failed: %s — will retry next poll", exc)
-                time.sleep(cfg.poll_interval_seconds)
-                continue
+            if _paused.is_set():
+                log.info(
+                    "Autoscaling is OFF before bootstrap — enforcing fixed %d-node processing baseline without cordoning nodes",
+                    cfg.min_active_nodes,
+                )
+                try:
+                    executor.enforce_processing_baseline_without_cordoning(topology, cfg.min_active_nodes)
+                    store.mark_bootstrapped()
+                except Exception as exc:
+                    log.error("Autoscaling-off baseline bootstrap failed: %s — will retry next poll", exc)
+                    time.sleep(cfg.poll_interval_seconds)
+                    continue
+            else:
+                log.info("Bootstrapping initial cluster state...")
+                try:
+                    executor.enforce_initial_state(topology)
+                    store.mark_bootstrapped()
+                except Exception as exc:
+                    log.error("Bootstrap failed: %s — will retry next poll", exc)
+                    time.sleep(cfg.poll_interval_seconds)
+                    continue
 
         # ── Collect metrics ─────────────────────────────────────────────────
         try:
@@ -179,6 +249,15 @@ def run_poll_loop(
             time.sleep(cfg.poll_interval_seconds)
             continue
 
+        if not _paused.is_set():
+            log.debug("Reconciling StatefulSet replicas to active topology")
+            try:
+                executor.reconcile_replicas_to_active_topology(topology)
+            except Exception as exc:
+                log.error("Replica reconciliation failed: %s", exc)
+                time.sleep(cfg.poll_interval_seconds)
+                continue
+
         idle_polls = store.record_queue_depth(queue_depth, cfg.scale_down_threshold)
         log.info(
             "queue_depth=%d active_nodes=%d/%d idle_polls=%d/%d",
@@ -187,7 +266,7 @@ def run_poll_loop(
 
         # ── Scaling decision ────────────────────────────────────────────────
         if _paused.is_set():
-            log.info("Autoscaler is paused — skipping scaling decision")
+            log.info("Autoscaling is OFF — skipping scaling decision")
         else:
             decision, steps = engine.decide(queue_depth, active_nodes)
 
@@ -240,15 +319,17 @@ def main() -> None:
 
     cfg = cfg_module.load()
     log.info("Config: %s", cfg)
+    _apply_startup_pause()
 
     _load_kube()
 
     topology = TopologyManager(cfg)
-    _start_health_server(cfg.health_port, topology)
     executor = ScalingExecutor(cfg)
     metrics  = MetricsCollector(cfg)
     engine   = DecisionEngine(cfg)
     store    = StateStore()
+    autoscaling_state = AutoscalingStateStore(cfg.kube_namespace, cfg.lease_name)
+    _start_health_server(cfg, topology, executor, store, autoscaling_state)
     pub      = Publisher(cfg)
     election = LeaderElection(cfg.kube_namespace, cfg.lease_name)
 
@@ -260,7 +341,7 @@ def main() -> None:
             break
 
         try:
-            run_poll_loop(cfg, topology, executor, metrics, engine, store, pub, election)
+            run_poll_loop(cfg, topology, executor, metrics, engine, store, pub, election, autoscaling_state)
         except Exception as exc:
             log.error("Unhandled error in poll loop: %s — restarting", exc, exc_info=True)
             store.reset_bootstrap()

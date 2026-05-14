@@ -26,15 +26,26 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CONTROL_PLANE="sack@192.168.8.11"
-SSH_KEY="${HOME}/.ssh/cluster_key"
+SSH_KEY="${SSH_KEY:-${HOME}/.ssh/cluster_key}"
 REMOTE_K8S_DIR="/home/sack/videostreaming/k8s"
 KUBECTL_PREFIX="doas env KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl -n video-streaming"
 VALUES_FILE="${ROOT_DIR}/k8s/values.yaml"
 RENDERED_FILE="${ROOT_DIR}/k8s/rendered.yaml"
-IMAGE_REPO="tanigross/video-streaming-app"
-AUTOSCALER_IMAGE="tanigross/video-streaming-autoscaler:1.4"
+IMAGE_REPO="jasonroth03/video-streaming-app"
+AUTOSCALER_IMAGE_REPO="jasonroth03/video-streaming-autoscaler"
 DIST_DIR="${ROOT_DIR}/dist"
 REMOTE_IMAGE_DIR="/home/sack/videostreaming/images"
+SSH_CONTROL_DIR="${SSH_CONTROL_DIR:-/tmp/vs-ssh}"
+SSH_OPTS=(
+  -o StrictHostKeyChecking=accept-new
+  -o ControlMaster=auto
+  -o ControlPersist=10m
+  -o ControlPath="${SSH_CONTROL_DIR}/%C"
+)
+
+if [[ -f "$SSH_KEY" ]]; then
+  SSH_OPTS=(-i "$SSH_KEY" "${SSH_OPTS[@]}")
+fi
 
 # Deployments managed by this script (not the autoscaler-managed StatefulSet).
 APP_DEPLOYMENTS=(vs-upload vs-status vs-streaming vs-autoscaler)
@@ -44,6 +55,26 @@ require_cmd() {
     echo "Missing required command: $1" >&2
     exit 1
   }
+}
+
+ensure_passwordless_access() {
+  local ssh_error
+  mkdir -p "$SSH_CONTROL_DIR"
+
+  if ! ssh_error="$(ssh "${SSH_OPTS[@]}" -o BatchMode=yes "$CONTROL_PLANE" "true" 2>&1 >/dev/null)"; then
+    echo "Passwordless SSH to ${CONTROL_PLANE} is not configured for this script." >&2
+    echo "Expected key: ${SSH_KEY}" >&2
+    [[ -n "$ssh_error" ]] && echo "SSH error: ${ssh_error}" >&2
+    echo "Run ./scripts/setup-keys.sh first (it now defaults to ${SSH_KEY}.pub when present)." >&2
+    exit 1
+  fi
+
+  if ! ssh_error="$(ssh "${SSH_OPTS[@]}" -o BatchMode=yes "$CONTROL_PLANE" "doas -n true" 2>&1 >/dev/null)"; then
+    echo "Passwordless doas is not configured on ${CONTROL_PLANE}." >&2
+    [[ -n "$ssh_error" ]] && echo "doas check error: ${ssh_error}" >&2
+    echo "Run ./scripts/setup-doas.sh before redeploying." >&2
+    exit 1
+  fi
 }
 
 current_tag() {
@@ -58,6 +89,19 @@ current_tag() {
   ' "$VALUES_FILE"
 }
 
+current_autoscaler_tag() {
+  awk '
+    $1 == "autoscaler:" { in_autoscaler=1; next }
+    in_autoscaler && $1 == "image:" { in_image=1; next }
+    in_autoscaler && in_image && $1 == "tag:" {
+      gsub(/"/, "", $2)
+      print $2
+      exit
+    }
+    in_autoscaler && $1 !~ /^(image:|repository:|tag:|pullPolicy:)$/ && $1 !~ /^#/ { in_autoscaler=0; in_image=0 }
+  ' "$VALUES_FILE"
+}
+
 update_tag_files() {
   local new_tag="$1"
   # Update values.yaml — helm template will re-render rendered.yaml from it
@@ -65,7 +109,7 @@ update_tag_files() {
 }
 
 remote_run() {
-  ssh -i "$SSH_KEY" "$CONTROL_PLANE" "$1"
+  ssh "${SSH_OPTS[@]}" "$CONTROL_PLANE" "$1"
 }
 
 remote_kubectl() {
@@ -107,9 +151,9 @@ distribute_image_to_k3s() {
 
   for node_ip in "${NODE_IPS[@]}"; do
     echo "  Importing on ${node_ip}"
-    ssh -i "$SSH_KEY" "sack@${node_ip}" "mkdir -p ${REMOTE_IMAGE_DIR}"
-    scp -i "$SSH_KEY" "$archive_path" "sack@${node_ip}:${REMOTE_IMAGE_DIR}/${archive_name}"
-    ssh -i "$SSH_KEY" "sack@${node_ip}" \
+    ssh "${SSH_OPTS[@]}" "sack@${node_ip}" "mkdir -p ${REMOTE_IMAGE_DIR}"
+    scp "${SSH_OPTS[@]}" "$archive_path" "sack@${node_ip}:${REMOTE_IMAGE_DIR}/${archive_name}"
+    ssh "${SSH_OPTS[@]}" "sack@${node_ip}" \
       "doas k3s ctr -n k8s.io images import ${REMOTE_IMAGE_DIR}/${archive_name}"
   done
 }
@@ -164,11 +208,19 @@ require_cmd awk
 require_cmd grep
 require_cmd helm
 
+ensure_passwordless_access
+
 TAG="${1:-$(current_tag)}"
 IMAGE="${IMAGE_REPO}:${TAG}"
+AUTOSCALER_TAG="$(current_autoscaler_tag)"
+AUTOSCALER_IMAGE="${AUTOSCALER_IMAGE_REPO}:${AUTOSCALER_TAG}"
 
 if [[ -z "$TAG" ]]; then
   echo "Could not determine image tag from k8s/values.yaml" >&2
+  exit 1
+fi
+if [[ -z "$AUTOSCALER_TAG" ]]; then
+  echo "Could not determine autoscaler image tag from k8s/values.yaml" >&2
   exit 1
 fi
 
@@ -205,7 +257,7 @@ helm template vs "${ROOT_DIR}/k8s" ${SECRET_VALUES} --namespace video-streaming 
 echo "  rendered.yaml updated"
 
 remote_run "rm -rf ${REMOTE_K8S_DIR}"
-scp -i "$SSH_KEY" -r "${ROOT_DIR}/k8s" "${CONTROL_PLANE}:${REMOTE_K8S_DIR}"
+scp "${SSH_OPTS[@]}" -r "${ROOT_DIR}/k8s" "${CONTROL_PLANE}:${REMOTE_K8S_DIR}"
 
 echo "==> Applying manifests"
 remote_kubectl "apply -k ${REMOTE_K8S_DIR}/"
@@ -237,7 +289,7 @@ echo "==> Current pod placement"
 remote_kubectl "get pods -o wide"
 
 echo "==> Verifying running image IDs"
-for selector in app=vs-upload app=vs-status app=vs-streaming app=vs-processing; do
+for selector in app=vs-upload app=vs-status app=vs-streaming app=vs-processing app=vs-autoscaler; do
   echo "-- ${selector}"
   remote_kubectl "get pods -l ${selector} \
     -o jsonpath='{range .items[*]}{.metadata.name}{\" \"}{.status.containerStatuses[0].imageID}{\"\\n\"}{end}'"

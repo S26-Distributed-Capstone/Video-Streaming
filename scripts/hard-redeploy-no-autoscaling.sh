@@ -17,12 +17,23 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CONTROL_PLANE="sack@192.168.8.11"
-SSH_KEY="${HOME}/.ssh/cluster_key"
+SSH_KEY="${SSH_KEY:-${HOME}/.ssh/cluster_key}"
 REMOTE_K8S_DIR="/home/sack/videostreaming/k8s"
 KUBECTL_PREFIX="doas env KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl -n video-streaming"
 VALUES_FILE="${ROOT_DIR}/k8s/values.yaml"
 RENDERED_FILE="${ROOT_DIR}/k8s/rendered.yaml"
-IMAGE_REPO="tanigross/video-streaming-app"
+IMAGE_REPO="jasonroth03/video-streaming-app"
+SSH_CONTROL_DIR="${SSH_CONTROL_DIR:-/tmp/vs-ssh}"
+SSH_OPTS=(
+  -o StrictHostKeyChecking=accept-new
+  -o ControlMaster=auto
+  -o ControlPersist=10m
+  -o ControlPath="${SSH_CONTROL_DIR}/%C"
+)
+
+if [[ -f "$SSH_KEY" ]]; then
+  SSH_OPTS=(-i "$SSH_KEY" "${SSH_OPTS[@]}")
+fi
 
 APP_DEPLOYMENTS=(vs-upload vs-status vs-streaming)
 PROCESSING_STATEFULSET="vs-processing"
@@ -32,6 +43,26 @@ require_cmd() {
     echo "Missing required command: $1" >&2
     exit 1
   }
+}
+
+ensure_passwordless_access() {
+  local ssh_error
+  mkdir -p "$SSH_CONTROL_DIR"
+
+  if ! ssh_error="$(ssh "${SSH_OPTS[@]}" -o BatchMode=yes "$CONTROL_PLANE" "true" 2>&1 >/dev/null)"; then
+    echo "Passwordless SSH to ${CONTROL_PLANE} is not configured for this script." >&2
+    echo "Expected key: ${SSH_KEY}" >&2
+    [[ -n "$ssh_error" ]] && echo "SSH error: ${ssh_error}" >&2
+    echo "Run ./scripts/setup-keys.sh first (it now defaults to ${SSH_KEY}.pub when present)." >&2
+    exit 1
+  fi
+
+  if ! ssh_error="$(ssh "${SSH_OPTS[@]}" -o BatchMode=yes "$CONTROL_PLANE" "doas -n true" 2>&1 >/dev/null)"; then
+    echo "Passwordless doas is not configured on ${CONTROL_PLANE}." >&2
+    [[ -n "$ssh_error" ]] && echo "doas check error: ${ssh_error}" >&2
+    echo "Run ./scripts/setup-doas.sh before redeploying." >&2
+    exit 1
+  fi
 }
 
 current_tag() {
@@ -52,7 +83,7 @@ update_tag_files() {
 }
 
 remote_run() {
-  ssh -i "$SSH_KEY" "$CONTROL_PLANE" "$1"
+  ssh "${SSH_OPTS[@]}" "$CONTROL_PLANE" "$1"
 }
 
 remote_kubectl() {
@@ -103,6 +134,8 @@ require_cmd awk
 require_cmd grep
 require_cmd helm
 
+ensure_passwordless_access
+
 TAG="${1:-$(current_tag)}"
 IMAGE="${IMAGE_REPO}:${TAG}"
 
@@ -134,7 +167,7 @@ helm template vs "${ROOT_DIR}/k8s" ${SECRET_VALUES} --namespace video-streaming 
 
 echo "==> Syncing k8s manifests to control plane"
 remote_run "rm -rf ${REMOTE_K8S_DIR}"
-scp -i "$SSH_KEY" -r "${ROOT_DIR}/k8s" "${CONTROL_PLANE}:${REMOTE_K8S_DIR}"
+scp "${SSH_OPTS[@]}" -r "${ROOT_DIR}/k8s" "${CONTROL_PLANE}:${REMOTE_K8S_DIR}"
 
 echo "==> Applying manifests"
 remote_kubectl "apply -k ${REMOTE_K8S_DIR}/"

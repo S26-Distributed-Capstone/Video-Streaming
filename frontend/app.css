@@ -147,6 +147,31 @@ video {
   cursor: not-allowed;
 }
 
+.autoscaler-status-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: #fff;
+  font-weight: 800;
+}
+
+.autoscaler-status-banner.autoscaler-on {
+  background: var(--success-bg);
+  color: var(--success-text);
+  border-color: rgba(79, 138, 120, 0.18);
+}
+
+.autoscaler-status-banner.autoscaler-off {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  border-color: rgba(201, 109, 68, 0.18);
+}
+
 body.processing-route .controls {
   display: none;
 }
@@ -641,6 +666,8 @@ body.processing-route.processing-route-terminal .stage-grid {
   text-align: center;
   opacity: 0.6;
 }
+
+.node-grid-legend {
   margin: 4px 0 0;
   font-size: 0.78rem;
   color: var(--muted);

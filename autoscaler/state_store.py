@@ -11,6 +11,7 @@ class StateStore:
         self._last_published_node_states: Optional[Dict] = None
         self._became_leader_bootstrapped: bool = False
         self._idle_poll_count: int = 0
+        self._restore_active_nodes: Optional[int] = None
 
     # ── Cooldown ─────────────────────────────────────────────────────────────
 
@@ -28,6 +29,14 @@ class StateStore:
         else:
             self._idle_poll_count = 0
         return self._idle_poll_count
+
+    # ── Autoscaling on/off restore state ─────────────────────────────────────
+
+    def record_autoscaling_off_active_nodes(self, active_nodes: int) -> None:
+        self._restore_active_nodes = active_nodes if active_nodes > 0 else None
+
+    def get_restore_active_nodes(self) -> Optional[int]:
+        return self._restore_active_nodes
 
     # ── Publish deduplication ────────────────────────────────────────────────
 

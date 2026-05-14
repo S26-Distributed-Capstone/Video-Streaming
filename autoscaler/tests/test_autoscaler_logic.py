@@ -9,12 +9,16 @@ Run from the project root:
 import sys
 import os
 import time
+import threading
 
 # Make autoscaler/ importable without installing
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
+import autoscaler as autoscaler_module
+import autoscaling_state as autoscaling_state_module
 from decision_engine import DecisionEngine
+import scaling_executor as scaling_executor_module
 from state_store import StateStore
 import config as cfg_module
 
@@ -236,6 +240,369 @@ class TestConfig:
     def test_equal_thresholds_raises(self):
         with pytest.raises(ValueError, match="SCALE_DOWN_THRESHOLD"):
             make_cfg(scale_up_threshold=10, scale_down_threshold=10)
+
+
+class _FakeLeaseMetadata:
+    def __init__(self, annotations=None):
+        self.annotations = annotations or {}
+
+
+class _FakeLease:
+    def __init__(self, annotations=None):
+        self.metadata = _FakeLeaseMetadata(annotations)
+
+
+class _FakeCoordinationApi:
+    def __init__(self):
+        self.lease = None
+        self.patch_calls = []
+
+    def read_namespaced_lease(self, name, namespace):
+        if self.lease is None:
+            raise autoscaling_state_module.ApiException(status=404)
+        return self.lease
+
+    def create_namespaced_lease(self, namespace, body):
+        if self.lease is not None:
+            raise autoscaling_state_module.ApiException(status=409)
+        self.lease = _FakeLease(dict(body.metadata.annotations or {}))
+
+    def patch_namespaced_lease(self, name, namespace, body):
+        self.patch_calls.append((name, namespace, body))
+        if self.lease is None:
+            raise autoscaling_state_module.ApiException(status=404)
+        self.lease.metadata.annotations.update(body["metadata"]["annotations"])
+
+
+class TestAutoscalingStateStore:
+    def test_defaults_to_off_and_persists_on_state_in_shared_lease(self, monkeypatch):
+        fake_coord = _FakeCoordinationApi()
+        monkeypatch.setattr(autoscaling_state_module.client, "CoordinationV1Api", lambda: fake_coord)
+
+        store = autoscaling_state_module.AutoscalingStateStore("default", "video-autoscaler")
+
+        assert store.get_autoscaling_on() is False
+
+        store.set_autoscaling_on(True, 4)
+
+        assert store.get_autoscaling_on() is True
+        assert store.get_restore_active_nodes() == 4
+        assert fake_coord.patch_calls[-1][0] == "video-autoscaler-state"
+
+
+class _FakeAppsApi:
+    def __init__(self, replicas: int):
+        self.replicas = replicas
+        self.patch_calls = []
+
+    def read_namespaced_stateful_set(self, name, namespace):
+        return type("StatefulSet", (), {
+            "spec": type("Spec", (), {"replicas": self.replicas})()
+        })()
+
+    def patch_namespaced_stateful_set(self, name, namespace, body):
+        self.patch_calls.append((name, namespace, body))
+        if "replicas" in body.get("spec", {}):
+            self.replicas = body["spec"]["replicas"]
+
+
+class _FakeTopology:
+    def __init__(self, target_replicas: int):
+        self.target_replicas = target_replicas
+
+    def total_replicas_for_active_nodes(self):
+        return self.target_replicas
+
+
+class _FakeTopologyForActiveCount:
+    def __init__(self, cfg):
+        self._cfg = cfg
+        self.states = {
+            "node-a": {"cordoned": True, "cpu_count": 8},
+            "node-b": {"cordoned": True, "cpu_count": 4},
+            "node-c": {"cordoned": False, "cpu_count": 2},
+            "node-d": {"cordoned": False, "cpu_count": 2},
+        }
+        self.cordoned = []
+        self.uncordoned = []
+        self.evicted = []
+
+    def get_node_states(self):
+        return {name: dict(state) for name, state in self.states.items()}
+
+    def replicas_for_node(self, cpu_count):
+        return max(self._cfg.replicas_per_node, int(cpu_count * self._cfg.replicas_per_cpu))
+
+    def cordon_node(self, name):
+        self.cordoned.append(name)
+        self.states[name]["cordoned"] = True
+
+    def uncordon_node(self, name):
+        self.uncordoned.append(name)
+        self.states[name]["cordoned"] = False
+
+    def evict_pods_on_node(self, node_name, namespace, app_label_value):
+        self.evicted.append((node_name, namespace, app_label_value))
+
+
+class TestScalingExecutor:
+    def test_reconcile_replicas_to_active_topology_patches_when_out_of_sync(self, monkeypatch):
+        fake_apps = _FakeAppsApi(replicas=8)
+        monkeypatch.setattr(scaling_executor_module.client, "AppsV1Api", lambda: fake_apps)
+
+        cfg = make_cfg()
+        executor = scaling_executor_module.ScalingExecutor(cfg)
+
+        changed = executor.reconcile_replicas_to_active_topology(_FakeTopology(target_replicas=12))
+
+        assert changed is True
+        assert fake_apps.replicas == 12
+        assert fake_apps.patch_calls == [
+            (cfg.statefulset_name, cfg.kube_namespace, {"spec": {"replicas": 12}})
+        ]
+
+    def test_reconcile_replicas_to_active_topology_noops_when_aligned(self, monkeypatch):
+        fake_apps = _FakeAppsApi(replicas=12)
+        monkeypatch.setattr(scaling_executor_module.client, "AppsV1Api", lambda: fake_apps)
+
+        cfg = make_cfg()
+        executor = scaling_executor_module.ScalingExecutor(cfg)
+
+        changed = executor.reconcile_replicas_to_active_topology(_FakeTopology(target_replicas=12))
+
+        assert changed is False
+        assert fake_apps.replicas == 12
+        assert fake_apps.patch_calls == []
+
+    def test_enforce_active_node_count_maxes_out_two_processing_nodes(self, monkeypatch):
+        fake_apps = _FakeAppsApi(replicas=2)
+        monkeypatch.setattr(scaling_executor_module.client, "AppsV1Api", lambda: fake_apps)
+
+        cfg = make_cfg(replicas_per_node=1, replicas_per_cpu=1.0)
+        executor = scaling_executor_module.ScalingExecutor(cfg)
+        topology = _FakeTopologyForActiveCount(cfg)
+
+        executor.enforce_active_node_count(topology, 2)
+
+        assert topology.uncordoned == ["node-a", "node-b"]
+        assert topology.cordoned == ["node-c", "node-d"]
+        assert fake_apps.replicas == 12
+        assert fake_apps.patch_calls == [
+            (cfg.statefulset_name, cfg.kube_namespace, {"spec": {"replicas": 12}})
+        ]
+
+    def test_enforce_processing_baseline_without_cordoning_pins_pods_only(self, monkeypatch):
+        fake_apps = _FakeAppsApi(replicas=2)
+        monkeypatch.setattr(scaling_executor_module.client, "AppsV1Api", lambda: fake_apps)
+
+        cfg = make_cfg(replicas_per_node=1, replicas_per_cpu=1.0)
+        executor = scaling_executor_module.ScalingExecutor(cfg)
+        topology = _FakeTopologyForActiveCount(cfg)
+
+        executor.enforce_processing_baseline_without_cordoning(topology, 2)
+
+        assert topology.uncordoned == []
+        assert topology.cordoned == []
+        assert topology.evicted == []
+        assert fake_apps.replicas == 12
+        affinity_patch = fake_apps.patch_calls[0][2]
+        values = affinity_patch["spec"]["template"]["spec"]["affinity"]["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"]["nodeSelectorTerms"][0]["matchExpressions"][0]["values"]
+        assert values == ["node-a", "node-b"]
+        assert fake_apps.patch_calls[-1] == (
+            cfg.statefulset_name,
+            cfg.kube_namespace,
+            {"spec": {"replicas": 12}},
+        )
+
+
+class _FakeMetrics:
+    def __init__(self, queue_depth=0):
+        self.queue_depth = queue_depth
+
+    def get_queue_depth(self):
+        return self.queue_depth
+
+
+class _FakeTopologyForPoll:
+    def get_node_states(self):
+        return {
+            "node-1": {"cordoned": False, "cpu_count": 4},
+            "node-2": {"cordoned": False, "cpu_count": 4},
+        }
+
+
+class _FakeExecutorForPoll:
+    def __init__(self):
+        self.bootstrap_calls = 0
+        self.active_count_calls = []
+        self.baseline_calls = []
+        self.reconcile_calls = 0
+        self.clear_constraint_calls = 0
+        self.scale_up_calls = []
+
+    def enforce_initial_state(self, topology):
+        self.bootstrap_calls += 1
+
+    def enforce_active_node_count(self, topology, target_active):
+        self.active_count_calls.append(target_active)
+
+    def enforce_processing_baseline_without_cordoning(self, topology, target_active):
+        self.baseline_calls.append(target_active)
+
+    def reconcile_replicas_to_active_topology(self, topology):
+        self.reconcile_calls += 1
+
+    def clear_processing_node_constraint(self):
+        self.clear_constraint_calls += 1
+
+    def scale_up_nodes(self, topology, steps):
+        self.scale_up_calls.append(steps)
+
+
+class _FakePublisher:
+    def __init__(self):
+        self.published = []
+
+    def publish_node_status(self, node_states, queue_depth):
+        self.published.append((node_states, queue_depth))
+        autoscaler_module._shutdown.set()
+
+
+class _FakeElection:
+    is_leader = True
+
+
+class _FakeAutoscalingState:
+    def __init__(self, autoscaling_on=False, restore_active_nodes=None):
+        self.autoscaling_on = autoscaling_on
+        self.restore_active_nodes = restore_active_nodes
+
+    def get_autoscaling_on(self):
+        return self.autoscaling_on
+
+    def get_restore_active_nodes(self):
+        return self.restore_active_nodes
+
+
+class TestAutoscalerOffMode:
+    def test_apply_startup_pause_sets_pause_flag(self, monkeypatch):
+        monkeypatch.setattr(autoscaler_module, "_paused", threading.Event())
+
+        autoscaler_module._apply_startup_pause()
+
+        assert autoscaler_module._paused.is_set()
+
+    def test_run_poll_loop_autoscaling_off_enforces_two_node_baseline_without_reconcile(self, monkeypatch):
+        monkeypatch.setattr(autoscaler_module, "_paused", threading.Event())
+        monkeypatch.setattr(autoscaler_module, "_shutdown", threading.Event())
+        autoscaler_module._paused.set()
+
+        cfg = make_cfg()
+        executor = _FakeExecutorForPoll()
+        publisher = _FakePublisher()
+        store = StateStore()
+
+        autoscaler_module.run_poll_loop(
+            cfg,
+            _FakeTopologyForPoll(),
+            executor,
+            _FakeMetrics(),
+            DecisionEngine(cfg),
+            store,
+            publisher,
+            _FakeElection(),
+            _FakeAutoscalingState(False),
+        )
+
+        assert executor.bootstrap_calls == 0
+        assert executor.active_count_calls == []
+        assert executor.baseline_calls == [cfg.min_active_nodes]
+        assert executor.reconcile_calls == 0
+        assert store.has_bootstrapped() is True
+        assert len(publisher.published) == 1
+
+    def test_run_poll_loop_autoscaling_on_runs_normal_bootstrap(self, monkeypatch):
+        monkeypatch.setattr(autoscaler_module, "_paused", threading.Event())
+        monkeypatch.setattr(autoscaler_module, "_shutdown", threading.Event())
+
+        cfg = make_cfg()
+        executor = _FakeExecutorForPoll()
+        publisher = _FakePublisher()
+        store = StateStore()
+        autoscaler_module._paused.clear()
+
+        autoscaler_module.run_poll_loop(
+            cfg,
+            _FakeTopologyForPoll(),
+            executor,
+            _FakeMetrics(),
+            DecisionEngine(cfg),
+            store,
+            publisher,
+            _FakeElection(),
+            _FakeAutoscalingState(True),
+        )
+
+        assert executor.bootstrap_calls == 1
+        assert executor.active_count_calls == []
+        assert executor.baseline_calls == []
+        assert executor.reconcile_calls == 1
+
+    def test_resume_restore_count_uses_shared_state_before_local_replica_state(self):
+        cfg = make_cfg(total_nodes=12, min_active_nodes=2)
+        store = StateStore()
+        store.record_autoscaling_off_active_nodes(3)
+
+        restore_count = autoscaler_module._resolve_resume_active_nodes(
+            cfg,
+            store,
+            _FakeAutoscalingState(False, restore_active_nodes=6),
+        )
+
+        assert restore_count == 6
+
+    def test_resume_restore_count_falls_back_to_minimum_and_clamps_to_cluster_size(self):
+        cfg = make_cfg(total_nodes=12, min_active_nodes=2)
+        store = StateStore()
+
+        assert autoscaler_module._resolve_resume_active_nodes(
+            cfg,
+            store,
+            _FakeAutoscalingState(False, restore_active_nodes=None),
+        ) == 2
+        assert autoscaler_module._resolve_resume_active_nodes(
+            cfg,
+            store,
+            _FakeAutoscalingState(False, restore_active_nodes=99),
+        ) == 12
+
+    def test_shared_autoscaling_on_enables_leader_even_when_local_flag_is_off(self, monkeypatch):
+        monkeypatch.setattr(autoscaler_module, "_paused", threading.Event())
+        monkeypatch.setattr(autoscaler_module, "_shutdown", threading.Event())
+        autoscaler_module._paused.set()
+
+        cfg = make_cfg()
+        executor = _FakeExecutorForPoll()
+        publisher = _FakePublisher()
+        store = StateStore()
+
+        autoscaler_module.run_poll_loop(
+            cfg,
+            _FakeTopologyForPoll(),
+            executor,
+            _FakeMetrics(queue_depth=100),
+            DecisionEngine(cfg),
+            store,
+            publisher,
+            _FakeElection(),
+            _FakeAutoscalingState(True, restore_active_nodes=2),
+        )
+
+        assert executor.clear_constraint_calls == 1
+        assert executor.active_count_calls == [2]
+        assert executor.reconcile_calls == 1
+        assert executor.scale_up_calls == [3]
+        assert not autoscaler_module._paused.is_set()
 
 
 

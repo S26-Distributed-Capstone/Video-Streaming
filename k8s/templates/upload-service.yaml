@@ -40,6 +40,10 @@ spec:
           env:
             - name: SERVICE_MODE
               value: "upload"
+            - name: HELM_RELEASE_NAME
+              value: {{ .Release.Name | quote }}
+            - name: AUTOSCALER_INTERNAL_URL
+              value: {{ printf "http://%s-autoscaler:8084" .Release.Name | quote }}
           envFrom:
             - configMapRef:
                 name: {{ .Release.Name }}-config

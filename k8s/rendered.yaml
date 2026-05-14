@@ -61,6 +61,7 @@ data:
   STATUS_PORT: "8081"
   PROCESSING_PORT: "8082"
   STREAMING_PORT: "8083"
+  WORKER_POOL_SIZE: "1"
   UPLOAD_THREAD_POOL_SIZE: "16"
   PG_POOL_SIZE: "10"
   PROCESSING_RECOVERY_RECONCILIATION_MILLIS: "15000"
@@ -238,6 +239,19 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: vs-rabbitmq
+---
+# Source: video-streaming/templates/autoscaler.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: vs-autoscaler
+spec:
+  type: LoadBalancer
+  selector:
+    app: vs-autoscaler
+  ports:
+    - port: 8084
+      targetPort: 8084
 ---
 # Source: video-streaming/templates/minio.yaml
 apiVersion: v1
@@ -441,7 +455,7 @@ spec:
               echo "vs-rabbitmq:5672 is up."
       containers:
         - name: autoscaler
-          image: "tanigross/video-streaming-autoscaler:1.4"
+          image: "jasonroth03/video-streaming-autoscaler:1.5-autoscaling-fix-20260514"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8084
@@ -673,7 +687,7 @@ spec:
               echo "vs-postgres:5432 is up."
       containers:
         - name: status-service
-          image: "tanigross/video-streaming-app:10"
+          image: "jasonroth03/video-streaming-app:10-recovery-fix-20260514-1432"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8081
@@ -761,7 +775,7 @@ spec:
               echo "vs-minio:9000 is up."
       containers:
         - name: streaming-service
-          image: "tanigross/video-streaming-app:10"
+          image: "jasonroth03/video-streaming-app:10-recovery-fix-20260514-1432"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8083
@@ -860,13 +874,17 @@ spec:
               echo "vs-postgres:5432 is up."
       containers:
         - name: upload-service
-          image: "tanigross/video-streaming-app:10"
+          image: "jasonroth03/video-streaming-app:10-recovery-fix-20260514-1432"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
           env:
             - name: SERVICE_MODE
               value: "upload"
+            - name: HELM_RELEASE_NAME
+              value: "vs"
+            - name: AUTOSCALER_INTERNAL_URL
+              value: "http://vs-autoscaler:8084"
           envFrom:
             - configMapRef:
                 name: vs-config
@@ -946,6 +964,13 @@ spec:
           volumeMounts:
             - name: minio-data
               mountPath: /data
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "1000m"
+            limits:
+              memory: "2Gi"
+              cpu: "2000m"
           readinessProbe:
             httpGet:
               path: /minio/health/ready
@@ -1111,13 +1136,15 @@ spec:
               echo "vs-postgres:5432 is up."
       containers:
         - name: processing-service
-          image: "tanigross/video-streaming-app:10"
+          image: "jasonroth03/video-streaming-app:10-recovery-fix-20260514-1432"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8082
           env:
             - name: SERVICE_MODE
               value: "processing"
+            - name: WORKER_POOL_SIZE
+              value: "1"
             - name: THREADS_PER_WORKER
               value: "1"
           envFrom:
@@ -1152,7 +1179,7 @@ spec:
               cpu: "1000m"
             limits:
               memory: "2Gi"
-              cpu: "4000m"
+              cpu: "1000m"
 ---
 # Source: video-streaming/templates/rabbitmq.yaml
 # ── StatefulSet: 3-node RabbitMQ cluster ──

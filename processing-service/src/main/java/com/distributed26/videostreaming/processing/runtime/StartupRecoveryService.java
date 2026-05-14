@@ -1,5 +1,6 @@
 package com.distributed26.videostreaming.processing.runtime;
 
+import com.distributed26.videostreaming.processing.db.ProcessingUploadTaskRepository.UploadTaskMetadata;
 import com.distributed26.videostreaming.processing.TranscodingProfile;
 import com.distributed26.videostreaming.shared.storage.ObjectStorageClient;
 import com.distributed26.videostreaming.shared.upload.events.TranscodeSegmentState;
@@ -25,6 +26,10 @@ public final class StartupRecoveryService {
     private static final Logger LOGGER = LogManager.getLogger(StartupRecoveryService.class);
     private static final java.util.regex.Pattern EXTINF_PATTERN = java.util.regex.Pattern.compile("^#EXTINF:([^,]+),?");
     private static final long DEFAULT_QUEUED_RECOVERY_STALE_MILLIS = 300_000L;
+    private static final long ACTIVE_PROGRESS_QUEUED_RECOVERY_STALE_MILLIS = 180_000L;
+    private static final long MAX_BACKLOG_QUEUED_RECOVERY_STALE_MILLIS = 600_000L;
+    private static final int BACKLOG_QUEUED_SEGMENT_THRESHOLD = 24;
+    private static final long BACKLOG_QUEUED_RECOVERY_EXTENSION_PER_SEGMENT_MILLIS = 500L;
 
     private final TranscodingProfile[] profiles;
     private final ProcessingRuntime runtime;
@@ -158,13 +163,28 @@ public final class StartupRecoveryService {
                                     continue;
                                 }
 
-                                // Create a PENDING upload task for this orphaned spool file
+                                UploadTaskMetadata existingTask = runtime.processingUploadTaskRepository()
+                                        .findTask(videoId, profileName, segmentNumber)
+                                        .orElse(null);
+                                if (existingTask != null) {
+                                    if (hasActiveProcessingClaim(videoId, profileName, segmentNumber)) {
+                                        LOGGER.debug("Spool recovery: upload task still has an active processing claim videoId={} profile={} segment={} state={} owner={} claimedBy={}",
+                                                videoId, profileName, segmentNumber, existingTask.state(),
+                                                existingTask.spoolOwner(), existingTask.claimedBy());
+                                        continue;
+                                    }
+                                    if (isRegisteredForCurrentSpoolFile(existingTask, file)) {
+                                        LOGGER.debug("Spool recovery: upload task already registered for local spool file videoId={} profile={} segment={} path={} state={}",
+                                                videoId, profileName, segmentNumber, file, existingTask.state());
+                                        continue;
+                                    }
+                                }
+
+                                // Create or reassign a PENDING upload task for this visible spool file.
                                 String chunkKey = videoId + "/chunks/" + fileName;
                                 long sizeBytes = Files.size(file);
                                 double offsetSeconds = ProcessingRuntime.fallbackOffsetForSegment(segmentNumber);
 
-                                boolean existingTask = runtime.processingUploadTaskRepository()
-                                        .hasOpenTask(videoId, profileName, segmentNumber);
                                 runtime.processingUploadTaskRepository().upsertPending(
                                         videoId,
                                         runtime.processorInstanceId(),
@@ -176,7 +196,7 @@ public final class StartupRecoveryService {
                                         sizeBytes,
                                         offsetSeconds
                                 );
-                                if (existingTask) {
+                                if (existingTask != null) {
                                     reassignedExisting++;
                                     LOGGER.info("Spool recovery: reassigned local upload task ownership videoId={} profile={} segment={} path={} owner={}",
                                             videoId, profileName, segmentNumber, file, runtime.processorInstanceId());
@@ -262,9 +282,13 @@ public final class StartupRecoveryService {
 
             int totalSegments = Math.max(runtime.findTotalSegments(videoId), chunkKeys.size());
             Map<String, Set<Integer>> doneSegmentsByProfile = loadDoneSegmentsByProfile(videoId);
-            Map<String, Set<Integer>> inFlightSegmentsByProfile = loadInFlightSegmentsByProfile(videoId);
+            Map<String, Set<Integer>> queuedSegmentsByProfile = loadQueuedSegmentsByProfile(videoId);
+            Map<String, Set<Integer>> inFlightSegmentsByProfile = loadInFlightSegmentsByProfile(videoId, queuedSegmentsByProfile);
+            Map<String, Set<Integer>> recoverableQueuedSegmentsByProfile =
+                    loadRecoverableQueuedSegmentsByProfile(videoId, queuedSegmentsByProfile, inFlightSegmentsByProfile);
             int republished = 0;
             Set<String> touchedProfiles = new HashSet<>();
+            int deferredQueuedSegments = 0;
 
             Map<Integer, Double> offsetsBySegment = loadSourceSegmentOffsets(videoId, storageClient);
             for (String chunkKey : chunkKeys) {
@@ -275,9 +299,16 @@ public final class StartupRecoveryService {
                     continue;
                 }
                 for (TranscodingProfile profile : profiles) {
+                    String profileName = profile.getName();
                     Set<Integer> doneSegments = doneSegmentsByProfile.getOrDefault(profile.getName(), Set.of());
                     Set<Integer> inFlightSegments = inFlightSegmentsByProfile.getOrDefault(profile.getName(), Set.of());
+                    Set<Integer> queuedSegments = queuedSegmentsByProfile.getOrDefault(profileName, Set.of());
+                    Set<Integer> recoverableQueuedSegments = recoverableQueuedSegmentsByProfile.getOrDefault(profileName, Set.of());
                     if (doneSegments.contains(segmentNumber) || inFlightSegments.contains(segmentNumber)) {
+                        continue;
+                    }
+                    if (queuedSegments.contains(segmentNumber) && !recoverableQueuedSegments.contains(segmentNumber)) {
+                        deferredQueuedSegments += 1;
                         continue;
                     }
                     runtime.publishTranscodeState(videoId, profile.getName(), segmentNumber,
@@ -297,6 +328,9 @@ public final class StartupRecoveryService {
             if (republished > 0) {
                 LOGGER.info("Startup recovery requeued {} missing transcode task(s) for videoId={} profiles={}",
                         republished, videoId, touchedProfiles);
+            } else if (deferredQueuedSegments > 0) {
+                LOGGER.info("Startup recovery deferred {} stale queued transcode task(s) for videoId={} because active progress or backlog suggests the queue is still healthy",
+                        deferredQueuedSegments, videoId);
             } else {
                 LOGGER.info("Startup recovery found no missing transcode tasks for videoId={}", videoId);
             }
@@ -338,7 +372,30 @@ public final class StartupRecoveryService {
         return doneSegmentsByProfile;
     }
 
-    private Map<String, Set<Integer>> loadInFlightSegmentsByProfile(String videoId) {
+    private Map<String, Set<Integer>> loadQueuedSegmentsByProfile(String videoId) {
+        Map<String, Set<Integer>> queuedSegmentsByProfile = new HashMap<>();
+        if (runtime.transcodeStatusRepository() == null) {
+            return queuedSegmentsByProfile;
+        }
+        for (TranscodingProfile profile : profiles) {
+            try {
+                queuedSegmentsByProfile.put(
+                        profile.getName(),
+                        runtime.transcodeStatusRepository()
+                                .findSegmentNumbersByState(videoId, profile.getName(), TranscodeSegmentState.QUEUED)
+                );
+            } catch (Exception e) {
+                LOGGER.warn("Startup recovery failed to load queued segments videoId={} profile={}",
+                        videoId, profile.getName(), e);
+            }
+        }
+        return queuedSegmentsByProfile;
+    }
+
+    private Map<String, Set<Integer>> loadInFlightSegmentsByProfile(
+            String videoId,
+            Map<String, Set<Integer>> queuedSegmentsByProfile
+    ) {
         Map<String, Set<Integer>> inFlightSegmentsByProfile = new HashMap<>();
         if (runtime.processingUploadTaskRepository() == null
                 && runtime.processingTaskClaimRepository() == null
@@ -349,14 +406,18 @@ public final class StartupRecoveryService {
             Set<Integer> inFlightSegments = new HashSet<>();
             try {
                 if (runtime.transcodeStatusRepository() != null) {
-                    // Treat QUEUED as in-flight only while it is fresh. If RabbitMQ drains or a
-                    // published message is lost, stale QUEUED rows must be republished here.
+                    // Treat QUEUED as in-flight only while it is fresh enough for the current
+                    // workload level. When a profile is backlogged but still making progress,
+                    // we intentionally widen the freshness window to avoid duplicate requeues.
                     inFlightSegments.addAll(runtime.transcodeStatusRepository()
                             .findSegmentNumbersByStateUpdatedSince(
                                     videoId,
                                     profile.getName(),
                                     TranscodeSegmentState.QUEUED,
-                                    queuedRecoveryStaleMillis
+                                    computeQueuedRecoveryStaleMillis(
+                                            queuedSegmentsByProfile.getOrDefault(profile.getName(), Set.of()).size(),
+                                            hasRecentNonQueuedProgress(videoId, profile.getName())
+                                    )
                             ));
                     inFlightSegments.addAll(runtime.transcodeStatusRepository()
                             .findSegmentNumbersByState(videoId, profile.getName(), TranscodeSegmentState.TRANSCODING));
@@ -386,6 +447,108 @@ public final class StartupRecoveryService {
             }
         }
         return inFlightSegmentsByProfile;
+    }
+
+    private Map<String, Set<Integer>> loadRecoverableQueuedSegmentsByProfile(
+            String videoId,
+            Map<String, Set<Integer>> queuedSegmentsByProfile,
+            Map<String, Set<Integer>> inFlightSegmentsByProfile
+    ) {
+        Map<String, Set<Integer>> recoverableQueuedSegmentsByProfile = new HashMap<>();
+        if (runtime.transcodeStatusRepository() == null) {
+            return recoverableQueuedSegmentsByProfile;
+        }
+        for (TranscodingProfile profile : profiles) {
+            String profileName = profile.getName();
+            try {
+                Set<Integer> queuedSegments = queuedSegmentsByProfile.getOrDefault(profileName, Set.of());
+                if (queuedSegments.isEmpty()) {
+                    recoverableQueuedSegmentsByProfile.put(profileName, Set.of());
+                    continue;
+                }
+                Set<Integer> nonQueuedInFlightSegments = new HashSet<>(
+                        inFlightSegmentsByProfile.getOrDefault(profileName, Set.of())
+                );
+                nonQueuedInFlightSegments.removeAll(queuedSegments);
+                Set<Integer> freshQueuedSegments = runtime.transcodeStatusRepository().findSegmentNumbersByStateUpdatedSince(
+                        videoId,
+                        profileName,
+                        TranscodeSegmentState.QUEUED,
+                        computeQueuedRecoveryStaleMillis(queuedSegments.size(), !nonQueuedInFlightSegments.isEmpty())
+                );
+                Set<Integer> recoverableQueuedSegments = new HashSet<>(queuedSegments);
+                recoverableQueuedSegments.removeAll(freshQueuedSegments);
+                recoverableQueuedSegmentsByProfile.put(
+                        profileName,
+                        recoverableQueuedSegments
+                );
+            } catch (Exception e) {
+                LOGGER.warn("Startup recovery failed to load recoverable queued segments videoId={} profile={}",
+                        videoId, profileName, e);
+            }
+        }
+        return recoverableQueuedSegmentsByProfile;
+    }
+
+    private boolean hasRecentNonQueuedProgress(String videoId, String profile) {
+        if (runtime.processingUploadTaskRepository() != null) {
+            try {
+                if (!runtime.processingUploadTaskRepository().findOpenSegmentNumbers(videoId, profile).isEmpty()) {
+                    return true;
+                }
+            } catch (Exception e) {
+                LOGGER.warn("Startup recovery failed to load open upload-task segments videoId={} profile={}",
+                        videoId, profile, e);
+            }
+        }
+        if (runtime.processingTaskClaimRepository() != null) {
+            try {
+                if (!runtime.processingTaskClaimRepository().findClaimedSegmentNumbers(
+                        videoId,
+                        profile,
+                        runtime.claimStaleMillis()
+                ).isEmpty()) {
+                    return true;
+                }
+            } catch (Exception e) {
+                LOGGER.warn("Startup recovery failed to load claimed processing segments videoId={} profile={}",
+                        videoId, profile, e);
+            }
+        }
+        if (runtime.transcodeStatusRepository() == null) {
+            return false;
+        }
+        try {
+            return !runtime.transcodeStatusRepository()
+                    .findSegmentNumbersByState(videoId, profile, TranscodeSegmentState.TRANSCODING).isEmpty()
+                    || !runtime.transcodeStatusRepository()
+                    .findSegmentNumbersByState(videoId, profile, TranscodeSegmentState.TRANSCODED).isEmpty()
+                    || !runtime.transcodeStatusRepository()
+                    .findSegmentNumbersByState(videoId, profile, TranscodeSegmentState.UPLOADING).isEmpty();
+        } catch (Exception e) {
+            LOGGER.warn("Startup recovery failed to inspect recent non-queued progress videoId={} profile={}",
+                    videoId, profile, e);
+            return false;
+        }
+    }
+
+    private long computeQueuedRecoveryStaleMillis(int queuedSegments, boolean hasRecentProgress) {
+        long adaptiveStaleMillis = queuedRecoveryStaleMillis;
+        if (hasRecentProgress) {
+            adaptiveStaleMillis = Math.max(adaptiveStaleMillis, ACTIVE_PROGRESS_QUEUED_RECOVERY_STALE_MILLIS);
+        }
+        if (queuedSegments >= BACKLOG_QUEUED_SEGMENT_THRESHOLD) {
+            long backlogExtension = (long) (queuedSegments - BACKLOG_QUEUED_SEGMENT_THRESHOLD + 1)
+                    * BACKLOG_QUEUED_RECOVERY_EXTENSION_PER_SEGMENT_MILLIS;
+            adaptiveStaleMillis = Math.max(
+                    adaptiveStaleMillis,
+                    Math.min(
+                            MAX_BACKLOG_QUEUED_RECOVERY_STALE_MILLIS,
+                            queuedRecoveryStaleMillis + backlogExtension
+                    )
+            );
+        }
+        return adaptiveStaleMillis;
     }
 
     private Map<Integer, Double> loadSourceSegmentOffsets(String videoId, ObjectStorageClient storageClient) {
@@ -464,6 +627,34 @@ public final class StartupRecoveryService {
             }
         }
         return null;
+    }
+
+    private boolean hasActiveProcessingClaim(String videoId, String profileName, int segmentNumber) {
+        if (runtime.processingTaskClaimRepository() == null || segmentNumber < 0) {
+            return false;
+        }
+        try {
+            return runtime.processingTaskClaimRepository().hasActiveClaim(
+                    videoId,
+                    profileName,
+                    segmentNumber,
+                    runtime.claimStaleMillis()
+            );
+        } catch (Exception e) {
+            LOGGER.warn("Spool recovery: failed to check active processing claim videoId={} profile={} segment={}",
+                    videoId, profileName, segmentNumber, e);
+            return false;
+        }
+    }
+
+    private boolean isRegisteredForCurrentSpoolFile(UploadTaskMetadata existingTask, Path file) {
+        String existingOwner = existingTask.spoolOwner();
+        String existingPath = existingTask.spoolPath();
+        if (existingOwner == null || existingPath == null) {
+            return false;
+        }
+        return runtime.processorInstanceId().equals(existingOwner)
+                && file.toAbsolutePath().toString().equals(existingPath);
     }
 
     private void deleteDirectoryRecursive(Path dir) {

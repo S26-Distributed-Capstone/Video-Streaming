@@ -23,6 +23,10 @@ import io.javalin.config.SizeUnit;
 import io.javalin.http.staticfiles.Location;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Properties;
@@ -162,6 +166,7 @@ public class UploadServiceApplication {
             ctx.json(java.util.Map.of("status", "ready", "storageReady", true));
         });
         registerFrontendRoutes(app, frontendIndex);
+        registerAutoscalerProxyRoutes(app);
         app.post("/upload", uploadHandler::upload);
         app.post("/upload/{videoId}/fail", terminalFailureHandler::markFailed);
 
@@ -338,6 +343,54 @@ public class UploadServiceApplication {
             }
             ctx.html(frontendIndex);
         });
+    }
+
+    static void registerAutoscalerProxyRoutes(Javalin app) {
+        HttpClient client = HttpClient.newBuilder()
+                .connectTimeout(java.time.Duration.ofSeconds(3))
+                .build();
+
+        app.get("/autoscaler/status", ctx -> proxyAutoscalerRequest(ctx, client, "GET", "/status"));
+        app.post("/autoscaler/resume", ctx -> proxyAutoscalerRequest(ctx, client, "POST", "/resume"));
+        app.post("/autoscaler/pause", ctx -> proxyAutoscalerRequest(ctx, client, "POST", "/pause"));
+    }
+
+    private static void proxyAutoscalerRequest(io.javalin.http.Context ctx, HttpClient client, String method, String path) {
+        String baseUrl = resolveAutoscalerInternalUrl();
+        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(baseUrl + path))
+                .timeout(java.time.Duration.ofSeconds(30));
+        if ("POST".equals(method)) {
+            builder.POST(HttpRequest.BodyPublishers.noBody());
+        } else {
+            builder.GET();
+        }
+        try {
+            HttpResponse<String> response = client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+            ctx.status(response.statusCode())
+                    .contentType(response.headers().firstValue("content-type").orElse("application/json"))
+                    .result(response.body());
+        } catch (Exception e) {
+            logger.warn("Autoscaler proxy failed method={} path={} baseUrl={}", method, path, baseUrl, e);
+            ctx.status(502).json(java.util.Map.of(
+                    "error", "autoscaler_unreachable",
+                    "message", e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()
+            ));
+        }
+    }
+
+    private static String resolveAutoscalerInternalUrl() {
+        String configured = System.getenv("AUTOSCALER_INTERNAL_URL");
+        if (configured != null && !configured.isBlank()) {
+            return configured.replaceAll("/+$", "");
+        }
+        String releaseName = System.getenv("HELM_RELEASE_NAME");
+        if (releaseName == null || releaseName.isBlank()) {
+            releaseName = DOTENV.get("HELM_RELEASE_NAME");
+        }
+        if (releaseName == null || releaseName.isBlank()) {
+            releaseName = "vs";
+        }
+        return "http://" + releaseName + "-autoscaler:8084";
     }
 
     static String loadFrontendIndex() {

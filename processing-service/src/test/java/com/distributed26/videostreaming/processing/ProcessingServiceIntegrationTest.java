@@ -352,6 +352,159 @@ class ProcessingServiceIntegrationTest {
     }
 
     @Test
+    void periodicSpoolRecoveryDoesNotResetHealthyUploadingTaskOwnedLocally() throws Exception {
+        loadDatabaseConfig();
+        assumeDatabaseReachable();
+
+        String videoId = UUID.randomUUID().toString();
+        seedVideoRecord(videoId, 1, "PROCESSING");
+
+        TranscodedSegmentStatusRepository transcodeRepo =
+                new TranscodedSegmentStatusRepository(testDs());
+        VideoProcessingRepository videoRepo = new VideoProcessingRepository(testDs());
+        ProcessingUploadTaskRepository uploadTaskRepo =
+                new ProcessingUploadTaskRepository(testDs());
+        ProcessingTaskClaimRepository claimRepo =
+                new ProcessingTaskClaimRepository(testDs());
+
+        TestStatusEventBus statusBus = new TestStatusEventBus();
+        RecordingTranscodeTaskBus transcodeBus = new RecordingTranscodeTaskBus();
+        Path spoolRoot = Files.createTempDirectory("processing-healthy-spool-recovery-");
+        Path spoolFile = spoolRoot.resolve(videoId).resolve("low").resolve("output0.ts");
+        Files.createDirectories(spoolFile.getParent());
+        byte[] payload = "healthy-upload".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        Files.write(spoolFile, payload);
+
+        String processorInstanceId = "healthy-owner";
+        ProcessingRuntime runtime = new ProcessingRuntime(
+                transcodeRepo,
+                videoRepo,
+                uploadTaskRepo,
+                claimRepo,
+                statusBus,
+                transcodeBus,
+                null,
+                null,
+                spoolRoot,
+                processorInstanceId,
+                60_000L
+        );
+        StartupRecoveryService recovery = new StartupRecoveryService(
+                new TranscodingProfile[]{TranscodingProfile.LOW},
+                runtime
+        );
+
+        try {
+            uploadTaskRepo.upsertPending(
+                    videoId,
+                    processorInstanceId,
+                    "low",
+                    0,
+                    videoId + "/chunks/output0.ts",
+                    videoId + "/processed/low/output0.ts",
+                    spoolFile.toAbsolutePath().toString(),
+                    payload.length,
+                    0d
+            );
+
+            Optional<LocalSpoolUploadTask> claimed = uploadTaskRepo.claimNextReady(processorInstanceId, 0);
+            assertTrue(claimed.isPresent(), "setup should move the task into UPLOADING");
+            assertEquals(1, uploadTaskRepo.countByState("UPLOADING"));
+            assertEquals(0, uploadTaskRepo.countByState("PENDING"));
+            assertEquals(
+                    ProcessingTaskClaimRepository.ClaimResult.ACQUIRED,
+                    claimRepo.claim(videoId, "low", 0, "UPLOADING", processorInstanceId, 60_000L),
+                    "setup should create an active upload claim"
+            );
+
+            recovery.recoverOrphanedSpoolFiles(new UploadingStorageClient(), spoolRoot);
+
+            assertEquals(1, uploadTaskRepo.countByState("UPLOADING"),
+                    "periodic recovery should not reset a healthy in-flight upload back to PENDING");
+            assertEquals(0, uploadTaskRepo.countByState("PENDING"));
+            assertTrue(uploadTaskRepo.claimNextReady(processorInstanceId, 0).isEmpty(),
+                    "healthy in-flight upload should remain owned by the current uploader");
+        } finally {
+            runtime.resetForTests();
+            cleanupProcessingRows(videoId);
+            deleteDirectory(spoolRoot);
+        }
+    }
+
+    @Test
+    void periodicSpoolRecoveryReassignsVisibleSpoolFileFromDifferentOwner() throws Exception {
+        loadDatabaseConfig();
+        assumeDatabaseReachable();
+
+        String videoId = UUID.randomUUID().toString();
+        seedVideoRecord(videoId, 1, "PROCESSING");
+
+        TranscodedSegmentStatusRepository transcodeRepo =
+                new TranscodedSegmentStatusRepository(testDs());
+        VideoProcessingRepository videoRepo = new VideoProcessingRepository(testDs());
+        ProcessingUploadTaskRepository uploadTaskRepo =
+                new ProcessingUploadTaskRepository(testDs());
+        ProcessingTaskClaimRepository claimRepo =
+                new ProcessingTaskClaimRepository(testDs());
+
+        TestStatusEventBus statusBus = new TestStatusEventBus();
+        RecordingTranscodeTaskBus transcodeBus = new RecordingTranscodeTaskBus();
+        Path spoolRoot = Files.createTempDirectory("processing-visible-takeover-");
+        Path spoolFile = spoolRoot.resolve(videoId).resolve("low").resolve("output0.ts");
+        Files.createDirectories(spoolFile.getParent());
+        byte[] payload = "takeover-upload".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        Files.write(spoolFile, payload);
+
+        String newOwner = "replacement-owner";
+        ProcessingRuntime runtime = new ProcessingRuntime(
+                transcodeRepo,
+                videoRepo,
+                uploadTaskRepo,
+                claimRepo,
+                statusBus,
+                transcodeBus,
+                null,
+                null,
+                spoolRoot,
+                newOwner,
+                60_000L
+        );
+        StartupRecoveryService recovery = new StartupRecoveryService(
+                new TranscodingProfile[]{TranscodingProfile.LOW},
+                runtime
+        );
+
+        try {
+            uploadTaskRepo.upsertPending(
+                    videoId,
+                    "dead-owner",
+                    "low",
+                    0,
+                    videoId + "/chunks/output0.ts",
+                    videoId + "/processed/low/output0.ts",
+                    spoolFile.toAbsolutePath().toString(),
+                    payload.length,
+                    0d
+            );
+
+            assertTrue(uploadTaskRepo.claimNextReady(newOwner, 0).isEmpty(),
+                    "replacement owner should not see the task before recovery reassignment");
+
+            recovery.recoverOrphanedSpoolFiles(new UploadingStorageClient(), spoolRoot);
+
+            Optional<LocalSpoolUploadTask> claimed = uploadTaskRepo.claimNextReady(newOwner, 0);
+            assertTrue(claimed.isPresent(),
+                    "periodic recovery should still reassign a visible spool file from a dead owner");
+            assertEquals(newOwner, claimed.get().spoolOwner());
+            assertEquals(spoolFile.toAbsolutePath().toString(), claimed.get().spoolPath());
+        } finally {
+            runtime.resetForTests();
+            cleanupProcessingRows(videoId);
+            deleteDirectory(spoolRoot);
+        }
+    }
+
+    @Test
     void localUploadWorkerOnSameInstanceUploadsPendingSpoolFile() throws Exception {
         loadDatabaseConfig();
         assumeDatabaseReachable();

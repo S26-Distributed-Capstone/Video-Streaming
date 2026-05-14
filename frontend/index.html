@@ -27,6 +27,11 @@
           </div>
         </div>
 
+        <div id="autoscalerStatusBanner" class="autoscaler-status-banner autoscaler-off" aria-live="polite">
+          <span id="autoscalerStatusText">Autoscaling: OFF</span>
+          <button id="autoscalerToggleBtn" type="button" class="autoscaler-toggle-btn secondary" title="Turn autoscaling on or off">Turn On</button>
+        </div>
+
         <div class="controls">
           <input id="videoName" type="text" placeholder="Video name" maxlength="200" />
           <label class="file-picker" for="fileInput">
@@ -121,7 +126,6 @@
             <div class="stage-heading">
               <span class="stage-index cluster-icon">⬡</span>
               <h2>Cluster</h2>
-              <button id="autoscalerToggleBtn" type="button" class="autoscaler-toggle-btn secondary" title="Pause or resume the autoscaler">—</button>
             </div>
 
             <div class="progress-block">

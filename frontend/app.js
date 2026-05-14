@@ -44,12 +44,14 @@ const clusterDashboard = document.getElementById("clusterDashboard");
 const nodeGrid = document.getElementById("nodeGrid");
 const queueDepthBar = document.getElementById("queueDepthBar");
 const queueDepthLabel = document.getElementById("queueDepthLabel");
+const autoscalerStatusBanner = document.getElementById("autoscalerStatusBanner");
+const autoscalerStatusText = document.getElementById("autoscalerStatusText");
 const autoscalerToggleBtn = document.getElementById("autoscalerToggleBtn");
 
 // ── Autoscaler pause/resume state ───────────────────────────────────────────
-// Default to paused=false — matches the Python autoscaler's startup default.
+// Default to paused=true — autoscaling starts OFF.
 // The button is immediately usable; fetchAutoscalerStatus() will correct if needed.
-let autoscalerPaused = false;
+let autoscalerPaused = true;
 
 let ws = null;
 let currentVideoId = null;
@@ -80,6 +82,7 @@ let selectedVideoId = null;
 let readyVideosState = [];
 let selectedReadyVideoIds = new Set();
 let readyListBusy = false;
+let readyListLoaded = false;
 let playbackAttemptToken = 0;
 let playbackRetryTimerId = null;
 const statusUrlStoragePrefix = "upload-status-url:";
@@ -256,21 +259,26 @@ function scheduleClusterWsReconnect() {
 // ── Autoscaler pause/resume ─────────────────────────────────────────────────
 
 function deriveAutoscalerUrl(path) {
-  const baseUrl = resolveBaseUrl ? resolveBaseUrl() : window.location.origin;
-  const scheme = baseUrl.startsWith("https://") ? "https" : "http";
-  const host = baseUrl.replace(/^https?:\/\//, "").replace(/:\d+$/, "");
-  return `${scheme}://${host}:8084${path}`;
+  return `${resolveBaseUrl()}/autoscaler${path}`;
 }
 
 function setAutoscalerPaused(paused) {
   autoscalerPaused = paused;
+  const autoscalingOn = !paused;
+  if (autoscalerStatusText) {
+    autoscalerStatusText.textContent = autoscalingOn ? "Autoscaling: ON" : "Autoscaling: OFF";
+  }
+  if (autoscalerStatusBanner) {
+    autoscalerStatusBanner.classList.toggle("autoscaler-on", autoscalingOn);
+    autoscalerStatusBanner.classList.toggle("autoscaler-off", !autoscalingOn);
+  }
   if (!autoscalerToggleBtn) return;
   autoscalerToggleBtn.disabled = false;
   if (paused) {
-    autoscalerToggleBtn.textContent = "▶ Resume Autoscaler";
+    autoscalerToggleBtn.textContent = "Turn On";
     autoscalerToggleBtn.classList.add("autoscaler-paused");
   } else {
-    autoscalerToggleBtn.textContent = "⏸ Pause Autoscaler";
+    autoscalerToggleBtn.textContent = "Turn Off";
     autoscalerToggleBtn.classList.remove("autoscaler-paused");
   }
 }
@@ -280,7 +288,7 @@ async function fetchAutoscalerStatus() {
     const resp = await fetch(deriveAutoscalerUrl("/status"));
     if (!resp.ok) { return; } // keep current known state
     const data = await resp.json();
-    setAutoscalerPaused(Boolean(data.paused));
+    setAutoscalerPaused(data.autoscalingOn === true ? false : Boolean(data.paused));
   } catch (_) {
     // unreachable — keep current known state, button stays enabled
   }
@@ -457,6 +465,9 @@ function setActiveTab(tab) {
   if (streamTabBtn) {
     streamTabBtn.classList.toggle("active", !isUpload);
     streamTabBtn.setAttribute("aria-selected", String(!isUpload));
+  }
+  if (!isUpload && !readyListLoaded) {
+    refreshReadyList();
   }
 }
 
@@ -1286,6 +1297,7 @@ async function refreshReadyList() {
       return;
     }
     const videos = await resp.json();
+    readyListLoaded = true;
     renderReadyList(videos);
   } catch (err) {
     setPlayerStatus("Failed to load ready videos.", { success: false });
@@ -1935,7 +1947,6 @@ if (processingRouteStateStreamBtn) {
   processingRouteStateStreamBtn.addEventListener("click", () => setActiveTab("stream"));
 }
 
-refreshReadyList();
 const routeVideoId = getProcessingRouteVideoId();
 if (routeVideoId) {
   bootProcessingRoute(routeVideoId).catch(() => {
@@ -1946,13 +1957,13 @@ if (routeVideoId) {
 }
 setPlayerVisible(false);
 
-// Connect a persistent cluster WebSocket for global node status updates.
-// This runs regardless of whether a video job is active.
-connectClusterWebSocket();
+// Connect cluster status only when the processing dashboard is visible.
+if (routeVideoId) {
+  connectClusterWebSocket();
+}
 
 // ── Autoscaler toggle ───────────────────────────────────────────────────────
-setAutoscalerPaused(false); // show enabled "Pause" button immediately
-fetchAutoscalerStatus();    // async-correct if actual state differs
+setAutoscalerPaused(true);  // show OFF immediately; the autoscaler starts off
 if (autoscalerToggleBtn) {
   autoscalerToggleBtn.addEventListener("click", toggleAutoscaler);
 }

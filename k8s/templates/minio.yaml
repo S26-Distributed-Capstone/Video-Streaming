@@ -58,6 +58,13 @@ spec:
           volumeMounts:
             - name: minio-data
               mountPath: /data
+          resources:
+            requests:
+              memory: {{ .Values.minio.resources.requests.memory | quote }}
+              cpu: {{ .Values.minio.resources.requests.cpu | quote }}
+            limits:
+              memory: {{ .Values.minio.resources.limits.memory | quote }}
+              cpu: {{ .Values.minio.resources.limits.cpu | quote }}
           readinessProbe:
             httpGet:
               path: /minio/health/ready

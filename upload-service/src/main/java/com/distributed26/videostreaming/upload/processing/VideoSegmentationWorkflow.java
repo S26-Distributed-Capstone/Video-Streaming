@@ -6,9 +6,13 @@ import com.distributed26.videostreaming.shared.upload.events.UploadMetaEvent;
 import com.distributed26.videostreaming.upload.db.VideoUploadRepository;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -16,9 +20,6 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.stream.Stream;
-import net.bramp.ffmpeg.FFmpeg;
-import net.bramp.ffmpeg.FFmpegExecutor;
-import net.bramp.ffmpeg.FFprobe;
 import net.bramp.ffmpeg.builder.FFmpegBuilder;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -77,14 +78,14 @@ public final class VideoSegmentationWorkflow {
             tempOutput = Files.createTempDirectory("hls-" + videoId);
             Path tempOutputFinal = tempOutput;
 
-            FFmpeg ffmpeg = new FFmpeg("ffmpeg");
-            FFprobe ffprobe = new FFprobe("ffprobe");
-
             logger.info("Starting FFmpeg segmentation for video: {}", videoId);
 
             ffmpegFuture = CompletableFuture.runAsync(() -> {
-                FFmpegExecutor executor = new FFmpegExecutor(ffmpeg, ffprobe);
-                executor.createJob(buildSegmentationJob(inputPath, tempOutputFinal)).run();
+                try {
+                    runFfmpegSegmentation(inputPath, tempOutputFinal, videoId);
+                } catch (IOException e) {
+                    throw new CompletionException(e);
+                }
             }, ffmpegExecutor);
 
             Set<Path> uploadedFiles = ConcurrentHashMap.newKeySet();
@@ -234,6 +235,85 @@ public final class VideoSegmentationWorkflow {
                 .addExtraArgs("-c:v", "copy")
                 .addExtraArgs("-c:a", "copy")
                 .done();
+    }
+
+    private void runFfmpegSegmentation(Path inputPath, Path tempOutput, String videoId) throws IOException {
+        FFmpegBuilder builder = buildSegmentationJob(inputPath, tempOutput);
+        List<String> command = new ArrayList<>();
+        command.add("ffmpeg");
+        command.addAll(builder.build());
+        runCommandWithDiagnostics(command, "videoId=" + videoId + " input=" + inputPath.getFileName());
+    }
+
+    static void runCommandWithDiagnostics(List<String> command, String operationContext) throws IOException {
+        if (logger.isDebugEnabled()) {
+            logger.debug("FFmpeg command for {}: {}", operationContext, String.join(" ", command));
+        }
+
+        ProcessBuilder processBuilder = new ProcessBuilder(command);
+        processBuilder.redirectErrorStream(false);
+
+        Process process;
+        try {
+            process = processBuilder.start();
+        } catch (IOException e) {
+            throw new IOException("Failed to start FFmpeg process for " + operationContext + ": " + e.getMessage(), e);
+        }
+
+        CompletableFuture<String> stdoutFuture = CompletableFuture.supplyAsync(
+                () -> readProcessStream(process.getInputStream(), "stdout", operationContext)
+        );
+        CompletableFuture<String> stderrFuture = CompletableFuture.supplyAsync(
+                () -> readProcessStream(process.getErrorStream(), "stderr", operationContext)
+        );
+
+        int exitCode;
+        try {
+            exitCode = process.waitFor();
+        } catch (InterruptedException e) {
+            process.destroyForcibly();
+            Thread.currentThread().interrupt();
+            throw new IOException("FFmpeg process interrupted for " + operationContext, e);
+        }
+
+        String stdout = stdoutFuture.join();
+        String stderr = stderrFuture.join();
+
+        if (exitCode != 0) {
+            String stderrTail = truncateTail(stderr, 4000);
+            String stdoutTail = truncateTail(stdout, 2000);
+            logger.error(
+                    "FFmpeg exited with code {} for {}.\n--- stderr ---\n{}\n--- stdout ---\n{}",
+                    exitCode,
+                    operationContext,
+                    stderrTail,
+                    stdoutTail
+            );
+
+            throw new IOException(
+                    "FFmpeg returned exit code " + exitCode + " for " + operationContext + ". stderr: "
+                            + truncateTail(stderr, 500).strip()
+            );
+        }
+
+        if (!stderr.isBlank()) {
+            logger.debug("FFmpeg stderr (exit 0) for {}:\n{}", operationContext, truncateTail(stderr, 2000));
+        }
+    }
+
+    private static String readProcessStream(InputStream stream, String streamName, String operationContext) {
+        try {
+            return new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            return "[failed to read " + streamName + " for " + operationContext + ": " + e.getMessage() + "]";
+        }
+    }
+
+    private static String truncateTail(String value, int maxLength) {
+        if (value == null || value.length() <= maxLength) {
+            return value == null ? "" : value;
+        }
+        return "…(truncated)…\n" + value.substring(value.length() - maxLength);
     }
 
     private void cleanup(Path inputPath, Path tempOutput) {

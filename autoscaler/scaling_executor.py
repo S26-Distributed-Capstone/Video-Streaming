@@ -35,6 +35,80 @@ class ScalingExecutor:
         )
         log.info("StatefulSet %s replicas set to %d", self._cfg.statefulset_name, count)
 
+    def constrain_processing_to_nodes(self, node_names: list[str]) -> None:
+        body = {
+            "spec": {
+                "template": {
+                    "spec": {
+                        "affinity": {
+                            "nodeAffinity": {
+                                "requiredDuringSchedulingIgnoredDuringExecution": {
+                                    "nodeSelectorTerms": [
+                                        {
+                                            "matchExpressions": [
+                                                {
+                                                    "key": "kubernetes.io/hostname",
+                                                    "operator": "In",
+                                                    "values": node_names,
+                                                }
+                                            ]
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self._apps.patch_namespaced_stateful_set(
+            name=self._cfg.statefulset_name,
+            namespace=self._cfg.kube_namespace,
+            body=body,
+        )
+        log.info("StatefulSet %s constrained to processing nodes: %s", self._cfg.statefulset_name, node_names)
+
+    def clear_processing_node_constraint(self) -> None:
+        body = {
+            "spec": {
+                "template": {
+                    "spec": {
+                        "affinity": {
+                            "nodeAffinity": None,
+                        }
+                    }
+                }
+            }
+        }
+        self._apps.patch_namespaced_stateful_set(
+            name=self._cfg.statefulset_name,
+            namespace=self._cfg.kube_namespace,
+            body=body,
+        )
+        log.info("StatefulSet %s processing-node constraint cleared", self._cfg.statefulset_name)
+
+    def reconcile_replicas_to_active_topology(self, topology: TopologyManager) -> bool:
+        """
+        Ensure the StatefulSet replica target exactly matches the full processing
+        capacity of the currently uncordoned worker nodes.
+
+        This keeps replica count aligned even when nodes are manually cordoned or
+        uncordoned outside the normal queue-driven scale-up/scale-down path.
+        Returns True when a reconciliation patch was applied.
+        """
+        current = self.get_statefulset_replicas()
+        target = topology.total_replicas_for_active_nodes()
+        if current == target:
+            return False
+        self.set_statefulset_replicas(target)
+        log.info(
+            "Reconciled StatefulSet %s replicas to active topology: %d→%d",
+            self._cfg.statefulset_name,
+            current,
+            target,
+        )
+        return True
+
     # ── Scale actions ────────────────────────────────────────────────────────
 
     def scale_up_one_node(self, topology: TopologyManager) -> Optional[str]:
@@ -123,37 +197,72 @@ class ScalingExecutor:
             deactivated.append(name)
         return deactivated
 
+    def enforce_active_node_count(self, topology: TopologyManager, target_active: int) -> None:
+        """
+        Cordon/uncordon workers until exactly target_active nodes are schedulable,
+        then set processing replicas to those active nodes' CPU-derived capacity.
+        """
+        states = topology.get_node_states()
+        target_active = max(0, min(target_active, len(states)))
+        ranked_nodes = sorted(
+            states.items(),
+            key=lambda item: (-item[1]["cpu_count"], item[0]),
+        )
+        target_nodes = {name for name, _ in ranked_nodes[:target_active]}
+
+        to_cordon = [name for name, state in states.items() if name not in target_nodes and not state["cordoned"]]
+        to_uncordon = [name for name, state in states.items() if name in target_nodes and state["cordoned"]]
+
+        for node_name in to_cordon:
+            topology.cordon_node(node_name)
+        for node_name in to_cordon:
+            app_label = self._cfg.statefulset_name
+            topology.evict_pods_on_node(node_name, self._cfg.kube_namespace, app_label)
+        for node_name in to_uncordon:
+            topology.uncordon_node(node_name)
+
+        target_replicas = sum(
+            topology.replicas_for_node(states[name]["cpu_count"])
+            for name in target_nodes
+        )
+        self.set_statefulset_replicas(target_replicas)
+        log.info(
+            "Active node count enforced: target_active=%d target_nodes=%s replicas=%d",
+            target_active, sorted(target_nodes), target_replicas,
+        )
+
+    def enforce_processing_baseline_without_cordoning(self, topology: TopologyManager, target_active: int) -> None:
+        """
+        Autoscaling OFF baseline: do not cordon or uncordon any Kubernetes node.
+        Instead, pin only the processing StatefulSet to target_active worker nodes
+        and set replicas to those nodes' full 1-CPU-pod capacity.
+        """
+        states = topology.get_node_states()
+        target_active = max(0, min(target_active, len(states)))
+        ranked_nodes = sorted(
+            states.items(),
+            key=lambda item: (-item[1]["cpu_count"], item[0]),
+        )
+        target_nodes = [name for name, _ in ranked_nodes[:target_active]]
+        target_replicas = sum(
+            topology.replicas_for_node(states[name]["cpu_count"])
+            for name in target_nodes
+        )
+
+        if target_nodes:
+            self.constrain_processing_to_nodes(target_nodes)
+        self.set_statefulset_replicas(target_replicas)
+        log.info(
+            "Autoscaling-off processing baseline enforced without cordoning: nodes=%s replicas=%d",
+            target_nodes, target_replicas,
+        )
+
     def enforce_initial_state(self, topology: TopologyManager) -> None:
         """
         On startup, cordon all nodes except MIN_ACTIVE_NODES and set replicas to
         the sum of CPU-derived replica counts across the active nodes. Idempotent.
         """
-        states = topology.get_node_states()
-        active_nodes = [n for n, s in states.items() if not s["cordoned"]]
-        cordoned_nodes = [n for n, s in states.items() if s["cordoned"]]
+        self.clear_processing_node_constraint()
+        self.enforce_active_node_count(topology, self._cfg.min_active_nodes)
+        log.info("Initial state enforced: target_active=%d", self._cfg.min_active_nodes)
 
-        target_active = self._cfg.min_active_nodes
-        excess = len(active_nodes) - target_active
-
-        if excess > 0:
-            # Cordon excess nodes FIRST so evicted pods don't reschedule back onto them,
-            # then evict their pods.
-            to_cordon = active_nodes[target_active:]
-            for node_name in to_cordon:
-                topology.cordon_node(node_name)
-            for node_name in to_cordon:
-                app_label = self._cfg.statefulset_name
-                topology.evict_pods_on_node(node_name, self._cfg.kube_namespace, app_label)
-        elif excess < 0:
-            # Uncordon enough to reach target
-            to_uncordon = cordoned_nodes[:(-excess)]
-            for node_name in to_uncordon:
-                topology.uncordon_node(node_name)
-
-        # Compute target replicas as the sum across the nodes that will be active
-        target_replicas = topology.total_replicas_for_active_nodes()
-        self.set_statefulset_replicas(target_replicas)
-        log.info(
-            "Initial state enforced: active_nodes=%d target_active=%d replicas=%d",
-            len(active_nodes), target_active, target_replicas,
-        )
