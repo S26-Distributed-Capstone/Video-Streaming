@@ -9,8 +9,8 @@ REMOTE_K8S_DIR="/home/sack/videostreaming/k8s"
 KUBECTL_PREFIX="doas env KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl -n video-streaming"
 VALUES_FILE="${ROOT_DIR}/k8s/values.yaml"
 RENDERED_FILE="${ROOT_DIR}/k8s/rendered.yaml"
-IMAGE_REPO="jasonroth03/video-streaming-app"
-AUTOSCALER_IMAGE="jasonroth03/video-streaming-autoscaler:1.3"
+IMAGE_REPO="tanigross/video-streaming-app"
+AUTOSCALER_IMAGE="tanigross/video-streaming-autoscaler:1.4"
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || {

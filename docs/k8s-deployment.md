@@ -81,7 +81,7 @@ This runs `helm install` and injects your `.env` secrets via `--set` flags.
 
 > **Note:** After deploying, it may take up to 30 seconds before the frontend is accessible. The 3-node RabbitMQ cluster needs to form first. The chart uses init containers to wait for dependencies, and the Java RabbitMQ clients also retry broker initialization during startup, which reduces early `CrashLoopBackOff` failures while the broker is still warming up.
 
-> **Processing workload note:** `processing-service` is deployed as a `StatefulSet` on this branch, not a `Deployment`. Each replica gets a stable pod identity plus its own `processing-spool` persistent volume, so rollout, scaling, and storage behavior differ from the stateless services.
+> **Processing workload note:** `processing-service` is deployed as a `StatefulSet` on this branch, not a `Deployment`. Each replica gets a stable pod identity, but its `processing-spool` is ephemeral `emptyDir` storage so cordon-based autoscaling can reschedule workers onto any eligible app node without persistent-volume node affinity.
 
 ## 5. Start the Network Tunnel
 
@@ -274,7 +274,7 @@ k8s/
     ├── minio.yaml               # StatefulSet + Service
     ├── upload-service.yaml      # Deployment + LoadBalancer Service (port 8080)
     ├── status-service.yaml      # Deployment + LoadBalancer Service (port 8081)
-    ├── processing-service.yaml  # StatefulSet + per-replica PVC + ClusterIP Service (port 8082)
+    ├── processing-service.yaml  # StatefulSet + ephemeral processing spool + ClusterIP Service (port 8082)
     └── streaming-service.yaml   # Deployment + LoadBalancer Service (port 8083)
 ```
 
@@ -289,9 +289,9 @@ Running `./deploy_k8s.sh` creates the following in your cluster:
 | StatefulSet | vs-minio (1 replica) | S3-compatible object storage |
 | Deployment | vs-upload (from `uploadService.replicas`) | Accepts video uploads, segments into chunks |
 | Deployment | vs-status (from `statusService.replicas`) | WebSocket status updates to the browser |
-| StatefulSet | vs-processing (from `processingService.replicas`) | FFmpeg transcoding workers with stable identities and persistent local spool storage |
+| StatefulSet | vs-processing (from `processingService.replicas`) | FFmpeg transcoding workers with stable identities and ephemeral local spool storage |
 | Deployment | vs-streaming (from `streamingService.replicas`) | Serves HLS manifests and presigned URLs |
-| PVC | `processing-spool` claims created by the `vs-processing` StatefulSet | One local spool volume per processing replica |
+| emptyDir | `processing-spool` volumes on `vs-processing` pods | Per-pod ephemeral spool storage capped by `processingService.spoolStorageSize` |
 | ConfigMap | vs-config | Shared app configuration |
 | Secret | vs-secrets | Database, RabbitMQ, and MinIO credentials |
 
@@ -299,7 +299,7 @@ Running `./deploy_k8s.sh` creates the following in your cluster:
 
 | Symptom | Fix |
 |---------|-----|
-| Pods stuck in `Pending` | `kubectl describe pod <name>` — check for resource limits or PVC issues |
+| Pods stuck in `Pending` | `kubectl describe pod <name>` — check for cordons, taints, node selectors, or resource pressure |
 | `CrashLoopBackOff` | `kubectl logs <pod> --previous` — check the crash reason |
 | Pods running but `0/1 Ready` | `kubectl describe pod <name>` — readiness probe failing |
 | `ERR_CONNECTION_REFUSED` in browser | Make sure `minikube tunnel` is running |

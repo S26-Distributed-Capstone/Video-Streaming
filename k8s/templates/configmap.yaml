@@ -45,6 +45,7 @@ data:
   {{- end }}
   PROCESSING_RECOVERY_RECONCILIATION_MILLIS: {{ .Values.config.processingRecoveryReconciliationMillis | quote }}
   PROCESSING_RECOVERY_QUEUED_STALE_MILLIS: {{ .Values.config.processingRecoveryQueuedStaleMillis | quote }}
+  LOCAL_UPLOAD_WORKER_COUNT: {{ .Values.config.localUploadWorkerCount | quote }}
   THREADS_PER_WORKER: {{ .Values.config.threadsPerWorker | quote }}
   FFMPEG_PRESET: {{ .Values.config.ffmpegPreset | quote }}
   PROCESSING_SPOOL_ROOT: {{ .Values.config.processingSpoolRoot | quote }}

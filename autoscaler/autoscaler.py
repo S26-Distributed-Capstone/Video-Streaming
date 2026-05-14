@@ -179,7 +179,11 @@ def run_poll_loop(
             time.sleep(cfg.poll_interval_seconds)
             continue
 
-        log.info("queue_depth=%d active_nodes=%d/%d", queue_depth, active_nodes, cfg.total_nodes)
+        idle_polls = store.record_queue_depth(queue_depth, cfg.scale_down_threshold)
+        log.info(
+            "queue_depth=%d active_nodes=%d/%d idle_polls=%d/%d",
+            queue_depth, active_nodes, cfg.total_nodes, idle_polls, cfg.scale_down_idle_polls,
+        )
 
         # ── Scaling decision ────────────────────────────────────────────────
         if _paused.is_set():
@@ -187,7 +191,12 @@ def run_poll_loop(
         else:
             decision, steps = engine.decide(queue_depth, active_nodes)
 
-            if decision != "noop" and not store.is_cooldown_active(cfg.scale_cooldown_seconds):
+            if decision == "scale_down" and idle_polls < cfg.scale_down_idle_polls:
+                log.info(
+                    "Decision: scale_down ×%d deferred until queue is idle for %d consecutive poll(s)",
+                    steps, cfg.scale_down_idle_polls,
+                )
+            elif decision != "noop" and not store.is_cooldown_active(cfg.scale_cooldown_seconds):
                 try:
                     if decision == "scale_up":
                         log.info(
@@ -265,4 +274,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

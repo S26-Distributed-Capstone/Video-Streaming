@@ -35,6 +35,7 @@ class Config:
     max_scale_down_step: int  # max nodes to deactivate in a single poll cycle (keep conservative)
     poll_interval_seconds: int
     scale_cooldown_seconds: int
+    scale_down_idle_polls: int
 
     # RabbitMQ connection
     rabbitmq_host: str
@@ -70,6 +71,7 @@ def load() -> Config:
         max_scale_down_step=_get_int("MAX_SCALE_DOWN_STEP", 1),
         poll_interval_seconds=_get_int("POLL_INTERVAL_SECONDS", 10),
         scale_cooldown_seconds=_get_int("SCALE_COOLDOWN_SECONDS", 10),
+        scale_down_idle_polls=_get_int("SCALE_DOWN_IDLE_POLLS", 6),
 
         rabbitmq_host=_get("RABBITMQ_HOST", "localhost"),
         rabbitmq_port=_get_int("RABBITMQ_PORT", 5672),
@@ -92,4 +94,3 @@ def load() -> Config:
         raise ValueError("SCALE_DOWN_THRESHOLD must be < SCALE_UP_THRESHOLD")
 
     return cfg
-

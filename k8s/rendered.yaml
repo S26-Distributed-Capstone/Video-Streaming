@@ -63,8 +63,9 @@ data:
   STREAMING_PORT: "8083"
   UPLOAD_THREAD_POOL_SIZE: "16"
   PG_POOL_SIZE: "10"
-  PROCESSING_RECOVERY_RECONCILIATION_MILLIS: "60000"
-  PROCESSING_RECOVERY_QUEUED_STALE_MILLIS: "300000"
+  PROCESSING_RECOVERY_RECONCILIATION_MILLIS: "15000"
+  PROCESSING_RECOVERY_QUEUED_STALE_MILLIS: "45000"
+  LOCAL_UPLOAD_WORKER_COUNT: "6"
   THREADS_PER_WORKER: "1"
   FFMPEG_PRESET: "superfast"
   PROCESSING_SPOOL_ROOT: "/app/processing-spool"
@@ -440,7 +441,7 @@ spec:
               echo "vs-rabbitmq:5672 is up."
       containers:
         - name: autoscaler
-          image: "jasonroth03/video-streaming-autoscaler:1.1"
+          image: "tanigross/video-streaming-autoscaler:1.4"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8084
@@ -474,6 +475,8 @@ spec:
               value: "10"
             - name: SCALE_COOLDOWN_SECONDS
               value: "10"
+            - name: SCALE_DOWN_IDLE_POLLS
+              value: "6"
             - name: NODE_LABEL_SELECTOR
               value: "workload-role=app"
             - name: RABBITMQ_HOST
@@ -670,7 +673,7 @@ spec:
               echo "vs-postgres:5432 is up."
       containers:
         - name: status-service
-          image: "jasonroth03/video-streaming-app:10"
+          image: "tanigross/video-streaming-app:10"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8081
@@ -758,7 +761,7 @@ spec:
               echo "vs-minio:9000 is up."
       containers:
         - name: streaming-service
-          image: "jasonroth03/video-streaming-app:10"
+          image: "tanigross/video-streaming-app:10"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8083
@@ -857,7 +860,7 @@ spec:
               echo "vs-postgres:5432 is up."
       containers:
         - name: upload-service
-          image: "jasonroth03/video-streaming-app:10"
+          image: "tanigross/video-streaming-app:10"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
@@ -1051,7 +1054,7 @@ metadata:
   name: vs-processing
 spec:
   serviceName: vs-processing
-  replicas: 12
+  replicas: 2
   podManagementPolicy: Parallel
   selector:
     matchLabels:
@@ -1079,6 +1082,10 @@ spec:
           labelSelector:
             matchLabels:
               app: vs-processing
+      volumes:
+        - name: processing-spool
+          emptyDir:
+            sizeLimit: 5Gi
       initContainers:
         - name: wait-for-rabbitmq
           image: busybox:1.36
@@ -1104,7 +1111,7 @@ spec:
               echo "vs-postgres:5432 is up."
       containers:
         - name: processing-service
-          image: "jasonroth03/video-streaming-app:10"
+          image: "tanigross/video-streaming-app:10"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8082
@@ -1146,14 +1153,6 @@ spec:
             limits:
               memory: "2Gi"
               cpu: "4000m"
-  volumeClaimTemplates:
-    - metadata:
-        name: processing-spool
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        resources:
-          requests:
-            storage: 5Gi
 ---
 # Source: video-streaming/templates/rabbitmq.yaml
 # ── StatefulSet: 3-node RabbitMQ cluster ──

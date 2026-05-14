@@ -10,6 +10,7 @@ class StateStore:
         self._last_scale_time: float = 0.0
         self._last_published_node_states: Optional[Dict] = None
         self._became_leader_bootstrapped: bool = False
+        self._idle_poll_count: int = 0
 
     # ── Cooldown ─────────────────────────────────────────────────────────────
 
@@ -18,6 +19,15 @@ class StateStore:
 
     def record_scale_event(self) -> None:
         self._last_scale_time = time.monotonic()
+
+    # ── Idle tracking ───────────────────────────────────────────────────────
+
+    def record_queue_depth(self, queue_depth: int, idle_threshold: int) -> int:
+        if queue_depth <= idle_threshold:
+            self._idle_poll_count += 1
+        else:
+            self._idle_poll_count = 0
+        return self._idle_poll_count
 
     # ── Publish deduplication ────────────────────────────────────────────────
 
@@ -40,4 +50,4 @@ class StateStore:
         """Call when leadership is lost so next election triggers a fresh bootstrap."""
         self._became_leader_bootstrapped = False
         self._last_published_node_states = None
-
+        self._idle_poll_count = 0

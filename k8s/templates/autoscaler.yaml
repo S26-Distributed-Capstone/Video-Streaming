@@ -62,6 +62,8 @@ spec:
               value: {{ .Values.autoscaler.pollIntervalSeconds | quote }}
             - name: SCALE_COOLDOWN_SECONDS
               value: {{ .Values.autoscaler.scaleCooldownSeconds | quote }}
+            - name: SCALE_DOWN_IDLE_POLLS
+              value: {{ .Values.autoscaler.scaleDownIdlePolls | quote }}
             - name: NODE_LABEL_SELECTOR
               value: {{ .Values.autoscaler.nodeLabelSelector | quote }}
             - name: RABBITMQ_HOST
@@ -75,7 +77,7 @@ spec:
             - name: RABBITMQ_EXCHANGE
               value: {{ .Values.config.rabbitmqExchange | quote }}
             - name: RABBITMQ_TASK_QUEUE
-              value: "upload.task.queue"
+              value: {{ .Values.config.rabbitmqTaskQueue | quote }}
             - name: RABBITMQ_USER
               valueFrom:
                 secretKeyRef:
@@ -106,4 +108,3 @@ spec:
             limits:
               memory: {{ .Values.autoscaler.resources.limits.memory | quote }}
               cpu: {{ .Values.autoscaler.resources.limits.cpu | quote }}
-

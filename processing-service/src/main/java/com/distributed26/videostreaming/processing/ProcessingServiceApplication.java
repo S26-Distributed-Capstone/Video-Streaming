@@ -27,6 +27,8 @@ import com.distributed26.videostreaming.shared.upload.events.UploadFailedEvent;
 import com.distributed26.videostreaming.shared.upload.events.UploadMetaEvent;
 import io.github.cdimascio.dotenv.Dotenv;
 import io.javalin.Javalin;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -57,8 +59,10 @@ public class ProcessingServiceApplication {
     private static final String DEV_LOG_SERVICE = "Processing-service";
     private static final String MANIFEST_PROCESSOR_EXECUTOR_NAME = "AbrManifestGenerator";
     private static final long DEFAULT_CLAIM_STALE_MILLIS = 10_000L;
-    private static final long DEFAULT_RECOVERY_RECONCILIATION_MILLIS = 60_000L;
-    private static final long DEFAULT_RECOVERY_QUEUED_STALE_MILLIS = 300_000L;
+    private static final long DEFAULT_RECOVERY_RECONCILIATION_MILLIS = 15_000L;
+    private static final long DEFAULT_RECOVERY_QUEUED_STALE_MILLIS = 45_000L;
+    private static final int RECOVERY_LOCK_KEY_1 = 267026;
+    private static final int RECOVERY_LOCK_KEY_2 = 1;
     private static volatile ExecutorService uploadExecutorRef;
     private static volatile ProcessingRuntime runtimeRef;
     private static volatile Thread bucketEnsureThread;
@@ -198,6 +202,7 @@ public class ProcessingServiceApplication {
                     storageClient,
                     startupRecovery,
                     localUploadSpoolRoot,
+                    dataSourceToClose,
                     devLogPublisher,
                     recoveryReconciliationMillis
             );
@@ -312,6 +317,24 @@ public class ProcessingServiceApplication {
             RabbitMQDevLogPublisher devLogPublisher,
             long recoveryReconciliationMillis
     ) {
+        startBucketEnsureThread(
+                storageClient,
+                startupRecovery,
+                localUploadSpoolRoot,
+                null,
+                devLogPublisher,
+                recoveryReconciliationMillis
+        );
+    }
+
+    private static void startBucketEnsureThread(
+            ObjectStorageClient storageClient,
+            StartupRecoveryService startupRecovery,
+            Path localUploadSpoolRoot,
+            HikariDataSource recoveryLockDataSource,
+            RabbitMQDevLogPublisher devLogPublisher,
+            long recoveryReconciliationMillis
+    ) {
         Thread priorThread = bucketEnsureThread;
         if (priorThread != null && priorThread.isAlive()) {
             priorThread.interrupt();
@@ -321,6 +344,7 @@ public class ProcessingServiceApplication {
                 storageClient,
                 startupRecovery,
                 localUploadSpoolRoot,
+                recoveryLockDataSource,
                 devLogPublisher,
                 recoveryReconciliationMillis
         ), "processing-bucket-ensure");
@@ -333,6 +357,7 @@ public class ProcessingServiceApplication {
             ObjectStorageClient storageClient,
             StartupRecoveryService startupRecovery,
             Path localUploadSpoolRoot,
+            HikariDataSource recoveryLockDataSource,
             RabbitMQDevLogPublisher devLogPublisher,
             long recoveryReconciliationMillis
     ) {
@@ -340,7 +365,6 @@ public class ProcessingServiceApplication {
         long normalizedRecoveryReconciliationMillis = Math.max(1_000L, recoveryReconciliationMillis);
         boolean waitingForStorage = false;
         boolean storageReady = false;
-        boolean incompleteVideoRecoveryPending = true;
         while (!Thread.currentThread().isInterrupted()) {
             try {
                 storageClient.ensureBucketExists();
@@ -357,14 +381,10 @@ public class ProcessingServiceApplication {
                 delayMillis = 500L;
 
                 startupRecovery.recoverOrphanedSpoolFiles(storageClient, localUploadSpoolRoot);
-                if (incompleteVideoRecoveryPending) {
-                    startupRecovery.recoverIncompleteVideos(storageClient);
-                    incompleteVideoRecoveryPending = false;
-                }
+                runIncompleteVideoRecoveryIfLockAcquired(recoveryLockDataSource, startupRecovery, storageClient);
                 Thread.sleep(normalizedRecoveryReconciliationMillis);
             } catch (RuntimeException e) {
                 storageReady = false;
-                incompleteVideoRecoveryPending = true;
                 if (!waitingForStorage) {
                     waitingForStorage = true;
                     LOGGER.warn("MinIO unavailable during processing startup; continuing and retrying bucket ensure", e);
@@ -396,6 +416,44 @@ public class ProcessingServiceApplication {
             }
         }
         bucketEnsureThread = null;
+    }
+
+    private static void runIncompleteVideoRecoveryIfLockAcquired(
+            HikariDataSource recoveryLockDataSource,
+            StartupRecoveryService startupRecovery,
+            ObjectStorageClient storageClient
+    ) {
+        if (recoveryLockDataSource == null) {
+            startupRecovery.recoverIncompleteVideos(storageClient);
+            return;
+        }
+
+        try (Connection conn = recoveryLockDataSource.getConnection()) {
+            conn.setAutoCommit(false);
+            if (!tryRecoveryLock(conn)) {
+                conn.rollback();
+                LOGGER.debug("Skipping incomplete video recovery because another processing pod holds the recovery lock");
+                return;
+            }
+            try {
+                startupRecovery.recoverIncompleteVideos(storageClient);
+                conn.commit();
+            } finally {
+                conn.setAutoCommit(true);
+            }
+        } catch (Exception e) {
+            LOGGER.warn("Failed to run locked incomplete video recovery", e);
+        }
+    }
+
+    private static boolean tryRecoveryLock(Connection conn) throws java.sql.SQLException {
+        try (PreparedStatement ps = conn.prepareStatement("SELECT pg_try_advisory_xact_lock(?, ?)")) {
+            ps.setInt(1, RECOVERY_LOCK_KEY_1);
+            ps.setInt(2, RECOVERY_LOCK_KEY_2);
+            try (var rs = ps.executeQuery()) {
+                return rs.next() && rs.getBoolean(1);
+            }
+        }
     }
 
     private static RabbitMQDevLogPublisher createDevLogPublisher() {

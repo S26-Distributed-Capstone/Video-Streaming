@@ -1,20 +1,26 @@
 #!/usr/bin/env bash
-# hard-redeploy.sh — Force a full image re-pull and pod replacement.
+# hard-redeploy.sh — Autoscaling-safe hard redeploy.
 #
 # Use this when rebuild-rollout-verify.sh leaves stale pods running the old
 # image (common when reusing the same image tag with pullPolicy: IfNotPresent).
 #
 # What this does differently from rebuild-rollout-verify.sh:
 #   1. Patches every app deployment to imagePullPolicy: Always before restart.
-#   2. Force-deletes any pods stuck in Terminating so they don't block rollout.
-#   3. Deletes all existing app pods after the patch so new ones are freshly
+#   2. Imports the freshly built app image into every k3s node, so later
+#      autoscaler scale-ups use the local containerd cache instead of pulling
+#      a large image from Docker Hub in waves.
+#   3. Force-deletes any pods stuck in Terminating so they don't block rollout.
+#   4. Deletes all existing app pods after the patch so new ones are freshly
 #      scheduled and the kubelet is forced to re-pull at every node.
-#   4. Restores pullPolicy: IfNotPresent after all pods are Running (keeps
+#   5. Restores pullPolicy: IfNotPresent after all pods are Running (keeps
 #      steady-state behaviour unchanged).
 #
 # Usage:
 #   ./scripts/hard-redeploy.sh [TAG]
 #   TAG defaults to whatever is currently in k8s/values.yaml.
+#
+# For a faster non-autoscaling redeploy that skips node-wide image import, use:
+#   ./scripts/hard-redeploy-no-autoscaling.sh [TAG]
 
 set -euo pipefail
 
@@ -25,8 +31,10 @@ REMOTE_K8S_DIR="/home/sack/videostreaming/k8s"
 KUBECTL_PREFIX="doas env KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl -n video-streaming"
 VALUES_FILE="${ROOT_DIR}/k8s/values.yaml"
 RENDERED_FILE="${ROOT_DIR}/k8s/rendered.yaml"
-IMAGE_REPO="jasonroth03/video-streaming-app"
-AUTOSCALER_IMAGE="jasonroth03/video-streaming-autoscaler:1.3"
+IMAGE_REPO="tanigross/video-streaming-app"
+AUTOSCALER_IMAGE="tanigross/video-streaming-autoscaler:1.4"
+DIST_DIR="${ROOT_DIR}/dist"
+REMOTE_IMAGE_DIR="/home/sack/videostreaming/images"
 
 # Deployments managed by this script (not the autoscaler-managed StatefulSet).
 APP_DEPLOYMENTS=(vs-upload vs-status vs-streaming vs-autoscaler)
@@ -66,6 +74,44 @@ remote_kubectl() {
 
 first_external_ip() {
   remote_kubectl "get svc vs-upload -o jsonpath='{.status.loadBalancer.ingress[0].ip}'" | tr -d '\r'
+}
+
+cluster_node_ips() {
+  remote_run "doas env KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get nodes -o wide --no-headers | awk '{print \$6}'" \
+    | tr -d '\r' \
+    | sed '/^$/d'
+}
+
+distribute_image_to_k3s() {
+  local image="$1"
+  local archive_name="$2"
+  local archive_path="${DIST_DIR}/${archive_name}"
+
+  mkdir -p "$DIST_DIR"
+
+  echo "==> Caching ${image} into every k3s node"
+  echo "  Pulling linux/amd64 image locally before export"
+  docker pull --platform linux/amd64 "$image"
+
+  echo "  Saving image archive: ${archive_path}"
+  docker save -o "$archive_path" "$image"
+
+  NODE_IPS=()
+  while IFS= read -r node_ip; do
+    NODE_IPS+=("$node_ip")
+  done < <(cluster_node_ips)
+  if [[ "${#NODE_IPS[@]}" -eq 0 ]]; then
+    echo "Could not discover cluster node IPs" >&2
+    exit 1
+  fi
+
+  for node_ip in "${NODE_IPS[@]}"; do
+    echo "  Importing on ${node_ip}"
+    ssh -i "$SSH_KEY" "sack@${node_ip}" "mkdir -p ${REMOTE_IMAGE_DIR}"
+    scp -i "$SSH_KEY" "$archive_path" "sack@${node_ip}:${REMOTE_IMAGE_DIR}/${archive_name}"
+    ssh -i "$SSH_KEY" "sack@${node_ip}" \
+      "doas k3s ctr -n k8s.io images import ${REMOTE_IMAGE_DIR}/${archive_name}"
+  done
 }
 
 # Patch a single deployment's container imagePullPolicy.
@@ -138,6 +184,8 @@ mvn -pl upload-service,processing-service,streaming-service -am -DskipTests clea
 
 echo "==> Building & pushing amd64 image ${IMAGE}"
 docker buildx build --platform linux/amd64 -f Dockerfile.prebuilt -t "$IMAGE" --push .
+
+distribute_image_to_k3s "$IMAGE" "video-streaming-app-${TAG}-amd64.tar"
 
 echo "==> Building & pushing autoscaler image ${AUTOSCALER_IMAGE}"
 docker buildx build --platform linux/amd64 -f autoscaler/Dockerfile -t "$AUTOSCALER_IMAGE" --push autoscaler/
@@ -220,8 +268,8 @@ echo
 echo "Hard redeploy complete."
 echo "Verified:"
 echo "  - image pushed to Docker Hub as ${IMAGE}"
+echo "  - image imported into every k3s node before rollout"
 echo "  - all app pods force-bounced with imagePullPolicy: Always during rollout"
 echo "  - imagePullPolicy restored to IfNotPresent"
 echo "  - manifests applied from ${REMOTE_K8S_DIR}"
 echo "  - live app.js includes the expected status-update code"
-

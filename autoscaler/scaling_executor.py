@@ -79,18 +79,18 @@ class ScalingExecutor:
         cpu_count = states.get(node_name, {}).get("cpu_count", 1)
         node_replicas = topology.replicas_for_node(cpu_count)
 
-        # Cordon FIRST — prevents the StatefulSet controller from rescheduling
-        # evicted pods back onto this node while they are terminating.
+        # Floor = sum of replicas for the remaining active (non-cordoned) nodes
+        current = self.get_statefulset_replicas()
+        target = max(0, current - node_replicas)
+        self.set_statefulset_replicas(target)
+
+        # Cordon after lowering the StatefulSet replica target. If we evict
+        # first, the controller may create replacement pods before the scale-down
+        # patch lands, which creates avoidable churn and batchy processing.
         topology.cordon_node(node_name)
 
         app_label = self._cfg.statefulset_name
         topology.evict_pods_on_node(node_name, self._cfg.kube_namespace, app_label)
-
-        # Floor = sum of replicas for the remaining active (non-cordoned) nodes
-        min_replicas = topology.total_replicas_for_active_nodes()
-        current = self.get_statefulset_replicas()
-        target = max(min_replicas, current - node_replicas)
-        self.set_statefulset_replicas(target)
         log.info(
             "Scaled DOWN: deactivated node=%s cpus=%d node_replicas=%d replicas %d→%d",
             node_name, cpu_count, node_replicas, current, target,
@@ -157,4 +157,3 @@ class ScalingExecutor:
             "Initial state enforced: active_nodes=%d target_active=%d replicas=%d",
             len(active_nodes), target_active, target_replicas,
         )
-

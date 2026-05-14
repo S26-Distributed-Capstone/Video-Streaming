@@ -84,6 +84,10 @@ spec:
       tolerations:
 {{ toYaml $processingScheduling.tolerations | indent 8 }}
       {{- end }}
+      volumes:
+        - name: processing-spool
+          emptyDir:
+            sizeLimit: {{ $pool.spoolStorageSize }}
       initContainers:
         {{- include "video-streaming.wait-for" (dict "name" "rabbitmq" "host" (printf "%s-rabbitmq" $pool.root.Release.Name) "port" "5672") | nindent 8 }}
         {{- include "video-streaming.wait-for" (dict "name" "postgres" "host" (printf "%s-postgres" $pool.root.Release.Name) "port" "5432") | nindent 8 }}
@@ -137,13 +141,4 @@ spec:
             limits:
               memory: {{ $pool.resources.limits.memory | quote }}
               cpu: {{ $pool.resources.limits.cpu | quote }}
-  volumeClaimTemplates:
-    - metadata:
-        name: processing-spool
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        resources:
-          requests:
-            storage: {{ $pool.spoolStorageSize }}
-
 {{ end }}
