@@ -52,8 +52,8 @@ class TopologyManager:
 
     def get_node_states(self) -> Dict[str, dict]:
         """
-        Returns {node_name: {"cordoned": bool, "cpu_count": int}} for all worker
-        nodes, sorted by name for deterministic ordering.
+        Returns {node_name: {"cordoned": bool, "cpu_count": int, "ready": bool}}
+        for all worker nodes, sorted by name for deterministic ordering.
         cpu_count is derived from node.status.allocatable["cpu"].
         """
         nodes = self.list_worker_nodes()
@@ -64,8 +64,21 @@ class TopologyManager:
             allocatable = (n.status.allocatable or {}) if n.status else {}
             cpu_str = allocatable.get("cpu", "1")
             cpu_count = self._parse_cpu(cpu_str)
-            states[name] = {"cordoned": cordoned, "cpu_count": cpu_count}
+            states[name] = {
+                "cordoned": cordoned,
+                "cpu_count": cpu_count,
+                "ready": self._is_node_ready(n),
+            }
         return dict(sorted(states.items()))
+
+    @staticmethod
+    def _is_node_ready(node: client.V1Node) -> bool:
+        if not node or not node.status or not node.status.conditions:
+            return False
+        for condition in node.status.conditions:
+            if condition.type == "Ready":
+                return condition.status == "True"
+        return False
 
     def replicas_for_node(self, cpu_count: int) -> int:
         """
@@ -202,4 +215,3 @@ class TopologyManager:
             "Timeout waiting for pod eviction on node %s — proceeding with cordon anyway",
             node_name,
         )
-

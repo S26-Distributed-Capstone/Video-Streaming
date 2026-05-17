@@ -67,6 +67,7 @@ class Publisher:
             nodes.append({
                 "name": name,
                 "state": s,
+                "ready": bool(state.get("ready", False)),
                 "cpuCount": state.get("cpu_count", 0),
             })
 

@@ -31,15 +31,17 @@ public class NodeStatusEvent extends JobEvent {
     /** Represents a single k8s worker node and its scheduling state. */
     public static class NodeInfo {
         private final String name;
-        private final String state; // "active" or "cordoned"
+        private final String state; // "active" or "inactive"
+        private final boolean ready;
 
-        public NodeInfo(String name, String state) {
+        public NodeInfo(String name, String state, boolean ready) {
             this.name = Objects.requireNonNull(name, "name is null");
             this.state = Objects.requireNonNull(state, "state is null");
+            this.ready = ready;
         }
 
         public String getName() { return name; }
         public String getState() { return state; }
+        public boolean isReady() { return ready; }
     }
 }
-

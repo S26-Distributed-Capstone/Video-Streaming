@@ -160,12 +160,13 @@ function renderNodeGrid(nodeGridEl) {
   }
   clusterNodeStates.forEach((node) => {
     const el = document.createElement("div");
-    const isActive = node.state === "active";
-    const stateClass = isActive ? "active" : "cordoned";
+    const isReady = node.ready !== false;
+    const isActive = isReady && node.state === "active";
+    const stateClass = !isReady ? "down" : (isActive ? "active" : "inactive");
     el.className = `node-icon ${stateClass}`;
     // Strip common suffixes like ".cluster.local" to get short name (e.g. "n5", "cp1")
     const shortName = (node.name || "").replace(/\.cluster\.local$/, "").replace(/\..+$/, "");
-    const stateLabel = isActive ? "In Use" : "Not In Use";
+    const stateLabel = !isReady ? "Node Down" : (isActive ? "In Use" : "Not In Use");
     el.setAttribute("title", `${node.name} — ${stateLabel}`);
     el.setAttribute("aria-label", `${node.name}: ${stateLabel}`);
 

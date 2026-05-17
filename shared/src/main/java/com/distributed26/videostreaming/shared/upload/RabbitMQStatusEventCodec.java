@@ -24,8 +24,9 @@ final class RabbitMQStatusEventCodec {
             if (nodesNode.isArray()) {
                 for (JsonNode n : nodesNode) {
                     String name = n.path("name").asText("unknown");
-                    String state = n.path("state").asText("cordoned");
-                    nodes.add(new NodeStatusEvent.NodeInfo(name, state));
+                    String state = n.path("state").asText("inactive");
+                    boolean ready = n.path("ready").asBoolean(true);
+                    nodes.add(new NodeStatusEvent.NodeInfo(name, state, ready));
                 }
             }
             int queueDepth = node.path("queueDepth").asInt(0);

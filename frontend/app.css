@@ -629,18 +629,18 @@ body.processing-route #uploadClusterDashboard {
   color: var(--accent-3);
 }
 
-.node-icon.cordoned {
-  background: rgba(201, 109, 68, 0.10);
-  border-color: var(--accent);
-  color: var(--accent);
-  opacity: 0.65;
+.node-icon.inactive {
+  background: rgba(120, 107, 93, 0.08);
+  border-color: rgba(120, 107, 93, 0.35);
+  color: var(--muted);
+  opacity: 0.7;
 }
 
-.node-icon.unknown {
-  background: rgba(120, 107, 93, 0.08);
-  border-color: var(--muted);
-  color: var(--muted);
-  opacity: 0.4;
+.node-icon.down {
+  background: rgba(201, 109, 68, 0.12);
+  border-color: var(--accent);
+  color: var(--accent);
+  opacity: 1;
 }
 
 .node-grid-placeholder {
@@ -671,5 +671,5 @@ body.processing-route #uploadClusterDashboard {
 }
 
 .node-dot.active   { background: var(--accent-3); }
-.node-dot.cordoned { background: var(--accent); opacity: 0.75; }
-.node-dot.unknown  { background: var(--muted); opacity: 0.45; }
+.node-dot.inactive { background: var(--muted); opacity: 0.55; }
+.node-dot.down     { background: var(--accent); }
