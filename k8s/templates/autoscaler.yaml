@@ -93,6 +93,8 @@ spec:
               value: {{ .Values.config.rabbitmqExchange | quote }}
             - name: RABBITMQ_TASK_QUEUE
               value: {{ .Values.config.rabbitmqTaskQueue | quote }}
+            - name: RABBITMQ_TASK_BINDING
+              value: {{ .Values.config.rabbitmqTaskBinding | quote }}
             - name: PG_URL
               valueFrom:
                 configMapKeyRef:
@@ -108,6 +110,8 @@ spec:
                 secretKeyRef:
                   name: {{ .Release.Name }}-secrets
                   key: PG_PASSWORD
+            - name: UPLOAD_TASK_RECOVERY_STALE_MILLIS
+              value: {{ .Values.autoscaler.uploadTaskRecoveryStaleMillis | quote }}
             - name: RABBITMQ_USER
               valueFrom:
                 secretKeyRef:

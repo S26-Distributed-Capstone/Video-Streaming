@@ -38,7 +38,7 @@ streamingService:
 autoscaler:
   image:
     repository: tanigross/video-streaming-autoscaler
-    tag: "1.5-autoscaling-fix-20260514"
+    tag: "1.6-upload-task-recovery-20260517"
     pullPolicy: IfNotPresent
   # 2 replicas on CP nodes — only the leader acts via k8s Lease
   replicas: 2
@@ -65,6 +65,7 @@ autoscaler:
   nodeLabelSelector: "workload-role=app"
   statefulsetName: ""        # leave blank to default to <release>-processing
   rabbitmqManagementPort: "15672"
+  uploadTaskRecoveryStaleMillis: "60000"
   resources:
     requests: { cpu: "100m", memory: "128Mi" }
     limits:   { cpu: "500m", memory: "256Mi" }

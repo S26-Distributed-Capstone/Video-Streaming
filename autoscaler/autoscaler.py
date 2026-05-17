@@ -33,6 +33,7 @@ from publisher import Publisher
 from scaling_executor import ScalingExecutor
 from state_store import StateStore
 from topology_manager import TopologyManager
+from upload_task_recovery import UploadTaskRecovery
 
 logging.basicConfig(
     level=logging.INFO,
@@ -186,6 +187,7 @@ def run_poll_loop(
     pub: Publisher,
     election: LeaderElection,
     autoscaling_state: AutoscalingStateStore,
+    upload_task_recovery: UploadTaskRecovery,
 ) -> None:
     """Main polling loop — runs only while we are leader."""
     log.info("Poll loop started (interval=%ds)", cfg.poll_interval_seconds)
@@ -241,6 +243,12 @@ def run_poll_loop(
 
         # ── Collect metrics ─────────────────────────────────────────────────
         try:
+            recovered_upload_tasks = upload_task_recovery.recover()
+            if recovered_upload_tasks > 0:
+                log.warning(
+                    "Recovered %d stranded local upload task(s) from unhealthy spool owners",
+                    recovered_upload_tasks,
+                )
             queue_depth = metrics.get_queue_depth()
             processing_backlog = metrics.get_processing_backlog()
             backlog_active = processing_backlog.has_active_work()
@@ -348,6 +356,7 @@ def main() -> None:
     autoscaling_state = AutoscalingStateStore(cfg.kube_namespace, cfg.lease_name)
     _start_health_server(cfg, topology, executor, store, autoscaling_state)
     pub      = Publisher(cfg)
+    upload_task_recovery = UploadTaskRecovery(cfg)
     election = LeaderElection(cfg.kube_namespace, cfg.lease_name)
 
     while not _shutdown.is_set():
@@ -358,7 +367,7 @@ def main() -> None:
             break
 
         try:
-            run_poll_loop(cfg, topology, executor, metrics, engine, store, pub, election, autoscaling_state)
+            run_poll_loop(cfg, topology, executor, metrics, engine, store, pub, election, autoscaling_state, upload_task_recovery)
         except Exception as exc:
             log.error("Unhandled error in poll loop: %s — restarting", exc, exc_info=True)
             store.reset_bootstrap()
@@ -367,6 +376,7 @@ def main() -> None:
     log.info("Autoscaler shutting down")
     election.stop()
     pub.close()
+    upload_task_recovery.close()
     sys.exit(0)
 
 

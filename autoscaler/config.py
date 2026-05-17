@@ -47,11 +47,13 @@ class Config:
     rabbitmq_vhost: str
     rabbitmq_exchange: str
     rabbitmq_task_queue: str
+    rabbitmq_task_binding: str
 
     # Postgres connection for processing backlog checks
     pg_url: str
     pg_user: str
     pg_password: str
+    upload_task_recovery_stale_millis: int
 
     # HTTP health server
     health_port: int
@@ -88,9 +90,11 @@ def load() -> Config:
         rabbitmq_vhost=_get("RABBITMQ_VHOST", "/"),
         rabbitmq_exchange=_get("RABBITMQ_EXCHANGE", "upload.events"),
         rabbitmq_task_queue=_get("RABBITMQ_TASK_QUEUE", "processing.tasks.queue"),
+        rabbitmq_task_binding=_get("RABBITMQ_TASK_BINDING", "upload.task.transcode"),
         pg_url=_get("PG_URL", ""),
         pg_user=_get("PG_USER", ""),
         pg_password=os.environ.get("PG_PASSWORD", ""),
+        upload_task_recovery_stale_millis=_get_int("UPLOAD_TASK_RECOVERY_STALE_MILLIS", 60_000),
 
         health_port=_get_int("AUTOSCALER_HEALTH_PORT", 8084),
     )

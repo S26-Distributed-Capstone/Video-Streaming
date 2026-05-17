@@ -213,7 +213,7 @@ public class ProcessingServiceApplication {
             }
 
             int uploadWorkerCount = Integer.parseInt(getEnvOrDotenv(dotenv, "LOCAL_UPLOAD_WORKER_COUNT", "2"));
-            long uploadPollMillis = Long.parseLong(getEnvOrDotenv(dotenv, "LOCAL_UPLOAD_POLL_MILLIS", "20000"));
+            long uploadPollMillis = Long.parseLong(getEnvOrDotenv(dotenv, "LOCAL_UPLOAD_POLL_MILLIS", "500"));
             long uploadClaimTimeoutMillis = Long.parseLong(getEnvOrDotenv(dotenv, "LOCAL_UPLOAD_CLAIM_TIMEOUT_MILLIS", "60000"));
             ExecutorService uploadExecutor = new LocalSpoolUploadWorkerPool(PROFILES, runtime, devLogPublisher).startUploadWorkers(
                     uploadWorkerCount,

@@ -456,7 +456,7 @@ spec:
               echo "vs-rabbitmq:5672 is up."
       containers:
         - name: autoscaler
-          image: "tanigross/video-streaming-autoscaler:1.5-autoscaling-fix-20260514"
+          image: "tanigross/video-streaming-autoscaler:1.6-upload-task-recovery-20260517"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8084
@@ -506,6 +506,8 @@ spec:
               value: "upload.events"
             - name: RABBITMQ_TASK_QUEUE
               value: "upload.task.queue"
+            - name: RABBITMQ_TASK_BINDING
+              value: "upload.task.*"
             - name: PG_URL
               valueFrom:
                 configMapKeyRef:
@@ -521,6 +523,8 @@ spec:
                 secretKeyRef:
                   name: vs-secrets
                   key: PG_PASSWORD
+            - name: UPLOAD_TASK_RECOVERY_STALE_MILLIS
+              value: "60000"
             - name: RABBITMQ_USER
               valueFrom:
                 secretKeyRef:
