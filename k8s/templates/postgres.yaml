@@ -56,14 +56,16 @@ spec:
               readOnly: true
           readinessProbe:
             exec:
-              command: ["pg_isready", "-U", {{ .Values.secrets.pgUser | quote }}]
-            initialDelaySeconds: 5
+              command: ["pg_isready", "-U", {{ .Values.secrets.pgUser | quote }}, "-d", "postgres"]
+            initialDelaySeconds: 15
             periodSeconds: 10
+            timeoutSeconds: 25
           livenessProbe:
             exec:
-              command: ["pg_isready", "-U", {{ .Values.secrets.pgUser | quote }}]
-            initialDelaySeconds: 15
+              command: ["pg_isready", "-U", {{ .Values.secrets.pgUser | quote }}, "-d", "postgres"]
+            initialDelaySeconds: 30
             periodSeconds: 20
+            timeoutSeconds: 45
       volumes:
         - name: init-schema
           configMap:

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# deploy_k8s.sh — Deploy the video streaming platform to Kubernetes via Helm.
+# deploy_k8s.sh — Deploy the video streaming platform to Kubernetes via Helm (LOCAL TESTING ONLY)
+# Automatically applies Docker Desktop-friendly resource limits.
 # Reads secrets from .env (already gitignored), passes them to Helm.
 #
 # Usage:
-#   ./deploy_k8s.sh              # helm install (first time)
-#   ./deploy_k8s.sh upgrade      # helm upgrade (after changes)
-#   ./deploy_k8s.sh uninstall    # helm uninstall
+#   ./deploy_k8s.sh install              # helm install (first time)
+#   ./deploy_k8s.sh upgrade              # helm upgrade (after changes)
+#   ./deploy_k8s.sh uninstall            # helm uninstall
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -51,6 +52,16 @@ SECRETS=(
 )
 
 # ── Execute ────────────────────────────────────────────────────
+# Always use Docker Desktop-friendly defaults (this script is local-only)
+echo "🐳 Local Docker Desktop deployment"
+SECRETS+=(
+  --set "processingService.replicas=4"
+  --set "processingService.resources.requests.memory=512Mi"
+  --set "processingService.resources.limits.memory=1Gi"
+  --set "chaosMonkey.enabled=false"
+  --set "minio.loadBalancerIP=localhost"
+)
+
 ACTION="${1:-install}"
 
 case "$ACTION" in
@@ -58,10 +69,14 @@ case "$ACTION" in
     echo "Installing Helm release '${RELEASE_NAME}'..."
     helm install "$RELEASE_NAME" "$CHART_DIR" "${SECRETS[@]}" "${@:2}"
     echo ""
-    echo "Done! Run 'minikube tunnel' in another terminal to access services."
-    echo "  Upload:    http://localhost:8080"
-    echo "  Status:    http://localhost:8081"
-    echo "  Streaming: http://localhost:8083"
+    echo "✅ Done! Your services are deploying..."
+    echo ""
+    echo "Access endpoints:"
+    echo "  📤 Upload:    http://localhost:8080"
+    echo "  📊 Status:    http://localhost:8081"
+    echo "  🎬 Streaming: http://localhost:8083"
+    echo ""
+    echo "Monitor pods: kubectl get pods -w"
     ;;
   upgrade)
     echo "Upgrading Helm release '${RELEASE_NAME}'..."

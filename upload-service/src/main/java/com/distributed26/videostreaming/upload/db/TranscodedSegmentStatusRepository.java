@@ -62,4 +62,57 @@ public class TranscodedSegmentStatusRepository {
             throw new RuntimeException("Failed to count transcoded_segment_status", e);
         }
     }
+
+    public void upsertState(String videoId, String profile, int segmentNumber, String state) {
+        String sql = """
+            INSERT INTO transcoded_segment_status (video_id, profile, segment_number, state, failure_count)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (video_id, profile, segment_number) DO UPDATE
+            SET state = CASE
+                WHEN transcoded_segment_status.state = 'DONE' AND EXCLUDED.state <> 'DONE'
+                    THEN transcoded_segment_status.state
+                ELSE EXCLUDED.state
+            END,
+            failure_count = CASE
+                WHEN EXCLUDED.state = 'FAILED' AND transcoded_segment_status.state <> 'DONE'
+                    THEN transcoded_segment_status.failure_count + 1
+                WHEN EXCLUDED.state = 'DONE'
+                    THEN 0
+                ELSE transcoded_segment_status.failure_count
+            END,
+            updated_at = NOW()
+            """;
+        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setObject(1, UUID.fromString(videoId));
+            ps.setString(2, profile);
+            ps.setInt(3, segmentNumber);
+            ps.setString(4, state);
+            ps.setInt(5, "FAILED".equals(state) ? 1 : 0);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to upsert transcoded_segment_status", e);
+        }
+    }
+
+    public int countFailuresForSegment(String videoId, String profile, int segmentNumber) {
+        String sql = """
+            SELECT COALESCE(failure_count, 0) FROM transcoded_segment_status
+            WHERE video_id = ? AND profile = ? AND segment_number = ?
+            """;
+        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setObject(1, UUID.fromString(videoId));
+            ps.setString(2, profile);
+            ps.setInt(3, segmentNumber);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return rs.getInt(1);
+                }
+                return 0;
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to read failure_count for segment", e);
+        }
+    }
 }

@@ -37,13 +37,20 @@ public class TranscodedSegmentStatusRepository {
 
     public void upsertState(String videoId, String profile, int segmentNumber, TranscodeSegmentState state) {
         String sql = """
-            INSERT INTO transcoded_segment_status (video_id, profile, segment_number, state)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO transcoded_segment_status (video_id, profile, segment_number, state, failure_count)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT (video_id, profile, segment_number) DO UPDATE
             SET state = CASE
                 WHEN transcoded_segment_status.state = 'DONE' AND EXCLUDED.state <> 'DONE'
                     THEN transcoded_segment_status.state
                 ELSE EXCLUDED.state
+            END,
+            failure_count = CASE
+                WHEN EXCLUDED.state = 'FAILED' AND transcoded_segment_status.state <> 'DONE'
+                    THEN transcoded_segment_status.failure_count + 1
+                WHEN EXCLUDED.state = 'DONE'
+                    THEN 0
+                ELSE transcoded_segment_status.failure_count
             END,
             updated_at = NOW()
             """;
@@ -53,6 +60,7 @@ public class TranscodedSegmentStatusRepository {
             ps.setString(2, profile);
             ps.setInt(3, segmentNumber);
             ps.setString(4, state.name());
+            ps.setInt(5, state == TranscodeSegmentState.FAILED ? 1 : 0);
             ps.executeUpdate();
         } catch (SQLException e) {
             throw new RuntimeException("Failed to upsert transcoded_segment_status", e);
@@ -148,6 +156,49 @@ public class TranscodedSegmentStatusRepository {
             return segmentNumbers;
         } catch (SQLException e) {
             throw new RuntimeException("Failed to list fresh transcoded_segment_status", e);
+        }
+    }
+
+    /**
+     * Count how many FAILED states exist for a specific segment+profile.
+     * Used to trigger automatic recovery when a single segment fails repeatedly.
+     */
+    public int countFailuresForSegment(String videoId, String profile, int segmentNumber) {
+        String sql = """
+            SELECT COALESCE(failure_count, 0) FROM transcoded_segment_status
+            WHERE video_id = ? AND profile = ? AND segment_number = ?
+            """;
+        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setObject(1, UUID.fromString(videoId));
+            ps.setString(2, profile);
+            ps.setInt(3, segmentNumber);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return rs.getInt(1);
+                }
+                return 0;
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to count failures for segment", e);
+        }
+    }
+
+    public void clearFailuresForSegment(String videoId, String profile, int segmentNumber) {
+        String sql = """
+            UPDATE transcoded_segment_status
+            SET failure_count = 0,
+                updated_at = NOW()
+            WHERE video_id = ? AND profile = ? AND segment_number = ?
+            """;
+        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setObject(1, UUID.fromString(videoId));
+            ps.setString(2, profile);
+            ps.setInt(3, segmentNumber);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to clear failures for segment", e);
         }
     }
 }

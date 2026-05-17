@@ -16,6 +16,11 @@ const processingBar = document.getElementById("processingBar");
 const processingPercent = document.getElementById("processingPercent");
 const processingTrack = document.getElementById("processingTrack");
 const processingBlock = document.getElementById("processingBlock");
+const repairBlock = document.getElementById("repairBlock");
+const repairPercent = document.getElementById("repairPercent");
+const repairTrack = document.getElementById("repairTrack");
+const repairBar = document.getElementById("repairBar");
+const repairMessage = document.getElementById("repairMessage");
 const transcodeBlock = document.getElementById("transcodeBlock");
 const transcodeLowBar = document.getElementById("transcodeLowBar");
 const transcodeLowPercent = document.getElementById("transcodeLowPercent");
@@ -34,6 +39,7 @@ const processingRouteState = document.getElementById("processingRouteState");
 const processingRouteStateTitle = document.getElementById("processingRouteStateTitle");
 const processingRouteStateBody = document.getElementById("processingRouteStateBody");
 const processingRouteStateStreamBtn = document.getElementById("processingRouteStateStreamBtn");
+const processingRouteStateRetryBtn = document.getElementById("processingRouteStateRetryBtn");
 const player = document.getElementById("player");
 const playerStatus = document.getElementById("playerStatus");
 const playBtn = document.getElementById("playBtn");
@@ -72,6 +78,8 @@ let selectedReadyVideoIds = new Set();
 let readyListBusy = false;
 let playbackAttemptToken = 0;
 let playbackRetryTimerId = null;
+let segmentRecoveryInProgress = new Set(); // Track which segments are being recovered
+let sourceChunkRepairInProgress = new Set(); // Track malformed source chunks being rebuilt with safe encoding
 const statusUrlStoragePrefix = "upload-status-url:";
 const transcodeProfiles = {
   low: { done: 0, transcoding: 0, uploading: 0, failed: 0, segments: new Map() },
@@ -189,7 +197,7 @@ function hideRouteState() {
   }
 }
 
-function showRouteState(title, body, { tone = "", showStreamButton = false } = {}) {
+function showRouteState(title, body, { tone = "", showStreamButton = false, showRetryButton = false } = {}) {
   document.body.classList.add("processing-route-terminal");
   hideCancelButton();
   disconnectWebSocket();
@@ -205,6 +213,9 @@ function showRouteState(title, body, { tone = "", showStreamButton = false } = {
   }
   if (processingRouteStateStreamBtn) {
     processingRouteStateStreamBtn.classList.toggle("hidden", !showStreamButton);
+  }
+  if (processingRouteStateRetryBtn) {
+    processingRouteStateRetryBtn.classList.toggle("hidden", !showRetryButton);
   }
   setDoneMessage("", { hidden: true });
 }
@@ -223,6 +234,9 @@ function showRouteTransientState(title, body, { tone = "" } = {}) {
   }
   if (processingRouteStateStreamBtn) {
     processingRouteStateStreamBtn.classList.add("hidden");
+  }
+  if (processingRouteStateRetryBtn) {
+    processingRouteStateRetryBtn.classList.add("hidden");
   }
 }
 
@@ -485,6 +499,8 @@ function resetStateForNextUpload() {
   processingComplete = false;
   hasEverConnectedWebSocket = false;
   retryingMinioConnection = false;
+  segmentRecoveryInProgress.clear();
+  sourceChunkRepairInProgress.clear();
   clearProgressRefreshTimer();
   resetWsReconnectState();
   resetProcessingRouteBootState();
@@ -497,6 +513,8 @@ function resetStateForNextUpload() {
     state.failed = 0;
     state.segments = new Map();
   });
+  updateRecoveryIndicator();
+  updateRepairIndicator();
   teardownPlayer();
 }
 
@@ -579,13 +597,81 @@ function applyLiveTranscodeEvent(payload) {
   }
   if (typeof payload.segmentNumber === "number" && payload.segmentNumber >= 0 && payload.state) {
     state.segments.set(payload.segmentNumber, payload.state);
+    // Track recovery state
+    if (payload.state === "RECOVERY_IN_PROGRESS") {
+      segmentRecoveryInProgress.add(payload.segmentNumber);
+    } else {
+      segmentRecoveryInProgress.delete(payload.segmentNumber);
+    }
     recalcTranscodeCounters(payload.profile);
   }
   if (transcodeBlock) {
     transcodeBlock.classList.remove("hidden");
   }
   updateTranscodeProfileUi(payload.profile);
+  updateRecoveryIndicator();
   tryFinalizeSuccess();
+}
+
+function applySourceChunkRepairEvent(payload) {
+  if (!payload || typeof payload !== "object") {
+    return;
+  }
+  if (typeof payload.segmentNumber !== "number" || payload.segmentNumber < 0) {
+    return;
+  }
+  if (payload.state === "STARTED") {
+    sourceChunkRepairInProgress.add(payload.segmentNumber);
+  } else {
+    sourceChunkRepairInProgress.delete(payload.segmentNumber);
+  }
+  if (processingBlock) {
+    processingBlock.classList.remove("hidden");
+  }
+  updateRepairIndicator(payload);
+}
+
+function updateRecoveryIndicator() {
+  const recoveryMessageEl = document.getElementById("recoveryMessage");
+  if (!recoveryMessageEl) {
+    return;
+  }
+  if (segmentRecoveryInProgress.size > 0) {
+    recoveryMessageEl.textContent = `Reuploading ${segmentRecoveryInProgress.size} malformed segment(s)…`;
+    recoveryMessageEl.classList.remove("hidden");
+  } else {
+    recoveryMessageEl.classList.add("hidden");
+    recoveryMessageEl.textContent = "";
+  }
+}
+
+function updateRepairIndicator(payload) {
+  if (repairBlock) {
+    repairBlock.classList.toggle("hidden", sourceChunkRepairInProgress.size === 0);
+  }
+  if (repairTrack) {
+    repairTrack.classList.toggle("indeterminate", sourceChunkRepairInProgress.size > 0);
+  }
+  if (repairBar) {
+    repairBar.style.width = sourceChunkRepairInProgress.size > 0 ? "100%" : "0%";
+  }
+  if (repairPercent) {
+    repairPercent.textContent = sourceChunkRepairInProgress.size > 0
+      ? `${sourceChunkRepairInProgress.size} chunk(s)`
+      : "";
+  }
+  if (repairMessage) {
+    if (sourceChunkRepairInProgress.size > 0) {
+      const segmentNumber = payload && typeof payload.segmentNumber === "number" ? payload.segmentNumber : null;
+      repairMessage.textContent = segmentNumber === null
+        ? "Re-encoding malformed source chunk with the safe preset…"
+        : `Re-encoding malformed source chunk ${segmentNumber} with the safe preset…`;
+      repairMessage.classList.remove("hidden");
+    } else {
+      repairMessage.classList.add("hidden");
+      repairMessage.textContent = "";
+    }
+  }
 }
 
 function applyUploadInfoSnapshot(payload) {
@@ -1309,6 +1395,11 @@ function connectWebSocket(wsUrl, videoId, { isReconnect = false } = {}) {
         scheduleProgressRefresh();
         return;
       }
+      if (payload && payload.type === "source_chunk_repair") {
+        applySourceChunkRepairEvent(payload);
+        scheduleProgressRefresh();
+        return;
+      }
       if (payload && payload.type === "storage_status") {
         updateStorageRetryUi({
           retrying: payload.state === "WAITING",
@@ -1427,7 +1518,7 @@ function handleProcessingRouteStatus(payload) {
     showRouteState(
       "Processing failed",
       "This video is in a terminal failed state and cannot continue processing from this page.",
-      { tone: "error" }
+      { tone: "error", showRetryButton: true }
     );
     return false;
   }
@@ -1510,7 +1601,7 @@ async function bootProcessingRoute(routeVideoId) {
   resetProcessingRouteBootState();
 }
 
-function uploadFile({ preserveLog, isRetry } = {}) {
+function uploadFile({ preserveLog, isRetry, safeMode } = {}) {
   if (uploadInFlight || (uploadBtn.disabled && !isRetry)) {
     return;
   }
@@ -1518,6 +1609,12 @@ function uploadFile({ preserveLog, isRetry } = {}) {
   const file = isRetry ? currentUploadFile : fileInput.files[0];
   if (!file) {
     console.error("[upload-ui] uploadFile requires a selected file");
+    if (isRetry && safeMode) {
+      appendLog("Safe-mode retry needs the source file selected again. Please choose the video and click Upload.", "error");
+      setDoneMessage("Select the original video file to retry in safe mode.", { success: false });
+      setActiveTab("upload");
+      return;
+    }
     appendLog("Select a video file before uploading.", "error");
     return;
   }
@@ -1554,6 +1651,10 @@ function uploadFile({ preserveLog, isRetry } = {}) {
   const formData = new FormData();
   formData.append("file", file, file.name);
   formData.append("name", videoName);
+  if (isRetry && safeMode) {
+    // Request server to use re-encode (safe/slow) segmentation for this retry
+    formData.append("segmentationMode", "reencode");
+  }
   if (isRetry && currentVideoId) {
     formData.append("videoId", currentVideoId);
     appendLog(`Retrying with existing videoId ${currentVideoId}`);
@@ -1693,6 +1794,21 @@ if (deleteSelectedBtn) {
 }
 if (processingRouteStateStreamBtn) {
   processingRouteStateStreamBtn.addEventListener("click", () => setActiveTab("stream"));
+}
+if (processingRouteStateRetryBtn) {
+  processingRouteStateRetryBtn.addEventListener("click", () => {
+    // Trigger a safe-mode retry when file context is available in this page session.
+    appendLog("User requested retry in safe mode");
+    const retryFile = currentUploadFile || (fileInput && fileInput.files ? fileInput.files[0] : null);
+    if (!retryFile) {
+      setActiveTab("upload");
+      appendLog("Safe-mode retry requires selecting the source file again on this page.", "error");
+      setDoneMessage("Select the source file, then click Upload to retry in safe mode.", { success: false });
+      return;
+    }
+    currentUploadFile = retryFile;
+    uploadFile({ preserveLog: true, isRetry: true, safeMode: true });
+  });
 }
 
 refreshReadyList();

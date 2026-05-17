@@ -126,16 +126,13 @@ class StreamingServiceApplicationTest {
     @Test
     void segmentEndpointRejectsInvalidSegmentName() throws Exception {
         HttpRequest request = HttpRequest.newBuilder()
-            .uri(URI.create("http://localhost:" + port + "/stream/" + VIDEO_ID + "/segment/low/../../../etc/passwd"))
+            .uri(URI.create("http://localhost:" + port + "/stream/" + VIDEO_ID + "/segment/low/not-a-segment.txt"))
             .GET()
             .build();
 
         HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
 
-        // Invalid segment names (containing path traversal or lacking .ts) must be rejected
-        assertTrue(response.statusCode() == HttpURLConnection.HTTP_BAD_REQUEST
-                        || response.statusCode() == HttpURLConnection.HTTP_NOT_FOUND,
-                "Expected 400 or 404 for invalid segment name, got: " + response.statusCode());
+        assertEquals(HttpURLConnection.HTTP_BAD_REQUEST, response.statusCode());
     }
 
     @Test

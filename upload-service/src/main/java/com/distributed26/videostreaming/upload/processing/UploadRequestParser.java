@@ -20,7 +20,13 @@ public final class UploadRequestParser {
             return null;
         }
         String videoId = resolveVideoId(ctx);
-        return new UploadRequest(videoId, videoName, buildUploadStatusUrl(ctx, videoId));
+        String segmentationMode = ctx.formParam("segmentationMode");
+        if (segmentationMode == null || segmentationMode.isBlank()) {
+            segmentationMode = null;
+        } else {
+            segmentationMode = segmentationMode.trim().toLowerCase();
+        }
+        return new UploadRequest(videoId, videoName, buildUploadStatusUrl(ctx, videoId), segmentationMode);
     }
 
     private String buildUploadStatusUrl(Context ctx, String videoId) {

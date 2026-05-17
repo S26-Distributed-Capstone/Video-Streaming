@@ -154,25 +154,31 @@ spec:
             - name: plugins
               mountPath: /etc/rabbitmq/enabled_plugins
               subPath: enabled_plugins
+          startupProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "ping"]
+            failureThreshold: 30
+            periodSeconds: 10
+            timeoutSeconds: 10
           readinessProbe:
             exec:
               command: ["rabbitmq-diagnostics", "ping"]
-            initialDelaySeconds: 30
+            initialDelaySeconds: 60
             periodSeconds: 10
-            timeoutSeconds: 10
+            timeoutSeconds: 25
           livenessProbe:
             exec:
               command: ["rabbitmq-diagnostics", "status"]
-            initialDelaySeconds: 90
+            initialDelaySeconds: 120
             periodSeconds: 30
-            timeoutSeconds: 15
+            timeoutSeconds: 45
             failureThreshold: 5
           resources:
             requests:
-              memory: "512Mi"
+              memory: "768Mi"
               cpu: "250m"
             limits:
-              memory: "1Gi"
+              memory: "1.5Gi"
               cpu: "500m"
       volumes:
         - name: config

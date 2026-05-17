@@ -1,7 +1,7 @@
 # ─── App image ──────────────────────────────────────────────────
 image:
   repository: tanigross/video-streaming-app
-  tag: "1.7"
+  tag: "1.13.1"
   pullPolicy: IfNotPresent
 
 # ─── Replica counts ────────────────────────────────────────────
@@ -18,7 +18,7 @@ statusService:
     limits:   { memory: "1Gi",   cpu: "1000m" }
 
 processingService:
-  replicas: 72
+  replicas: 55
   spoolStorageSize: 5Gi
   resources:
     requests: { memory: "1Gi",  cpu: "1000m" }
@@ -34,8 +34,7 @@ streamingService:
 # ─── Scheduling ────────────────────────────────────────────────
 scheduling:
   infra:
-    nodeSelector:
-      workload-role: infra
+    nodeSelector: {}
     tolerations:
       - key: node-role.kubernetes.io/control-plane
         operator: Exists
@@ -48,8 +47,7 @@ scheduling:
     {}
 
   processing:
-    nodeSelector:
-      workload-role: app
+    nodeSelector: {}
 
 # ─── Infrastructure ────────────────────────────────────────────
 postgres:
@@ -124,3 +122,23 @@ service:
   statusNodePort: 30081
   streamingNodePort: 30083
   minioNodePort: 30090        # only used when type=NodePort; set config.minioPublicEndpoint to http://<node-ip>:30090
+
+# ─── Chaos Monkey (Killer Bot) Configuration ──────────────────
+# Enable chaos testing to randomly kill pods and test resilience
+chaosMonkey:
+  enabled: false              # Set to true to enable chaos testing
+  image:
+    repository: tanigross/chaos-monkey  # Or build locally and push to registry
+    tag: "1.0"
+    pullPolicy: IfNotPresent
+  # Interval between chaos actions (seconds)
+  intervalMin: 90
+  intervalMax: 120
+  # Probability of killing a pod each interval (0.0 to 1.0)
+  probability: 0.7
+  # Preset: core (upload/processing/streaming), infra (rabbitmq/postgres/minio), all, aggressive
+  preset: "core"
+  # Graceful restart for stateful services (postgres, rabbitmq, minio)
+  statefulSafeMode: true
+  # Log chaos events to RabbitMQ
+  logToRabbitMQ: true

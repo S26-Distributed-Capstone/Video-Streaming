@@ -339,6 +339,7 @@ public class TranscodingTask extends Task {
         for (int attempt = 1; attempt <= attempts; attempt++) {
             try (InputStream is = storageClient.downloadFile(chunkKey)) {
                 Files.copy(is, inputTemp, StandardCopyOption.REPLACE_EXISTING);
+                
                 if (attempt > 1) {
                     LOGGER.info("Download recovered for chunk={} on attempt {}/{}", chunkKey, attempt, attempts);
                 }

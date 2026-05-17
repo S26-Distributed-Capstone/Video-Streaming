@@ -1,6 +1,7 @@
 package com.distributed26.videostreaming.shared.upload;
 
 import com.distributed26.videostreaming.shared.upload.events.JobEvent;
+import com.distributed26.videostreaming.shared.upload.events.SourceChunkRepairEvent;
 import com.distributed26.videostreaming.shared.upload.events.TranscodeProgressEvent;
 import com.distributed26.videostreaming.shared.upload.events.TranscodeSegmentState;
 import com.distributed26.videostreaming.shared.upload.events.UploadFailedEvent;
@@ -43,6 +44,13 @@ final class RabbitMQStatusEventCodec {
             }
             return new TranscodeProgressEvent(jobId, profile, segmentNumber, state, doneSegments, totalSegments);
         }
+        if ("source_chunk_repair".equals(type)) {
+            int segmentNumber = node.path("segmentNumber").asInt(-1);
+            String state = node.path("state").asText("UNKNOWN");
+            String preset = node.path("preset").asText("encoded");
+            String message = node.path("message").asText("source chunk repair event");
+            return new SourceChunkRepairEvent(jobId, segmentNumber, state, preset, message);
+        }
         String taskId = node.path("taskId").asText("task");
         return new JobEvent(jobId, taskId);
     }
@@ -59,6 +67,9 @@ final class RabbitMQStatusEventCodec {
         }
         if (event instanceof TranscodeProgressEvent) {
             return "transcode_progress";
+        }
+        if (event instanceof SourceChunkRepairEvent) {
+            return "source_chunk_repair";
         }
         return "task";
     }

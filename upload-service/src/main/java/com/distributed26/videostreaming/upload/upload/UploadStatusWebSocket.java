@@ -3,6 +3,7 @@ package com.distributed26.videostreaming.upload.upload;
 import com.distributed26.videostreaming.shared.upload.StatusEventBus;
 import com.distributed26.videostreaming.shared.upload.JobEventListener;
 import com.distributed26.videostreaming.shared.upload.events.JobEvent;
+import com.distributed26.videostreaming.shared.upload.events.SourceChunkRepairEvent;
 import com.distributed26.videostreaming.shared.upload.events.TranscodeProgressEvent;
 import com.distributed26.videostreaming.shared.upload.events.TranscodeSegmentState;
 import com.distributed26.videostreaming.shared.upload.events.UploadFailedEvent;
@@ -167,6 +168,9 @@ public class UploadStatusWebSocket {
         }
         if (event instanceof TranscodeProgressEvent) {
             return "transcode_progress";
+        }
+        if (event instanceof SourceChunkRepairEvent) {
+            return "source_chunk_repair";
         }
         return "task";
     }

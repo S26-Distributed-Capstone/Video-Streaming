@@ -6,5 +6,6 @@ public enum TranscodeSegmentState {
     TRANSCODED,
     UPLOADING,
     DONE,
-    FAILED
+    FAILED,
+    RECOVERY_IN_PROGRESS
 }

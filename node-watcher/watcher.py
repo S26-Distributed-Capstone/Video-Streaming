@@ -8,7 +8,7 @@ import urllib.request
 
 import docker
 import pika
-import psycopg2
+import psycopg
 
 from datetime import datetime, timedelta
 
@@ -36,7 +36,7 @@ def connect_db():
         raise RuntimeError("PG_USER is not set")
     password = get_env("PG_PASSWORD", "")
     host, port, dbname = parse_jdbc_url(jdbc_url)
-    return psycopg2.connect(host=host, port=port, dbname=dbname, user=user, password=password)
+    return psycopg.connect(host=host, port=port, dbname=dbname, user=user, password=password)
 
 
 def connect_rabbitmq():

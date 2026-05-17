@@ -2,34 +2,33 @@
 """
 Chaos Killer Bot — Kill Kubernetes pods randomly to test durability.
 
-Configuration via environment variables:
+This service runs as a Kubernetes Deployment and uses in-cluster authentication.
+
+Configuration via environment variables (set by Kubernetes):
   CHAOS_ENABLED:           Enable/disable chaos (default: false)
   CHAOS_INTERVAL_MIN:      Min seconds between kills (default: 30)
   CHAOS_INTERVAL_MAX:      Max seconds between kills (default: 60)
   CHAOS_PROBABILITY:       Kill probability per interval 0.0-1.0 (default: 0.7)
-  CHAOS_TARGET_SERVICES:   Comma-separated services to target
-                           Core:  upload-service, processing-service, streaming-service
-                           Infra: rabbitmq, postgres, minio
-                           Other: node-watcher
-                           (default: upload-service,processing-service,streaming-service)
+  CHAOS_PRESET:            Service preset: core, infra, all, aggressive
   CHAOS_STATEFUL_SAFE_MODE: Graceful restart for stateful services (default: true)
-  CHAOS_NAMESPACE:         Kubernetes namespace (default: default)
+  CHAOS_NAMESPACE:         Kubernetes namespace (injected from pod metadata)
   CHAOS_LOG_TO_RABBITMQ:   Log kills to RabbitMQ (default: true)
-  RABBITMQ_HOST:           RabbitMQ hostname (default: rabbitmq)
-  RABBITMQ_PORT:           RabbitMQ port (default: 5672)
-  RABBITMQ_USER:           RabbitMQ user
-  RABBITMQ_PASS:           RabbitMQ password
+  RABBITMQ_HOST:           RabbitMQ hostname
+  RABBITMQ_PORT:           RabbitMQ port
+  RABBITMQ_USER:           RabbitMQ user (from secret)
+  RABBITMQ_PASS:           RabbitMQ password (from secret)
 
 Presets:
-  CHAOS_PRESET=core:       Only core services (default)
-  CHAOS_PRESET=infra:      Only infrastructure (RabbitMQ, Postgres, MinIO)
-  CHAOS_PRESET=all:        Everything (core + infra + utilities)
-  CHAOS_PRESET=aggressive: All services, higher probability
+  core:       Only core services (upload-service, processing-service, streaming-service)
+  infra:      Only infrastructure (rabbitmq, postgres, minio)
+  all:        Everything (core + infra + utilities)
+  aggressive: All services, higher probability
 """
 
 import os
 import sys
 import time
+import signal
 import random
 import logging
 from datetime import datetime
@@ -53,10 +52,10 @@ class ChaosConfig:
     """Chaos bot configuration."""
 
     # Service groups
-    CORE_SERVICES = ["upload-service", "processing-service", "streaming-service"]
-    INFRA_SERVICES = ["rabbitmq", "postgres", "minio"]
-    UTILITY_SERVICES = ["node-watcher"]
-    STATEFUL_SERVICES = ["rabbitmq", "postgres", "minio"]
+    CORE_SERVICES = ["vs-upload", "vs-processing-small", "vs-processing-medium", "vs-processing-large", "vs-streaming"]
+    INFRA_SERVICES = ["vs-rabbitmq", "vs-postgres", "vs-minio"]
+    UTILITY_SERVICES = ["vs-node-watcher"]
+    STATEFUL_SERVICES = ["vs-rabbitmq", "vs-postgres", "vs-minio"]
 
     # Presets
     PRESETS = {
@@ -174,7 +173,10 @@ class DevLogPublisher:
     def close(self):
         """Close connection."""
         if self.connection:
-            self.connection.close()
+            try:
+                self.connection.close()
+            except Exception as e:
+                logger.warning(f"Error closing RabbitMQ connection: {e}")
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -258,9 +260,19 @@ class ChaosKillerBot:
         self.config = config
         self.pod_manager = KubernetesPodManager(config.namespace)
         self.dev_logger: Optional[DevLogPublisher] = None
+        self.shutdown_event = False
 
         if config.log_to_rabbitmq and PIKA_AVAILABLE:
             self.dev_logger = DevLogPublisher(config)
+        
+        # Register signal handlers for graceful shutdown
+        signal.signal(signal.SIGTERM, self._handle_shutdown)
+        signal.signal(signal.SIGINT, self._handle_shutdown)
+
+    def _handle_shutdown(self, signum, frame):
+        """Handle shutdown signals from Kubernetes."""
+        logger.info(f"Received signal {signum}. Initiating graceful shutdown...")
+        self.shutdown_event = True
 
     def get_random_pod_to_kill(self) -> Optional[tuple]:
         """
@@ -295,11 +307,14 @@ class ChaosKillerBot:
             return
 
         try:
-            while True:
+            while not self.shutdown_event:
                 # Random interval between min and max
                 interval = random.uniform(self.config.interval_min, self.config.interval_max)
                 logger.info(f"Sleeping for {interval:.1f}s before next chaos decision...")
                 time.sleep(interval)
+
+                if self.shutdown_event:
+                    break
 
                 # Decide whether to kill this round
                 if random.random() > self.config.probability:
@@ -330,8 +345,11 @@ class ChaosKillerBot:
                     self.dev_logger.publish(service_name, pod_name, action)
 
         except KeyboardInterrupt:
-            logger.info("Chaos Killer Bot shutting down...")
+            logger.info("Chaos Killer Bot interrupted by user...")
+        except Exception as e:
+            logger.error(f"Unexpected error in chaos bot: {e}", exc_info=True)
         finally:
+            logger.info("Chaos Killer Bot shutting down...")
             if self.dev_logger:
                 self.dev_logger.close()
 
@@ -341,13 +359,6 @@ class ChaosKillerBot:
 # ────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    # Load .env if it exists
-    try:
-        from dotenv import load_dotenv
-        load_dotenv()
-    except ImportError:
-        pass
-
     config = ChaosConfig()
     bot = ChaosKillerBot(config)
     bot.run()

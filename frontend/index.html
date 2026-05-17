@@ -44,6 +44,7 @@
           <div class="route-state-actions">
             <a href="/" class="route-link">Start another upload</a>
             <button id="processingRouteStateStreamBtn" type="button" class="secondary hidden">Open Stream Library</button>
+            <button id="processingRouteStateRetryBtn" type="button" class="secondary hidden">Retry in safe mode</button>
           </div>
         </section>
 
@@ -78,6 +79,17 @@
                 <div id="processingBar" class="bar"></div>
               </div>
             </div>
+            <div id="repairBlock" class="progress-block hidden">
+              <div class="progress-labels">
+                <span>Fallback Encoding</span>
+                <span id="repairPercent"></span>
+              </div>
+              <div class="progress indeterminate" id="repairTrack">
+                <div id="repairBar" class="bar"></div>
+              </div>
+              <div id="repairMessage" class="hidden status-banner" style="margin-top: 1rem; background: #f5a623; color: #333;"></div>
+            </div>
+            <div id="recoveryMessage" class="hidden status-banner" style="margin-top: 1rem; background: #f5a623; color: #333;"></div>
           </article>
 
           <article class="stage-card hidden" id="transcodeBlock">

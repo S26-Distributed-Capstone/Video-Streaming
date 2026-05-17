@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS transcoded_segment_status (
     profile VARCHAR(32) NOT NULL,
     segment_number INTEGER NOT NULL,
     state VARCHAR(32) NOT NULL,
+    failure_count INTEGER NOT NULL DEFAULT 0,
     updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
     UNIQUE (video_id, profile, segment_number)
 );

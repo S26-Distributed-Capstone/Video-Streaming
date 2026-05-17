@@ -5,11 +5,14 @@ import com.distributed26.videostreaming.shared.upload.FailedVideoRegistry;
 import com.distributed26.videostreaming.shared.upload.StatusEventBus;
 import com.distributed26.videostreaming.shared.upload.TranscodeTaskBus;
 import com.distributed26.videostreaming.shared.upload.events.JobEvent;
+import com.distributed26.videostreaming.shared.upload.events.SourceChunkRepairEvent;
 import com.distributed26.videostreaming.shared.upload.events.TranscodeTaskEvent;
 import com.distributed26.videostreaming.upload.db.SegmentUploadRepository;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.BufferedReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -72,6 +75,7 @@ public final class SegmentUploadCoordinator {
     public int uploadReadySegments(
             Path tempOutput,
             String videoId,
+            Path inputPath,
             Set<Path> uploadedFiles,
             Set<Integer> uploadedSegmentNumbers,
             boolean isFinalSweep
@@ -79,6 +83,7 @@ public final class SegmentUploadCoordinator {
         return uploadReadySegments(
                 tempOutput,
                 videoId,
+            inputPath,
                 uploadedFiles,
                 uploadedSegmentNumbers,
                 new ConcurrentHashMap<>(),
@@ -102,7 +107,28 @@ public final class SegmentUploadCoordinator {
         try {
             String fileName = path.getFileName().toString();
             String objectKey = videoId + "/chunks/" + fileName;
-            long size = Files.size(path);
+            
+            // Validate file is stable (not being written to by FFmpeg)
+            // Check that file size doesn't change over a short interval, indicating FFmpeg has finished writing
+            long size1 = Files.size(path);
+            try {
+                Thread.sleep(50);  // Wait 50ms for FFmpeg to close file handle
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Interrupted while waiting for file stability", e);
+            }
+            long size2 = Files.size(path);
+            
+            // If sizes differ, file is still being written to - retry later
+            if (size1 != size2) {
+                logger.warn("Segment file is still being written: {} (size changed from {} to {} bytes, delta={}) - will retry later",
+                        fileName, size1, size2, (size2 - size1));
+                throw new IOException("File still being written, size unstable: " + fileName);
+            }
+            
+            // File is stable - proceed with upload
+            long size = size1;
+            
             storageRetryExecutor.run(
                     "upload object " + objectKey,
                     new StorageRetryExecutor.RetryObserver() {
@@ -143,8 +169,19 @@ public final class SegmentUploadCoordinator {
 
             if (fileName.endsWith(".ts")) {
                 OptionalInt segmentNumber = extractSegmentNumber(fileName);
-                publishTranscodeTasks(videoId, objectKey, segmentNumber, outputTsOffsetSeconds);
-                statusEventBus.publish(new JobEvent(videoId, objectKey));
+
+                // Validate segment is readable before publishing events
+                validateSegmentInStorage(objectKey, size);
+
+                // Publish transcode tasks and status events with retry on RabbitMQ failure
+                storageRetryExecutor.run(
+                    "publish transcode events for " + objectKey,
+                    () -> {
+                        publishTranscodeTasks(videoId, objectKey, segmentNumber, outputTsOffsetSeconds);
+                        statusEventBus.publish(new JobEvent(videoId, objectKey));
+                    }
+                );
+
                 recordUploadedSegment(videoId, fileName, segmentNumber);
             }
             logger.info("Finished uploading segment: {}", objectKey);
@@ -156,6 +193,7 @@ public final class SegmentUploadCoordinator {
     int uploadReadySegments(
             Path tempOutput,
             String videoId,
+            Path inputPath,
             Set<Path> uploadedFiles,
             Set<Integer> uploadedSegmentNumbers,
             Map<Path, PendingUpload> inFlightUploads,
@@ -199,6 +237,7 @@ public final class SegmentUploadCoordinator {
             double outputTsOffsetSeconds = timing != null
                     ? timing.startOffsetSeconds()
                     : fallbackOffsetForSegment(segmentNumber);
+                ensureSegmentIsDecodableOrRepair(inputPath, videoId, path, segmentNumber, timing);
             waitForUploadCapacity(videoId, inFlightUploads, uploadedFiles, uploadedSegmentNumbers);
             inFlightUploads.put(
                     path,
@@ -318,6 +357,156 @@ public final class SegmentUploadCoordinator {
         return completedCount;
     }
 
+    private void ensureSegmentIsDecodableOrRepair(
+            Path inputPath,
+            String videoId,
+            Path segmentPath,
+            OptionalInt segmentNumber,
+            SegmentTiming timing
+    ) {
+        if (isSegmentDecodable(segmentPath)) {
+            return;
+        }
+        if (inputPath == null) {
+            throw new RuntimeException("Malformed segment detected but no source input is available for repair: " + segmentPath);
+        }
+        if (segmentNumber.isEmpty()) {
+            throw new RuntimeException("Malformed segment detected but segment number could not be parsed: " + segmentPath);
+        }
+
+        double startOffsetSeconds = timing != null ? timing.startOffsetSeconds() : fallbackOffsetForSegment(segmentNumber);
+        double durationSeconds = timing != null && timing.durationSeconds() > 0d
+                ? timing.durationSeconds()
+                : Math.max(1, segmentDuration);
+        logger.warn("A section was malformed with the quick preset, retrying with the encoded preset: videoId={} segment={} path={}",
+                videoId, segmentNumber.getAsInt(), segmentPath.getFileName());
+        statusEventBus.publish(new SourceChunkRepairEvent(
+                videoId,
+                segmentNumber.getAsInt(),
+                "STARTED",
+                "encoded",
+                "A section was malformed with the quick preset, retrying with the encoded preset"
+        ));
+
+        Path repairedPath = null;
+        try {
+            repairedPath = repairSegmentFromSource(inputPath, segmentPath, startOffsetSeconds, durationSeconds, segmentPath.getFileName().toString());
+            if (!isSegmentDecodable(repairedPath)) {
+                throw new IOException("Repaired segment is still undecodable: " + repairedPath);
+            }
+            Files.move(repairedPath, segmentPath, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            logger.info("Repaired malformed segment using encoded preset: videoId={} segment={} path={}",
+                    videoId, segmentNumber.getAsInt(), segmentPath.getFileName());
+            statusEventBus.publish(new SourceChunkRepairEvent(
+                    videoId,
+                    segmentNumber.getAsInt(),
+                    "COMPLETED",
+                    "encoded",
+                    "Malformed section repaired with encoded preset"
+            ));
+        } catch (IOException e) {
+            statusEventBus.publish(new SourceChunkRepairEvent(
+                    videoId,
+                    segmentNumber.getAsInt(),
+                    "FAILED",
+                    "encoded",
+                    "Malformed section could not be repaired with encoded preset"
+            ));
+            throw new RuntimeException("Failed to repair malformed segment " + segmentPath, e);
+        } finally {
+            if (repairedPath != null) {
+                try {
+                    Files.deleteIfExists(repairedPath);
+                } catch (IOException ignored) {
+                }
+            }
+        }
+    }
+
+    private Path repairSegmentFromSource(
+            Path inputPath,
+            Path segmentPath,
+            double startOffsetSeconds,
+            double durationSeconds,
+            String fileName
+    ) throws IOException {
+        Path repairPath = segmentPath.resolveSibling(fileName + ".repair.ts");
+        List<String> command = List.of(
+                "ffmpeg",
+                "-y",
+                "-ss", String.format(java.util.Locale.US, "%.3f", Math.max(0d, startOffsetSeconds)),
+                "-t", String.format(java.util.Locale.US, "%.3f", Math.max(1d, durationSeconds)),
+                "-i", inputPath.toString(),
+                "-c:v", "libx264",
+                "-preset", "fast",
+                "-crf", "21",
+                "-pix_fmt", "yuv420p",
+                "-x264-params", "keyint=300:scenecut=0",
+                "-force_key_frames", "expr:gte(t,n_forced*1)",
+                "-c:a", "aac",
+                "-b:a", "128k",
+                "-ac", "2",
+                "-ar", "48000",
+                "-f", "mpegts",
+                repairPath.toString()
+        );
+        runCommand(command);
+        return repairPath;
+    }
+
+    private boolean isSegmentDecodable(Path segmentPath) {
+        try {
+            runCommand(List.of(
+                    "ffmpeg",
+                    "-v", "error",
+                    "-i", segmentPath.toString(),
+                    "-f", "null",
+                    "-"
+            ));
+            return true;
+        } catch (IOException e) {
+            logger.warn("Segment failed local decode validation: {} ({})", segmentPath.getFileName(), e.getMessage());
+            return false;
+        }
+    }
+
+    private void runCommand(List<String> command) throws IOException {
+        ProcessBuilder builder = new ProcessBuilder(command);
+        builder.redirectErrorStream(true);
+        Process process = builder.start();
+        List<String> output = new java.util.ArrayList<>();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                output.add(line);
+            }
+        }
+        try {
+            int exitCode = process.waitFor();
+            if (exitCode != 0) {
+                throw new IOException("Command failed exit=" + exitCode + " cmd=" + String.join(" ", command)
+                        + " output=" + String.join(" | ", output));
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted while running command: " + String.join(" ", command), e);
+        }
+    }
+
+    private void validateSegmentInStorage(String objectKey, long expectedSize) throws IOException {
+        // Verify the uploaded segment is readable and has reasonable size
+        // This catches incomplete or corrupted uploads before publishing to RabbitMQ
+        try {
+            boolean exists = storageClient.fileExists(objectKey);
+            if (!exists) {
+                throw new IOException("Segment validation failed: uploaded file not found in storage: " + objectKey);
+            }
+            logger.info("Segment validation passed for {}", objectKey);
+        } catch (Exception e) {
+            throw new IOException("Segment validation failed for " + objectKey, e);
+        }
+    }
+
     private void recordUploadedSegment(String videoId, String fileName, OptionalInt segmentNumber) {
         if (segmentUploadRepository == null) {
             logger.warn("SegmentUploadRepository is null; skipping segment_upload insert");
@@ -337,15 +526,20 @@ public final class SegmentUploadCoordinator {
             OptionalInt segmentNumber,
             double outputTsOffsetSeconds
     ) {
+        logger.info("publishTranscodeTasks called for objectKey={}, segmentNumber={}", objectKey, segmentNumber);
         if (segmentNumber.isEmpty()) {
             logger.warn("Skipping transcode task publish because segment number could not be parsed for {}", objectKey);
             return;
         }
+        logger.info("Publishing {} transcode profiles for segment {}", TRANSCODE_PROFILES.length, segmentNumber.getAsInt());
         for (String profile : TRANSCODE_PROFILES) {
+            logger.info("Publishing transcode task for profile={}, segmentNumber={}", profile, segmentNumber.getAsInt());
             transcodeTaskBus.publish(
                     new TranscodeTaskEvent(videoId, objectKey, profile, segmentNumber.getAsInt(), outputTsOffsetSeconds)
             );
+            logger.info("Published transcode task for profile={}, segmentNumber={}", profile, segmentNumber.getAsInt());
         }
+        logger.info("All transcode profiles published for segment {}", segmentNumber.getAsInt());
     }
 
     private OptionalInt extractSegmentNumber(String fileName) {

@@ -21,6 +21,9 @@ import com.distributed26.videostreaming.shared.upload.events.TranscodeSegmentSta
 import com.distributed26.videostreaming.shared.upload.events.TranscodeTaskEvent;
 import com.distributed26.videostreaming.shared.upload.events.UploadFailedEvent;
 import com.distributed26.videostreaming.shared.upload.events.UploadMetaEvent;
+
+import net.bramp.ffmpeg.builder.FFmpegBuilder;
+
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Optional;
@@ -43,6 +46,7 @@ public final class ProcessingRuntime {
     private static final Logger LOGGER = LogManager.getLogger(ProcessingRuntime.class);
     private static final java.util.regex.Pattern SEGMENT_NUMBER_PATTERN = java.util.regex.Pattern.compile("(\\d+)");
     private static final long DEFAULT_CLAIM_STALE_MILLIS = 10_000L;
+    private static final int MAX_TRANSCODE_ATTEMPTS = 5;  // Skip after this many failures
     private final Set<String> manifestsInFlight = ConcurrentHashMap.newKeySet();
 
     private TranscodedSegmentStatusRepository transcodeStatusRepository;
@@ -504,6 +508,7 @@ public final class ProcessingRuntime {
                         task.getJobId(), task.getProfile().getName(), task.getChunkKey());
                 return true;
             }
+            
             if (processingTaskClaimRepository != null) {
                 ProcessingTaskClaimRepository.ClaimResult claimResult = processingTaskClaimRepository.claim(
                         task.getJobId(),
@@ -538,10 +543,7 @@ public final class ProcessingRuntime {
             )) {
                 CompletedTranscode completed = task.transcodeToSpool(storageClient, localUploadSpoolRoot);
                 if (completed == null) {
-                    task.setStatus(Status.SUCCEEDED);
-                    emitState(task, TranscodeSegmentState.DONE, profiles);
-                    LOGGER.info("Task {} skipped because output already exists", task.getId());
-                    return true;
+                    return finishSuccessfulTranscode(task, profiles, segmentNumber, null);
                 }
                 if (isVideoFailed(task.getJobId())) {
                     Files.deleteIfExists(completed.localPath());
@@ -560,16 +562,78 @@ public final class ProcessingRuntime {
                         completed.sizeBytes(),
                         completed.outputTsOffsetSeconds()
                 );
-                emitState(task, TranscodeSegmentState.TRANSCODED, profiles);
-                task.setStatus(Status.SUCCEEDED);
-                LOGGER.info("Task {} succeeded", task.getId());
-                return true;
+                return finishSuccessfulTranscode(task, profiles, segmentNumber, completed);
             }
         } catch (Exception e) {
             task.setStatus(Status.FAILED);
             emitState(task, TranscodeSegmentState.FAILED, profiles);
-            LOGGER.error("Task {} failed: {}", task.getId(), e.getMessage(), e);
-            return false;
+            LOGGER.error("Task {} failed: {} (chunk={})", task.getId(), e.getMessage(), task.getChunkKey(), e);
+            
+            // Check if THIS SEGMENT has failed too many times already - if so, attempt recovery
+            if (segmentNumber >= 0 && transcodeStatusRepository != null) {
+                try {
+                    int failureCount = transcodeStatusRepository.countFailuresForSegment(
+                            task.getJobId(),
+                            task.getProfile().getName(),
+                            segmentNumber
+                    );
+                    if (failureCount >= MAX_TRANSCODE_ATTEMPTS) {
+                        LOGGER.warn("Segment has failed {} times (limit={}), attempting automatic recovery: videoId={} profile={} segment={}",
+                                failureCount, MAX_TRANSCODE_ATTEMPTS, task.getJobId(), task.getProfile().getName(), segmentNumber);
+                        // Attempt recovery: re-encode the segment with safe settings
+                        try {
+                            publishTranscodeState(task.getJobId(), task.getProfile().getName(), segmentNumber, TranscodeSegmentState.RECOVERY_IN_PROGRESS, profiles);
+                            boolean recoverySucceeded = attemptSegmentRecovery(
+                                    task.getJobId(),
+                                    task.getChunkKey(),
+                                    storageClient
+                            );
+                            if (recoverySucceeded) {
+                                // Clear failure count and re-queue for retry
+                                transcodeStatusRepository.clearFailuresForSegment(
+                                        task.getJobId(),
+                                        task.getProfile().getName(),
+                                        segmentNumber
+                                );
+                                LOGGER.info("Segment recovery succeeded, resetting failure count and retrying: videoId={} profile={} segment={}",
+                                        task.getJobId(), task.getProfile().getName(), segmentNumber);
+                                emitState(task, TranscodeSegmentState.QUEUED, profiles);
+                                task.setStatus(Status.QUEUED);
+
+                                // Retry immediately in the same worker so the recovered segment does not
+                                // sit in the queue and leave the UI stuck at 39/40 while waiting.
+                                CompletedTranscode recovered = task.transcodeToSpool(storageClient, localUploadSpoolRoot);
+                                if (recovered == null) {
+                                    return finishSuccessfulTranscode(task, profiles, segmentNumber, null);
+                                }
+                                processingUploadTaskRepository.upsertPending(
+                                    task.getJobId(),
+                                    processorInstanceId,
+                                    task.getProfile().getName(),
+                                    segmentNumber,
+                                    task.getChunkKey(),
+                                    recovered.outputKey(),
+                                    recovered.localPath().toString(),
+                                    recovered.sizeBytes(),
+                                    recovered.outputTsOffsetSeconds()
+                                );
+                                return finishSuccessfulTranscode(task, profiles, segmentNumber, recovered);
+                            } else {
+                                LOGGER.warn("Segment recovery failed, giving up: videoId={} profile={} segment={}",
+                                        task.getJobId(), task.getProfile().getName(), segmentNumber);
+                                return true;  // Give up
+                            }
+                        } catch (Exception recoveryError) {
+                            LOGGER.warn("Segment recovery attempt failed with exception: videoId={} profile={} segment={}",
+                                    task.getJobId(), task.getProfile().getName(), segmentNumber, recoveryError);
+                            return true;  // Give up
+                        }
+                    }
+                } catch (Exception dbError) {
+                    LOGGER.warn("Failed to check failure count, will retry anyway", dbError);
+                }
+            }
+            return false;  // Re-queue the task for retry
         } finally {
             if (claimAcquired && processingTaskClaimRepository != null) {
                 processingTaskClaimRepository.release(
@@ -591,6 +655,22 @@ public final class ProcessingRuntime {
             return;
         }
         publishTranscodeState(task.getJobId(), task.getProfile().getName(), segmentNumber, state, profiles);
+    }
+
+    private boolean finishSuccessfulTranscode(
+            TranscodingTask task,
+            TranscodingProfile[] profiles,
+            int segmentNumber,
+            CompletedTranscode completed
+    ) {
+        if (completed == null) {
+            LOGGER.info("Task {} skipped because output already exists", task.getId());
+        } else {
+            LOGGER.info("Task {} succeeded", task.getId());
+        }
+        emitState(task, TranscodeSegmentState.TRANSCODED, profiles);
+        task.setStatus(Status.SUCCEEDED);
+        return true;
     }
 
     private static TranscodingProfile profileFromName(String profileName, TranscodingProfile[] profiles) {
@@ -710,5 +790,130 @@ public final class ProcessingRuntime {
 
     private static TranscodingProfile[] defaultProfiles() {
         return new TranscodingProfile[] {TranscodingProfile.LOW, TranscodingProfile.MEDIUM, TranscodingProfile.HIGH};
+    }
+
+    /**
+     * Attempts to recover a malformed segment by downloading it, re-encoding with
+     * safe x264 settings (strong keyframe forcing), and re-uploading in-place.
+     *
+     * @return true if recovery succeeded, false otherwise
+     */
+    private boolean attemptSegmentRecovery(
+            String videoId,
+            String chunkKey,
+            ObjectStorageClient storageClient
+    ) {
+        Path inputTemp = null;
+        Path outputTemp = null;
+        try {
+            inputTemp = Files.createTempFile("recover-in-", ".ts");
+            outputTemp = Files.createTempFile("recover-out-", ".ts");
+
+            // Download the existing segment
+            LOGGER.info("Recovery: downloading malformed segment chunk={}", chunkKey);
+            try (java.io.InputStream is = storageClient.downloadFile(chunkKey)) {
+                Files.copy(is, inputTemp, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
+
+            // Re-encode with safe settings: strong keyframe forcing, explicit encoding, aac audio
+            LOGGER.info("Recovery: re-encoding segment with safe settings chunk={}", chunkKey);
+            int keyint = 10 * 30;  // Keyframe every 10 seconds at 30fps
+            FFmpegBuilder builder = new FFmpegBuilder()
+                    .setInput(inputTemp.toString())
+                    .addOutput(outputTemp.toString())
+                    .setFormat("mpegts")
+                    .addExtraArgs("-c:v", "libx264")
+                    .addExtraArgs("-preset", "fast")  // Fast preset for recovery, not ultrafast
+                    .addExtraArgs("-crf", "21")  // Higher quality for recovery
+                    .addExtraArgs("-pix_fmt", "yuv420p")
+                    .addExtraArgs("-x264-params", "keyint=" + keyint + ":scenecut=0")
+                    .addExtraArgs("-force_key_frames", "expr:gte(t,n_forced*1)")  // Keyframe every second
+                    .addExtraArgs("-c:a", "aac")
+                    .addExtraArgs("-b:a", "128k")
+                    .addExtraArgs("-ac", "2")
+                    .addExtraArgs("-ar", "48000")
+                    .done();
+
+            runRecoveryFfmpeg(builder, chunkKey);
+
+            // Upload recovered segment back in-place
+            long size = Files.size(outputTemp);
+            LOGGER.info("Recovery: uploading recovered segment ({} bytes) chunk={}", size, chunkKey);
+            try (java.io.FileInputStream is = new java.io.FileInputStream(outputTemp.toFile())) {
+                storageClient.uploadFile(chunkKey, is, size);
+            }
+
+            LOGGER.info("Recovery: segment recovery completed successfully chunk={}", chunkKey);
+            return true;
+
+        } catch (Exception e) {
+            LOGGER.error("Recovery: segment recovery failed chunk={}", chunkKey, e);
+            return false;
+        } finally {
+            if (inputTemp != null) {
+                try {
+                    Files.deleteIfExists(inputTemp);
+                } catch (java.io.IOException ignored) {
+                }
+            }
+            if (outputTemp != null) {
+                try {
+                    Files.deleteIfExists(outputTemp);
+                } catch (java.io.IOException ignored) {
+                }
+            }
+        }
+    }
+
+    /**
+     * Runs FFmpeg for segment recovery with diagnostic logging.
+     */
+    private void runRecoveryFfmpeg(FFmpegBuilder builder, String chunkKey) throws java.io.IOException {
+        java.util.List<String> command = new java.util.ArrayList<>();
+        command.add("ffmpeg");
+        command.addAll(builder.build());
+
+        LOGGER.debug("Recovery FFmpeg command: {}", () -> String.join(" ", command));
+
+        ProcessBuilder pb = new ProcessBuilder(command);
+        pb.redirectErrorStream(false);
+        Process process;
+        try {
+            process = pb.start();
+        } catch (java.io.IOException e) {
+            throw new java.io.IOException("Failed to start FFmpeg for segment recovery chunk=" + chunkKey + ": " + e.getMessage(), e);
+        }
+
+        // Read stdout and stderr in parallel to prevent pipe buffer deadlocks
+        CompletableFuture<String> stdoutFuture = CompletableFuture.supplyAsync(() -> {
+            try { return new String(process.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8); }
+            catch (java.io.IOException e) { return "[failed to read stdout: " + e.getMessage() + "]"; }
+        });
+        CompletableFuture<String> stderrFuture = CompletableFuture.supplyAsync(() -> {
+            try { return new String(process.getErrorStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8); }
+            catch (java.io.IOException e) { return "[failed to read stderr: " + e.getMessage() + "]"; }
+        });
+
+        int exitCode;
+        try {
+            exitCode = process.waitFor();
+        } catch (InterruptedException e) {
+            process.destroyForcibly();
+            Thread.currentThread().interrupt();
+            throw new java.io.IOException("FFmpeg interrupted for segment recovery chunk=" + chunkKey, e);
+        }
+
+        String stdout = stdoutFuture.join();
+        String stderr = stderrFuture.join();
+
+        if (exitCode != 0) {
+            String stderrTrunc = stderr.length() > 2000
+                    ? "…(truncated)…\n" + stderr.substring(stderr.length() - 2000)
+                    : stderr;
+            LOGGER.error("Recovery FFmpeg failed exit={} chunk={}.\nstderr:\n{}", exitCode, chunkKey, stderrTrunc);
+            throw new java.io.IOException("Recovery FFmpeg returned exit code " + exitCode + " for chunk=" + chunkKey);
+        }
+
+        LOGGER.debug("Recovery FFmpeg completed successfully chunk={}", chunkKey);
     }
 }

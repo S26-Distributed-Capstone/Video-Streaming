@@ -121,7 +121,7 @@ public class UploadHandler implements AutoCloseable {
 
         logger.info("CHUNK_DURATION_SECONDS resolved to {}", config.segmentDuration());
         logger.info("Initialized FFmpeg executor with pool size: {}", config.ffmpegPoolSize());
-        logger.info("Upload-side segmentation mode: stream-copy only");
+        logger.info("Upload-side segmentation mode is configured via UPLOAD_SEGMENTATION_MODE (copy|auto|reencode, default=auto)");
         logger.info("Initialized segment upload executor with pool size: {}", config.uploadPoolSize());
         logger.info("Initialized max in-flight segment uploads: {}", config.maxInFlightSegmentUploads());
 

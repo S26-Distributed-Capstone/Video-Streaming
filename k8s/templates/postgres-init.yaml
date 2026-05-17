@@ -30,11 +30,14 @@ data:
         profile VARCHAR(32) NOT NULL,
         segment_number INTEGER NOT NULL,
         state VARCHAR(32) NOT NULL,
+        failure_count INTEGER NOT NULL DEFAULT 0,
         updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
         UNIQUE (video_id, profile, segment_number)
     );
     CREATE INDEX IF NOT EXISTS idx_transcoded_segment_status_video_profile_state
         ON transcoded_segment_status(video_id, profile, state);
+    -- Backfill: add failure_count column if missing (safe for upgrades)
+    ALTER TABLE transcoded_segment_status ADD COLUMN IF NOT EXISTS failure_count INTEGER NOT NULL DEFAULT 0;
 
     CREATE TABLE IF NOT EXISTS processing_upload_task (
         id SERIAL PRIMARY KEY,

@@ -1,0 +1,145 @@
+{{- if .Values.chaosMonkey.enabled }}
+---
+# ─── ServiceAccount for Chaos Monkey ───────────────────────────────────
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-chaos-monkey
+  namespace: {{ .Release.Namespace }}
+
+---
+# ─── ClusterRole with pod deletion permissions ──────────────────────────
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-chaos-monkey
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "get"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["delete"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+
+---
+# ─── ClusterRoleBinding ──────────────────────────────────────────────────
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Name }}-chaos-monkey
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Release.Name }}-chaos-monkey
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-chaos-monkey
+    namespace: {{ .Release.Namespace }}
+
+---
+# ─── Deployment for Chaos Monkey ────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-chaos-monkey
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: chaos-monkey
+    release: {{ .Release.Name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: chaos-monkey
+      release: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app: chaos-monkey
+        release: {{ .Release.Name }}
+      annotations:
+        prometheus.io/scrape: "false"
+    spec:
+      serviceAccountName: {{ .Release.Name }}-chaos-monkey
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: killer-bot
+          image: "{{ .Values.chaosMonkey.image.repository }}:{{ .Values.chaosMonkey.image.tag }}"
+          imagePullPolicy: {{ .Values.chaosMonkey.image.pullPolicy }}
+          env:
+            # Chaos configuration
+            - name: CHAOS_ENABLED
+              value: "{{ .Values.chaosMonkey.enabled }}"
+            - name: CHAOS_INTERVAL_MIN
+              value: "{{ .Values.chaosMonkey.intervalMin }}"
+            - name: CHAOS_INTERVAL_MAX
+              value: "{{ .Values.chaosMonkey.intervalMax }}"
+            - name: CHAOS_PROBABILITY
+              value: "{{ .Values.chaosMonkey.probability }}"
+            - name: CHAOS_PRESET
+              value: "{{ .Values.chaosMonkey.preset }}"
+            - name: CHAOS_STATEFUL_SAFE_MODE
+              value: "{{ .Values.chaosMonkey.statefulSafeMode }}"
+            - name: CHAOS_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: CHAOS_LOG_TO_RABBITMQ
+              value: "{{ .Values.chaosMonkey.logToRabbitMQ }}"
+            
+            # RabbitMQ connection
+            - name: RABBITMQ_HOST
+              value: "{{ .Release.Name }}-rabbitmq"
+            - name: RABBITMQ_PORT
+              value: "5672"
+            - name: RABBITMQ_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: RABBITMQ_USER
+            - name: RABBITMQ_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: RABBITMQ_PASS
+          
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - ps aux | grep -v grep | grep python > /dev/null
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            timeoutSeconds: 5
+            failureThreshold: 3
+          
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}

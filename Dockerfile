@@ -19,7 +19,7 @@ RUN --mount=type=cache,target=/root/.m2 \
 FROM eclipse-temurin:17-jre
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ffmpeg python3 python3-pip python3-venv \
+  && apt-get install -y --no-install-recommends ffmpeg python3 python3-pip python3-venv python3-dev gcc build-essential libpq-dev \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
