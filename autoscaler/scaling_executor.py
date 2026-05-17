@@ -2,7 +2,7 @@
 scaling_executor.py — Orchestrates cordon/uncordon + StatefulSet replica patching.
 """
 import logging
-from typing import Optional
+from typing import Optional, Set
 
 from kubernetes import client
 from config import Config
@@ -24,6 +24,44 @@ class ScalingExecutor:
             namespace=self._cfg.kube_namespace,
         )
         return ss.spec.replicas or 0
+
+    def get_processing_pool_nodes(self, topology: TopologyManager) -> Set[str]:
+        """
+        Return the worker nodes currently eligible to run processing pods.
+
+        When the processing StatefulSet has an explicit hostname affinity, that
+        affinity defines the active processing pool. Otherwise, the pool is the
+        set of uncordoned worker nodes.
+        """
+        ss = self._apps.read_namespaced_stateful_set(
+            name=self._cfg.statefulset_name,
+            namespace=self._cfg.kube_namespace,
+        )
+        affinity_nodes = self._extract_processing_constraint_nodes(ss)
+        if affinity_nodes is not None:
+            return affinity_nodes
+
+        states = topology.get_node_states()
+        return {name for name, state in states.items() if not state["cordoned"]}
+
+    def _extract_processing_constraint_nodes(self, ss) -> Optional[Set[str]]:
+        spec = getattr(ss, "spec", None)
+        template = getattr(spec, "template", None)
+        pod_spec = getattr(template, "spec", None)
+        affinity = getattr(pod_spec, "affinity", None)
+        node_affinity = getattr(affinity, "node_affinity", None)
+        required = getattr(node_affinity, "required_during_scheduling_ignored_during_execution", None)
+        terms = getattr(required, "node_selector_terms", None) or []
+
+        for term in terms:
+            expressions = getattr(term, "match_expressions", None) or []
+            for expr in expressions:
+                if (
+                    getattr(expr, "key", None) == "kubernetes.io/hostname"
+                    and getattr(expr, "operator", None) == "In"
+                ):
+                    return set(getattr(expr, "values", None) or [])
+        return None
 
     def set_statefulset_replicas(self, count: int) -> None:
         count = max(0, count)
@@ -265,4 +303,3 @@ class ScalingExecutor:
         self.clear_processing_node_constraint()
         self.enforce_active_node_count(topology, self._cfg.min_active_nodes)
         log.info("Initial state enforced: target_active=%d", self._cfg.min_active_nodes)
-

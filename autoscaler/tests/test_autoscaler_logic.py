@@ -416,11 +416,23 @@ class TestScalingExecutor:
 
 
 class _FakeMetrics:
-    def __init__(self, queue_depth=0):
+    class ProcessingBacklog:
+        def __init__(self, open_upload_tasks=0, active_claims=0):
+            self.open_upload_tasks = open_upload_tasks
+            self.active_claims = active_claims
+
+        def has_active_work(self):
+            return self.open_upload_tasks > 0 or self.active_claims > 0
+
+    def __init__(self, queue_depth=0, open_upload_tasks=0, active_claims=0):
         self.queue_depth = queue_depth
+        self.processing_backlog = self.ProcessingBacklog(open_upload_tasks, active_claims)
 
     def get_queue_depth(self):
         return self.queue_depth
+
+    def get_processing_backlog(self):
+        return self.processing_backlog
 
 
 class _FakeTopologyForPoll:
@@ -439,6 +451,7 @@ class _FakeExecutorForPoll:
         self.reconcile_calls = 0
         self.clear_constraint_calls = 0
         self.scale_up_calls = []
+        self.processing_pool_nodes = {"node-1"}
 
     def enforce_initial_state(self, topology):
         self.bootstrap_calls += 1
@@ -458,13 +471,16 @@ class _FakeExecutorForPoll:
     def scale_up_nodes(self, topology, steps):
         self.scale_up_calls.append(steps)
 
+    def get_processing_pool_nodes(self, topology):
+        return set(self.processing_pool_nodes)
+
 
 class _FakePublisher:
     def __init__(self):
         self.published = []
 
-    def publish_node_status(self, node_states, queue_depth):
-        self.published.append((node_states, queue_depth))
+    def publish_node_status(self, node_states, processing_pool_nodes, queue_depth):
+        self.published.append((node_states, processing_pool_nodes, queue_depth))
         autoscaler_module._shutdown.set()
 
 
@@ -604,5 +620,27 @@ class TestAutoscalerOffMode:
         assert executor.scale_up_calls == [3]
         assert not autoscaler_module._paused.is_set()
 
+    def test_scale_down_is_deferred_while_processing_backlog_is_active(self, monkeypatch):
+        monkeypatch.setattr(autoscaler_module, "_paused", threading.Event())
+        monkeypatch.setattr(autoscaler_module, "_shutdown", threading.Event())
+        autoscaler_module._paused.clear()
 
+        cfg = make_cfg(min_active_nodes=1)
+        executor = _FakeExecutorForPoll()
+        publisher = _FakePublisher()
+        store = StateStore()
+
+        autoscaler_module.run_poll_loop(
+            cfg,
+            _FakeTopologyForPoll(),
+            executor,
+            _FakeMetrics(queue_depth=0, open_upload_tasks=3, active_claims=1),
+            DecisionEngine(cfg),
+            store,
+            publisher,
+            _FakeElection(),
+            _FakeAutoscalingState(True),
+        )
+
+        assert executor.scale_up_calls == []
 

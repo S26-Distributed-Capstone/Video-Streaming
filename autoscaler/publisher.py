@@ -50,6 +50,7 @@ class Publisher:
     def publish_node_status(
         self,
         node_states: Dict[str, dict],
+        processing_pool_nodes: set[str],
         queue_depth: int,
     ) -> None:
         """
@@ -59,9 +60,9 @@ class Publisher:
         nodes = []
         active_count = 0
         for name, state in node_states.items():
-            cordoned = state.get("cordoned", True)
-            s = "cordoned" if cordoned else "active"
-            if not cordoned:
+            in_processing_pool = name in processing_pool_nodes
+            s = "active" if in_processing_pool else "inactive"
+            if in_processing_pool:
                 active_count += 1
             nodes.append({
                 "name": name,
@@ -112,4 +113,3 @@ class Publisher:
                 self._connection.close()
         except Exception:
             pass
-

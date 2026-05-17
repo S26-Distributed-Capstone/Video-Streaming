@@ -69,6 +69,23 @@
             </div>
           </article>
 
+          <article class="stage-card" id="uploadClusterDashboard">
+            <div class="stage-heading">
+              <span class="stage-index cluster-icon">⬡</span>
+              <h2>Cluster</h2>
+            </div>
+
+            <div class="node-grid" id="uploadNodeGrid" aria-label="Worker node status on upload page">
+              <!-- Populated by app.js once NodeStatusEvent arrives -->
+            </div>
+
+            <p class="node-grid-legend">
+              <span class="node-dot active"></span> In Use &nbsp;
+              <span class="node-dot cordoned"></span> Not In Use &nbsp;
+              <span class="node-dot unknown"></span> Unknown
+            </p>
+          </article>
+
           <article class="stage-card hidden" id="processingBlock">
             <div class="stage-heading">
               <span class="stage-index">02</span>
@@ -136,6 +153,9 @@
               <div class="progress" id="queueDepthTrack">
                 <div id="queueDepthBar" class="bar queue-bar"></div>
               </div>
+              <div class="queue-depth-meta">
+                <span id="queueDepthScaleLabel">Scale: 10</span>
+              </div>
             </div>
 
             <div class="node-grid" id="nodeGrid" aria-label="Worker node status">
@@ -143,8 +163,8 @@
             </div>
 
             <p class="node-grid-legend">
-              <span class="node-dot active"></span> Active &nbsp;
-              <span class="node-dot cordoned"></span> Cordoned &nbsp;
+              <span class="node-dot active"></span> In Use &nbsp;
+              <span class="node-dot cordoned"></span> Not In Use &nbsp;
               <span class="node-dot unknown"></span> Unknown
             </p>
           </article>

@@ -420,11 +420,26 @@ public final class StartupRecoveryService {
                                     )
                             ));
                     inFlightSegments.addAll(runtime.transcodeStatusRepository()
-                            .findSegmentNumbersByState(videoId, profile.getName(), TranscodeSegmentState.TRANSCODING));
+                            .findSegmentNumbersByStateUpdatedSince(
+                                    videoId,
+                                    profile.getName(),
+                                    TranscodeSegmentState.TRANSCODING,
+                                    runtime.claimStaleMillis()
+                            ));
                     inFlightSegments.addAll(runtime.transcodeStatusRepository()
-                            .findSegmentNumbersByState(videoId, profile.getName(), TranscodeSegmentState.TRANSCODED));
+                            .findSegmentNumbersByStateUpdatedSince(
+                                    videoId,
+                                    profile.getName(),
+                                    TranscodeSegmentState.TRANSCODED,
+                                    runtime.claimStaleMillis()
+                            ));
                     inFlightSegments.addAll(runtime.transcodeStatusRepository()
-                            .findSegmentNumbersByState(videoId, profile.getName(), TranscodeSegmentState.UPLOADING));
+                            .findSegmentNumbersByStateUpdatedSince(
+                                    videoId,
+                                    profile.getName(),
+                                    TranscodeSegmentState.UPLOADING,
+                                    runtime.claimStaleMillis()
+                            ));
                 }
                 if (runtime.processingUploadTaskRepository() != null) {
                     inFlightSegments.addAll(
@@ -520,11 +535,26 @@ public final class StartupRecoveryService {
         }
         try {
             return !runtime.transcodeStatusRepository()
-                    .findSegmentNumbersByState(videoId, profile, TranscodeSegmentState.TRANSCODING).isEmpty()
+                    .findSegmentNumbersByStateUpdatedSince(
+                            videoId,
+                            profile,
+                            TranscodeSegmentState.TRANSCODING,
+                            runtime.claimStaleMillis()
+                    ).isEmpty()
                     || !runtime.transcodeStatusRepository()
-                    .findSegmentNumbersByState(videoId, profile, TranscodeSegmentState.TRANSCODED).isEmpty()
+                    .findSegmentNumbersByStateUpdatedSince(
+                            videoId,
+                            profile,
+                            TranscodeSegmentState.TRANSCODED,
+                            runtime.claimStaleMillis()
+                    ).isEmpty()
                     || !runtime.transcodeStatusRepository()
-                    .findSegmentNumbersByState(videoId, profile, TranscodeSegmentState.UPLOADING).isEmpty();
+                    .findSegmentNumbersByStateUpdatedSince(
+                            videoId,
+                            profile,
+                            TranscodeSegmentState.UPLOADING,
+                            runtime.claimStaleMillis()
+                    ).isEmpty();
         } catch (Exception e) {
             LOGGER.warn("Startup recovery failed to inspect recent non-queued progress videoId={} profile={}",
                     videoId, profile, e);

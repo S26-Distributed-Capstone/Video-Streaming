@@ -310,6 +310,10 @@ body.processing-route.processing-route-terminal .stage-grid {
   display: none;
 }
 
+body.processing-route #uploadClusterDashboard {
+  display: none;
+}
+
 .stage-grid {
   display: grid;
   gap: 14px;
@@ -375,6 +379,13 @@ body.processing-route.processing-route-terminal .stage-grid {
   height: 100%;
   background: linear-gradient(90deg, var(--accent), var(--accent-2), var(--accent-3));
   transition: width 0.28s ease;
+}
+
+.queue-depth-meta {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-align: right;
 }
 
 .progress.indeterminate .bar {
@@ -612,32 +623,6 @@ body.processing-route.processing-route-terminal .stage-grid {
   line-height: 1;
 }
 
-.node-cordon-btn {
-  width: 100%;
-  padding: 3px 4px;
-  font-size: 0.68rem;
-  font-weight: 600;
-  border-radius: 6px;
-  border: 1px solid currentColor;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  opacity: 0.75;
-  line-height: 1.2;
-  transition: opacity 0.15s, background 0.15s;
-  white-space: nowrap;
-}
-
-.node-cordon-btn:hover:not(:disabled) {
-  opacity: 1;
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.node-cordon-btn:disabled {
-  opacity: 0.35;
-  cursor: not-allowed;
-}
-
 .node-icon.active {
   background: rgba(79, 138, 120, 0.15);
   border-color: var(--accent-3);
@@ -688,4 +673,3 @@ body.processing-route.processing-route-terminal .stage-grid {
 .node-dot.active   { background: var(--accent-3); }
 .node-dot.cordoned { background: var(--accent); opacity: 0.75; }
 .node-dot.unknown  { background: var(--muted); opacity: 0.45; }
-

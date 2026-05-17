@@ -455,7 +455,7 @@ spec:
               echo "vs-rabbitmq:5672 is up."
       containers:
         - name: autoscaler
-          image: "jasonroth03/video-streaming-autoscaler:1.5-autoscaling-fix-20260514"
+          image: "tanigross/video-streaming-autoscaler:1.5-autoscaling-fix-20260514"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8084
@@ -505,6 +505,21 @@ spec:
               value: "upload.events"
             - name: RABBITMQ_TASK_QUEUE
               value: "upload.task.queue"
+            - name: PG_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: vs-config
+                  key: PG_URL
+            - name: PG_USER
+              valueFrom:
+                secretKeyRef:
+                  name: vs-secrets
+                  key: PG_USER
+            - name: PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: vs-secrets
+                  key: PG_PASSWORD
             - name: RABBITMQ_USER
               valueFrom:
                 secretKeyRef:
@@ -687,7 +702,7 @@ spec:
               echo "vs-postgres:5432 is up."
       containers:
         - name: status-service
-          image: "jasonroth03/video-streaming-app:10-recovery-fix-20260514-1432"
+          image: "tanigross/video-streaming-app:10-recovery-fix-20260514-1432"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8081
@@ -775,7 +790,7 @@ spec:
               echo "vs-minio:9000 is up."
       containers:
         - name: streaming-service
-          image: "jasonroth03/video-streaming-app:10-recovery-fix-20260514-1432"
+          image: "tanigross/video-streaming-app:10-recovery-fix-20260514-1432"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8083
@@ -874,7 +889,7 @@ spec:
               echo "vs-postgres:5432 is up."
       containers:
         - name: upload-service
-          image: "jasonroth03/video-streaming-app:10-recovery-fix-20260514-1432"
+          image: "tanigross/video-streaming-app:10-recovery-fix-20260514-1432"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
@@ -1136,7 +1151,7 @@ spec:
               echo "vs-postgres:5432 is up."
       containers:
         - name: processing-service
-          image: "jasonroth03/video-streaming-app:10-recovery-fix-20260514-1432"
+          image: "tanigross/video-streaming-app:10-recovery-fix-20260514-1432"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8082

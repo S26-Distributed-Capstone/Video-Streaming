@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# hard-redeploy-no-autoscaling.sh — Hard redeploy without node-wide image caching.
+# hard-redeploy-no-autoscaling.sh - Hard redeploy without node-wide image caching.
 #
 # This is the faster variant. It does NOT import the app image into every k3s
 # node. It leaves the autoscaler running, applies manifests, and forces the
@@ -22,7 +22,7 @@ REMOTE_K8S_DIR="/home/sack/videostreaming/k8s"
 KUBECTL_PREFIX="doas env KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl -n video-streaming"
 VALUES_FILE="${ROOT_DIR}/k8s/values.yaml"
 RENDERED_FILE="${ROOT_DIR}/k8s/rendered.yaml"
-IMAGE_REPO="jasonroth03/video-streaming-app"
+IMAGE_REPO="tanigross/video-streaming-app"
 SSH_CONTROL_DIR="${SSH_CONTROL_DIR:-/tmp/vs-ssh}"
 SSH_OPTS=(
   -o StrictHostKeyChecking=accept-new
@@ -77,6 +77,59 @@ current_tag() {
   ' "$VALUES_FILE"
 }
 
+current_min_active_nodes() {
+  awk '
+    $1 == "autoscaler:" { in_autoscaler=1; next }
+    in_autoscaler && $1 == "minActiveNodes:" {
+      print $2
+      exit
+    }
+    in_autoscaler && $1 !~ /^(image:|repository:|tag:|pullPolicy:|replicas:|totalNodes:|minActiveNodes:|replicasPerNode:|replicasPerCpu:|scaleUpThreshold:|scaleDownThreshold:|maxScaleUpStep:|maxScaleDownStep:|pollIntervalSeconds:|scaleCooldownSeconds:|scaleDownIdlePolls:|nodeLabelSelector:|statefulsetName:|rabbitmqManagementPort:|resources:|requests:|limits:)$/ && $1 !~ /^#/ {
+      in_autoscaler=0
+    }
+  ' "$VALUES_FILE"
+}
+
+current_replicas_per_node() {
+  awk '
+    $1 == "autoscaler:" { in_autoscaler=1; next }
+    in_autoscaler && $1 == "replicasPerNode:" {
+      print $2
+      exit
+    }
+    in_autoscaler && $1 !~ /^(image:|repository:|tag:|pullPolicy:|replicas:|totalNodes:|minActiveNodes:|replicasPerNode:|replicasPerCpu:|scaleUpThreshold:|scaleDownThreshold:|maxScaleUpStep:|maxScaleDownStep:|pollIntervalSeconds:|scaleCooldownSeconds:|scaleDownIdlePolls:|nodeLabelSelector:|statefulsetName:|rabbitmqManagementPort:|resources:|requests:|limits:)$/ && $1 !~ /^#/ {
+      in_autoscaler=0
+    }
+  ' "$VALUES_FILE"
+}
+
+current_replicas_per_cpu() {
+  awk '
+    $1 == "autoscaler:" { in_autoscaler=1; next }
+    in_autoscaler && $1 == "replicasPerCpu:" {
+      print $2
+      exit
+    }
+    in_autoscaler && $1 !~ /^(image:|repository:|tag:|pullPolicy:|replicas:|totalNodes:|minActiveNodes:|replicasPerNode:|replicasPerCpu:|scaleUpThreshold:|scaleDownThreshold:|maxScaleUpStep:|maxScaleDownStep:|pollIntervalSeconds:|scaleCooldownSeconds:|scaleDownIdlePolls:|nodeLabelSelector:|statefulsetName:|rabbitmqManagementPort:|resources:|requests:|limits:)$/ && $1 !~ /^#/ {
+      in_autoscaler=0
+    }
+  ' "$VALUES_FILE"
+}
+
+current_node_label_selector() {
+  awk '
+    $1 == "autoscaler:" { in_autoscaler=1; next }
+    in_autoscaler && $1 == "nodeLabelSelector:" {
+      gsub(/"/, "", $2)
+      print $2
+      exit
+    }
+    in_autoscaler && $1 !~ /^(image:|repository:|tag:|pullPolicy:|replicas:|totalNodes:|minActiveNodes:|replicasPerNode:|replicasPerCpu:|scaleUpThreshold:|scaleDownThreshold:|maxScaleUpStep:|maxScaleDownStep:|pollIntervalSeconds:|scaleCooldownSeconds:|scaleDownIdlePolls:|nodeLabelSelector:|statefulsetName:|rabbitmqManagementPort:|resources:|requests:|limits:)$/ && $1 !~ /^#/ {
+      in_autoscaler=0
+    }
+  ' "$VALUES_FILE"
+}
+
 update_tag_files() {
   local new_tag="$1"
   perl -0pi -e 's/(tag:\s*")[^"]+(")/${1}'"$new_tag"'${2}/' "$VALUES_FILE"
@@ -88,6 +141,123 @@ remote_run() {
 
 remote_kubectl() {
   remote_run "${KUBECTL_PREFIX} $*"
+}
+
+force_autoscaling_off_state() {
+  local restore_nodes="$1"
+  local lease_name="autoscaler-leader-state"
+  echo "==> Forcing shared autoscaling state OFF (restoreActiveNodes=${restore_nodes})"
+  remote_run "cat <<'EOF' | ${KUBECTL_PREFIX} apply -f -
+apiVersion: coordination.k8s.io/v1
+kind: Lease
+metadata:
+  name: ${lease_name}
+  namespace: video-streaming
+EOF" >/dev/null
+  remote_kubectl "annotate lease ${lease_name} autoscalingOn=false restoreActiveNodes=${restore_nodes} --overwrite"
+}
+
+adjust_processing_replicas_to_fit() {
+  local statefulset_name="${STATEFULSET_NAME:-vs-processing}"
+
+  while true; do
+    local unschedulable_count
+    unschedulable_count="$(remote_run "doas env KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl -n video-streaming get pods -l app=${statefulset_name} --field-selector=status.phase=Pending -o jsonpath='{range .items[*]}{range .status.conditions[?(@.type==\"PodScheduled\")]}{.status}{\" \"}{.reason}{\"\\n\"}{end}{end}' | awk '\$1 == \"False\" && \$2 == \"Unschedulable\" { count++ } END { print count + 0 }'" \
+      | tr -d '\r')"
+    if [[ "${unschedulable_count:-0}" -eq 0 ]]; then
+      return 0
+    fi
+
+    local current_replicas
+    current_replicas="$(remote_kubectl "get statefulset ${statefulset_name} -o jsonpath='{.spec.replicas}'" | tr -d '\r')"
+    if [[ -z "$current_replicas" || "$current_replicas" -le 1 ]]; then
+      echo "Processing rollout is blocked by unschedulable pods and cannot be reduced further." >&2
+      return 1
+    fi
+
+    local next_replicas=$((current_replicas - 1))
+    echo "  Found ${unschedulable_count} unschedulable processing pod(s); reducing ${statefulset_name} replicas ${current_replicas} -> ${next_replicas}"
+    remote_kubectl "scale statefulset/${statefulset_name} --replicas=${next_replicas}"
+    sleep 5
+  done
+}
+
+wait_for_processing_rollout() {
+  local statefulset_name="${STATEFULSET_NAME:-vs-processing}"
+  local timeout_seconds=900
+  local deadline=$(( $(date +%s) + timeout_seconds ))
+
+  while (( $(date +%s) < deadline )); do
+    if remote_kubectl "rollout status statefulset/${statefulset_name} --timeout=20s"; then
+      return 0
+    fi
+
+    if ! adjust_processing_replicas_to_fit; then
+      return 1
+    fi
+  done
+
+  echo "Timed out waiting for statefulset/${statefulset_name} rollout to complete." >&2
+  return 1
+}
+
+enforce_processing_off_baseline() {
+  local target_nodes="$1"
+  local replicas_per_node="$2"
+  local replicas_per_cpu="$3"
+  local node_label_selector="$4"
+  local statefulset_name="${STATEFULSET_NAME:-vs-processing}"
+
+  echo "==> Enforcing processing OFF baseline across ${target_nodes} node(s)"
+  local node_info
+  node_info="$(remote_run "doas env KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl get nodes -l '${node_label_selector}' -o jsonpath='{range .items[*]}{.metadata.name}{\" \"}{.status.allocatable.cpu}{\"\\n\"}{end}'" \
+    | tr -d '\r' \
+    | awk '
+      function cpu_to_int(v) {
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+        if (v ~ /m$/) {
+          sub(/m$/, "", v)
+          return int(v / 1000)
+        }
+        return int(v + 0)
+      }
+      {
+        cpu = cpu_to_int($2)
+        if (cpu < 1) cpu = 1
+        print $1, cpu
+      }
+    ' \
+    | sort -k2,2nr -k1,1 \
+    | head -n ${target_nodes})"
+
+  if [[ -z "$node_info" ]]; then
+    echo "Could not determine processing baseline nodes for selector ${node_label_selector}" >&2
+    exit 1
+  fi
+
+  local selected_nodes=()
+  local total_replicas=0
+  while read -r node_name cpu_count; do
+    [[ -z "$node_name" ]] && continue
+    selected_nodes+=("$node_name")
+    local node_replicas
+    node_replicas="$(awk -v cpu="$cpu_count" -v rpn="$replicas_per_node" -v rpc="$replicas_per_cpu" 'BEGIN { value = int(cpu * rpc); if (value < rpn) value = rpn; print value }')"
+    total_replicas=$((total_replicas + node_replicas))
+  done <<< "$node_info"
+
+  local values_json
+  values_json="$(printf '"%s",' "${selected_nodes[@]}")"
+  values_json="[${values_json%,}]"
+  local affinity_patch
+  affinity_patch="$(cat <<EOF
+{"spec":{"template":{"spec":{"affinity":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"kubernetes.io/hostname","operator":"In","values":${values_json}}]}]}}}}}}}
+EOF
+)"
+
+  echo "  Selected nodes: ${selected_nodes[*]}"
+  echo "  Target replicas: ${total_replicas}"
+  remote_kubectl "patch statefulset ${statefulset_name} --type=merge -p '${affinity_patch}'"
+  remote_kubectl "scale statefulset/${statefulset_name} --replicas=${total_replicas}"
 }
 
 first_external_ip() {
@@ -138,9 +308,21 @@ ensure_passwordless_access
 
 TAG="${1:-$(current_tag)}"
 IMAGE="${IMAGE_REPO}:${TAG}"
+MIN_ACTIVE_NODES="${MIN_ACTIVE_NODES:-$(current_min_active_nodes)}"
+REPLICAS_PER_NODE="${REPLICAS_PER_NODE:-$(current_replicas_per_node)}"
+REPLICAS_PER_CPU="${REPLICAS_PER_CPU:-$(current_replicas_per_cpu)}"
+NODE_LABEL_SELECTOR="${NODE_LABEL_SELECTOR:-$(current_node_label_selector)}"
 
 if [[ -z "$TAG" ]]; then
   echo "Could not determine image tag from k8s/values.yaml" >&2
+  exit 1
+fi
+if [[ -z "$MIN_ACTIVE_NODES" ]]; then
+  echo "Could not determine autoscaler minActiveNodes from k8s/values.yaml" >&2
+  exit 1
+fi
+if [[ -z "$REPLICAS_PER_NODE" || -z "$REPLICAS_PER_CPU" || -z "$NODE_LABEL_SELECTOR" ]]; then
+  echo "Could not determine autoscaler baseline settings from k8s/values.yaml" >&2
   exit 1
 fi
 
@@ -171,6 +353,8 @@ scp "${SSH_OPTS[@]}" -r "${ROOT_DIR}/k8s" "${CONTROL_PLANE}:${REMOTE_K8S_DIR}"
 
 echo "==> Applying manifests"
 remote_kubectl "apply -k ${REMOTE_K8S_DIR}/"
+force_autoscaling_off_state "$MIN_ACTIVE_NODES"
+enforce_processing_off_baseline "$MIN_ACTIVE_NODES" "$REPLICAS_PER_NODE" "$REPLICAS_PER_CPU" "$NODE_LABEL_SELECTOR"
 
 echo "==> Patching workloads -> imagePullPolicy: Always"
 for deploy in "${APP_DEPLOYMENTS[@]}"; do
@@ -192,7 +376,7 @@ for deploy in "${APP_DEPLOYMENTS[@]}"; do
   remote_kubectl "rollout status deployment/${deploy} --timeout=10m"
 done
 echo "  Waiting: statefulset/${PROCESSING_STATEFULSET}"
-remote_kubectl "rollout status statefulset/${PROCESSING_STATEFULSET} --timeout=15m"
+wait_for_processing_rollout
 
 echo "==> Restoring imagePullPolicy: IfNotPresent"
 for deploy in "${APP_DEPLOYMENTS[@]}"; do

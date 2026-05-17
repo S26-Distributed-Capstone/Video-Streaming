@@ -1,6 +1,6 @@
 # ─── App image ──────────────────────────────────────────────────
 image:
-  repository: jasonroth03/video-streaming-app
+  repository: tanigross/video-streaming-app
   tag: "10-recovery-fix-20260514-1432"
   pullPolicy: IfNotPresent
 
@@ -37,7 +37,7 @@ streamingService:
 # ─── Autoscaler ─────────────────────────────────────────────────
 autoscaler:
   image:
-    repository: jasonroth03/video-streaming-autoscaler
+    repository: tanigross/video-streaming-autoscaler
     tag: "1.5-autoscaling-fix-20260514"
     pullPolicy: IfNotPresent
   # 2 replicas on CP nodes — only the leader acts via k8s Lease

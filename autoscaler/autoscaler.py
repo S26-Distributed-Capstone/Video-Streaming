@@ -242,6 +242,9 @@ def run_poll_loop(
         # ── Collect metrics ─────────────────────────────────────────────────
         try:
             queue_depth = metrics.get_queue_depth()
+            processing_backlog = metrics.get_processing_backlog()
+            backlog_active = processing_backlog.has_active_work()
+            idle_queue_depth = cfg.scale_down_threshold + 1 if backlog_active else queue_depth
             node_states = topology.get_node_states()
             active_nodes = sum(1 for s in node_states.values() if not s["cordoned"])
         except Exception as exc:
@@ -258,10 +261,16 @@ def run_poll_loop(
                 time.sleep(cfg.poll_interval_seconds)
                 continue
 
-        idle_polls = store.record_queue_depth(queue_depth, cfg.scale_down_threshold)
+        idle_polls = store.record_queue_depth(idle_queue_depth, cfg.scale_down_threshold)
         log.info(
-            "queue_depth=%d active_nodes=%d/%d idle_polls=%d/%d",
-            queue_depth, active_nodes, cfg.total_nodes, idle_polls, cfg.scale_down_idle_polls,
+            "queue_depth=%d active_nodes=%d/%d idle_polls=%d/%d open_upload_tasks=%d active_claims=%d",
+            queue_depth,
+            active_nodes,
+            cfg.total_nodes,
+            idle_polls,
+            cfg.scale_down_idle_polls,
+            processing_backlog.open_upload_tasks,
+            processing_backlog.active_claims,
         )
 
         # ── Scaling decision ────────────────────────────────────────────────
@@ -270,7 +279,14 @@ def run_poll_loop(
         else:
             decision, steps = engine.decide(queue_depth, active_nodes)
 
-            if decision == "scale_down" and idle_polls < cfg.scale_down_idle_polls:
+            if decision == "scale_down" and backlog_active:
+                log.info(
+                    "Decision: scale_down ×%d deferred because processing backlog is still active (open_upload_tasks=%d active_claims=%d)",
+                    steps,
+                    processing_backlog.open_upload_tasks,
+                    processing_backlog.active_claims,
+                )
+            elif decision == "scale_down" and idle_polls < cfg.scale_down_idle_polls:
                 log.info(
                     "Decision: scale_down ×%d deferred until queue is idle for %d consecutive poll(s)",
                     steps, cfg.scale_down_idle_polls,
@@ -305,7 +321,8 @@ def run_poll_loop(
         # Always publish (not just on change) so newly connected browsers
         # receive current state within one poll interval of connecting.
         try:
-            pub.publish_node_status(node_states, queue_depth)
+            processing_pool_nodes = executor.get_processing_pool_nodes(topology)
+            pub.publish_node_status(node_states, processing_pool_nodes, queue_depth)
             store.record_publish(node_states)
         except Exception as exc:
             log.warning("Failed to publish node status: %s", exc)

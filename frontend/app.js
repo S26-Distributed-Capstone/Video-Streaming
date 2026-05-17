@@ -41,12 +41,16 @@ const refreshReadyBtn = document.getElementById("refreshReadyBtn");
 const deleteSelectedBtn = document.getElementById("deleteSelectedBtn");
 const readyList = document.getElementById("readyList");
 const clusterDashboard = document.getElementById("clusterDashboard");
+const uploadClusterDashboard = document.getElementById("uploadClusterDashboard");
+const uploadNodeGrid = document.getElementById("uploadNodeGrid");
 const nodeGrid = document.getElementById("nodeGrid");
 const queueDepthBar = document.getElementById("queueDepthBar");
 const queueDepthLabel = document.getElementById("queueDepthLabel");
+const queueDepthScaleLabel = document.getElementById("queueDepthScaleLabel");
 const autoscalerStatusBanner = document.getElementById("autoscalerStatusBanner");
 const autoscalerStatusText = document.getElementById("autoscalerStatusText");
 const autoscalerToggleBtn = document.getElementById("autoscalerToggleBtn");
+const clusterNodeGrids = [uploadNodeGrid, nodeGrid].filter(Boolean);
 
 // ── Autoscaler pause/resume state ───────────────────────────────────────────
 // Default to paused=true — autoscaling starts OFF.
@@ -96,9 +100,13 @@ const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}
 // ── Cluster dashboard state ─────────────────────────────────────────────────
 let clusterNodeStates = [];
 let clusterQueueDepth = 0;
+let clusterQueueDepthScale = 10;
 let clusterWs = null;
 let clusterWsReconnectTimer = null;
-const QUEUE_DEPTH_MAX = 150; // cap for the progress bar display
+let autoscalerStatusRefreshTimer = null;
+const QUEUE_DEPTH_MIN_SCALE = 10;
+const QUEUE_DEPTH_SCALE_DECAY = 0.85;
+const AUTOSCALER_STATUS_REFRESH_MS = 10000;
 
 // Canonical status-service WebSocket base (e.g. "ws://192.168.1.101:8081").
 // Set once from the first known-good connectWebSocket() call and never cleared,
@@ -123,28 +131,35 @@ function applyNodeStatusEvent(payload) {
   if (!payload || payload.type !== "node_status") return;
   clusterNodeStates = Array.isArray(payload.nodes) ? payload.nodes : [];
   clusterQueueDepth = typeof payload.queueDepth === "number" ? payload.queueDepth : 0;
-  renderNodeGrid();
+  renderNodeGrids();
   renderQueueDepth();
 }
 
-function renderNodeGrid() {
-  if (!nodeGrid) return;
-  nodeGrid.innerHTML = "";
+function renderNodeGrids() {
+  if (clusterNodeGrids.length === 0) return;
+  clusterNodeGrids.forEach((grid) => {
+    renderNodeGrid(grid);
+  });
+}
+
+function renderNodeGrid(nodeGridEl) {
+  if (!nodeGridEl) return;
+  nodeGridEl.innerHTML = "";
   if (clusterNodeStates.length === 0) {
     const placeholder = document.createElement("div");
     placeholder.className = "node-grid-placeholder";
     placeholder.textContent = "Waiting for cluster status…";
-    nodeGrid.appendChild(placeholder);
+    nodeGridEl.appendChild(placeholder);
     return;
   }
   clusterNodeStates.forEach((node) => {
     const el = document.createElement("div");
-    const isCordoned = node.state !== "active";
-    const stateClass = isCordoned ? "cordoned" : "active";
+    const isActive = node.state === "active";
+    const stateClass = isActive ? "active" : "cordoned";
     el.className = `node-icon ${stateClass}`;
     // Strip common suffixes like ".cluster.local" to get short name (e.g. "n5", "cp1")
     const shortName = (node.name || "").replace(/\.cluster\.local$/, "").replace(/\..+$/, "");
-    const stateLabel = isCordoned ? "Cordoned" : "Active";
+    const stateLabel = isActive ? "In Use" : "Not In Use";
     el.setAttribute("title", `${node.name} — ${stateLabel}`);
     el.setAttribute("aria-label", `${node.name}: ${stateLabel}`);
 
@@ -152,45 +167,26 @@ function renderNodeGrid() {
     nameSpan.className = "node-name";
     nameSpan.textContent = shortName || node.name;
 
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "node-cordon-btn";
-    btn.textContent = isCordoned ? "Uncordon" : "Cordon";
-    btn.title = isCordoned ? `Uncordon ${node.name}` : `Cordon ${node.name}`;
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      cordonNode(node.name, !isCordoned, btn);
-    });
-
     el.appendChild(nameSpan);
-    el.appendChild(btn);
-    nodeGrid.appendChild(el);
+    nodeGridEl.appendChild(el);
   });
-}
-
-async function cordonNode(nodeName, shouldCordon, btn) {
-  if (btn) btn.disabled = true;
-  const endpoint = shouldCordon ? `/cordon/${encodeURIComponent(nodeName)}` : `/uncordon/${encodeURIComponent(nodeName)}`;
-  try {
-    const resp = await fetch(deriveAutoscalerUrl(endpoint), { method: "POST" });
-    if (!resp.ok) {
-      console.warn(`[cluster] ${shouldCordon ? "cordon" : "uncordon"} ${nodeName} failed: ${resp.status}`);
-    }
-    // Node grid will refresh automatically on next status event from autoscaler
-  } catch (err) {
-    console.warn(`[cluster] ${shouldCordon ? "cordon" : "uncordon"} ${nodeName} error:`, err);
-  } finally {
-    if (btn) btn.disabled = false;
-  }
 }
 
 function renderQueueDepth() {
   if (!queueDepthBar || !queueDepthLabel) return;
-  const pct = Math.min(100, Math.round((clusterQueueDepth / QUEUE_DEPTH_MAX) * 100));
+  clusterQueueDepthScale = Math.max(
+    QUEUE_DEPTH_MIN_SCALE,
+    clusterQueueDepth,
+    Math.ceil(clusterQueueDepthScale * QUEUE_DEPTH_SCALE_DECAY),
+  );
+  const pct = Math.min(100, Math.round((clusterQueueDepth / clusterQueueDepthScale) * 100));
   queueDepthBar.style.width = `${pct}%`;
-  queueDepthLabel.textContent = clusterQueueDepth;
+  queueDepthLabel.textContent = clusterQueueDepth.toLocaleString();
+  if (queueDepthScaleLabel) {
+    queueDepthScaleLabel.textContent = `Scale: ${clusterQueueDepthScale.toLocaleString()}`;
+  }
   // Change bar colour when queue is deep
-  if (clusterQueueDepth >= QUEUE_DEPTH_MAX * 0.8) {
+  if (pct >= 80) {
     queueDepthBar.classList.add("queue-bar-danger");
   } else {
     queueDepthBar.classList.remove("queue-bar-danger");
@@ -292,6 +288,14 @@ async function fetchAutoscalerStatus() {
   } catch (_) {
     // unreachable — keep current known state, button stays enabled
   }
+}
+
+function startAutoscalerStatusRefresh() {
+  fetchAutoscalerStatus();
+  if (autoscalerStatusRefreshTimer) {
+    clearInterval(autoscalerStatusRefreshTimer);
+  }
+  autoscalerStatusRefreshTimer = setInterval(fetchAutoscalerStatus, AUTOSCALER_STATUS_REFRESH_MS);
 }
 
 async function toggleAutoscaler() {
@@ -1957,14 +1961,18 @@ if (routeVideoId) {
 }
 setPlayerVisible(false);
 
-// Connect cluster status only when the processing dashboard is visible.
-if (routeVideoId) {
-  connectClusterWebSocket();
-}
+renderNodeGrids();
+connectClusterWebSocket();
 
 // ── Autoscaler toggle ───────────────────────────────────────────────────────
 setAutoscalerPaused(true);  // show OFF immediately; the autoscaler starts off
 if (autoscalerToggleBtn) {
   autoscalerToggleBtn.addEventListener("click", toggleAutoscaler);
 }
-
+startAutoscalerStatusRefresh();
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    fetchAutoscalerStatus();
+  }
+});
+window.addEventListener("focus", fetchAutoscalerStatus);

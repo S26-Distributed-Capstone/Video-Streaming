@@ -36,6 +36,7 @@ class Config:
     poll_interval_seconds: int
     scale_cooldown_seconds: int
     scale_down_idle_polls: int
+    processing_task_claim_stale_millis: int
 
     # RabbitMQ connection
     rabbitmq_host: str
@@ -46,6 +47,11 @@ class Config:
     rabbitmq_vhost: str
     rabbitmq_exchange: str
     rabbitmq_task_queue: str
+
+    # Postgres connection for processing backlog checks
+    pg_url: str
+    pg_user: str
+    pg_password: str
 
     # HTTP health server
     health_port: int
@@ -72,6 +78,7 @@ def load() -> Config:
         poll_interval_seconds=_get_int("POLL_INTERVAL_SECONDS", 10),
         scale_cooldown_seconds=_get_int("SCALE_COOLDOWN_SECONDS", 10),
         scale_down_idle_polls=_get_int("SCALE_DOWN_IDLE_POLLS", 6),
+        processing_task_claim_stale_millis=_get_int("PROCESSING_TASK_CLAIM_STALE_MILLIS", 10_000),
 
         rabbitmq_host=_get("RABBITMQ_HOST", "localhost"),
         rabbitmq_port=_get_int("RABBITMQ_PORT", 5672),
@@ -81,6 +88,9 @@ def load() -> Config:
         rabbitmq_vhost=_get("RABBITMQ_VHOST", "/"),
         rabbitmq_exchange=_get("RABBITMQ_EXCHANGE", "upload.events"),
         rabbitmq_task_queue=_get("RABBITMQ_TASK_QUEUE", "processing.tasks.queue"),
+        pg_url=_get("PG_URL", ""),
+        pg_user=_get("PG_USER", ""),
+        pg_password=os.environ.get("PG_PASSWORD", ""),
 
         health_port=_get_int("AUTOSCALER_HEALTH_PORT", 8084),
     )
