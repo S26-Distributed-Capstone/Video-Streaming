@@ -135,6 +135,12 @@ function applyNodeStatusEvent(payload) {
   renderQueueDepth();
 }
 
+function applyQueueDepthEvent(payload) {
+  if (!payload || payload.type !== "queue_depth") return;
+  clusterQueueDepth = typeof payload.queueDepth === "number" ? payload.queueDepth : 0;
+  renderQueueDepth();
+}
+
 function renderNodeGrids() {
   if (clusterNodeGrids.length === 0) return;
   clusterNodeGrids.forEach((grid) => {
@@ -208,6 +214,29 @@ function deriveClusterWsUrl() {
   return `${scheme}://${host}:8081/upload-status`;
 }
 
+function deriveClusterStatusUrl() {
+  if (statusServiceWsBase) {
+    try {
+      const httpBase = statusServiceWsBase.replace(/^ws/, "http");
+      return `${httpBase}/cluster-status`;
+    } catch (_) {}
+  }
+  return `${resolveBaseUrl()}/cluster-status`;
+}
+
+async function fetchClusterSnapshot() {
+  try {
+    const resp = await fetch(deriveClusterStatusUrl(), { cache: "no-store" });
+    if (!resp.ok) {
+      return;
+    }
+    const payload = await resp.json();
+    if (payload && payload.type === "node_status") {
+      applyNodeStatusEvent(payload);
+    }
+  } catch (_) {}
+}
+
 function connectClusterWebSocket() {
   if (clusterWs && (clusterWs.readyState === WebSocket.CONNECTING || clusterWs.readyState === WebSocket.OPEN)) {
     return;
@@ -230,6 +259,8 @@ function connectClusterWebSocket() {
       const payload = JSON.parse(event.data);
       if (payload && payload.type === "node_status") {
         applyNodeStatusEvent(payload);
+      } else if (payload && payload.type === "queue_depth") {
+        applyQueueDepthEvent(payload);
       }
     } catch (_) {}
   });
@@ -1573,6 +1604,10 @@ function connectWebSocket(wsUrl, videoId, { isReconnect = false } = {}) {
         applyNodeStatusEvent(payload);
         return;
       }
+      if (payload && payload.type === "queue_depth") {
+        applyQueueDepthEvent(payload);
+        return;
+      }
       if (payload && payload.type === "failed") {
         if (payload.reason === "user_cancelled") {
           void exhaustUploadRetries("Processing cancelled.", { skipPersist: true });
@@ -1962,6 +1997,7 @@ if (routeVideoId) {
 setPlayerVisible(false);
 
 renderNodeGrids();
+fetchClusterSnapshot();
 connectClusterWebSocket();
 
 // ── Autoscaler toggle ───────────────────────────────────────────────────────
@@ -1973,6 +2009,8 @@ startAutoscalerStatusRefresh();
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
     fetchAutoscalerStatus();
+    fetchClusterSnapshot();
   }
 });
 window.addEventListener("focus", fetchAutoscalerStatus);
+window.addEventListener("focus", fetchClusterSnapshot);

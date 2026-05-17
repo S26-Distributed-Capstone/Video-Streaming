@@ -22,9 +22,21 @@ import io.javalin.websocket.WsContext;
 import io.javalin.websocket.WsErrorContext;
 import io.javalin.websocket.WsCloseContext;
 import io.javalin.websocket.WsMessageContext;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URI;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.Base64;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -38,6 +50,11 @@ public class UploadStatusWebSocket {
     // Cache the last NodeStatusEvent so newly connected browsers see the current
     // cluster state immediately rather than waiting for the next autoscaler poll.
     private static volatile String lastNodeStatusJson = null;
+    private static volatile String lastQueueDepthJson = null;
+    private static volatile java.util.List<?> lastNodeStatusNodes = java.util.List.of();
+    private static volatile int lastActiveCount = 0;
+    private static volatile int lastTotalCount = 0;
+    private static volatile int lastQueueDepth = 0;
 
     private final StatusEventBus statusEventBus;
     private final SegmentUploadRepository segmentUploadRepository;
@@ -45,6 +62,7 @@ public class UploadStatusWebSocket {
     private final Map<WsContext, JobEventListener> jobListenersByContext = new ConcurrentHashMap<>();
     private final Map<WsContext, String> jobIdByContext = new ConcurrentHashMap<>();
     private final Map<WsContext, JobEventListener> clusterListenersByContext = new ConcurrentHashMap<>();
+    private final QueueDepthPoller queueDepthPoller;
 
     public UploadStatusWebSocket(
             StatusEventBus statusEventBus,
@@ -54,6 +72,8 @@ public class UploadStatusWebSocket {
         this.statusEventBus = Objects.requireNonNull(statusEventBus, "statusEventBus is null");
         this.segmentUploadRepository = segmentUploadRepository;
         this.transcodedSegmentStatusRepository = transcodedSegmentStatusRepository;
+        this.queueDepthPoller = QueueDepthPoller.fromEnv(this::broadcastQueueDepth);
+        this.queueDepthPoller.start();
     }
 
     public void configure(WsConfig ws) {
@@ -82,12 +102,24 @@ public class UploadStatusWebSocket {
                 logger.warn("Failed to send cached node status on connect", e);
             }
         }
+        String cachedQueueDepth = lastQueueDepthJson;
+        if (cachedQueueDepth != null) {
+            try {
+                ctx.send(cachedQueueDepth);
+            } catch (Exception e) {
+                logger.warn("Failed to send cached queue depth on connect", e);
+            }
+        }
 
         JobEventListener clusterListener = event -> {
             try {
                 String json = objectMapper.writeValueAsString(event);
                 if (event instanceof NodeStatusEvent) {
                     lastNodeStatusJson = json;  // keep cache fresh
+                    lastNodeStatusNodes = List.copyOf(((NodeStatusEvent) event).getNodes());
+                    lastActiveCount = ((NodeStatusEvent) event).getActiveCount();
+                    lastTotalCount = ((NodeStatusEvent) event).getTotalCount();
+                    lastQueueDepth = ((NodeStatusEvent) event).getQueueDepth();
                 }
                 logger.debug("WS cluster send type={}", describeEventType(event));
                 ctx.send(json);
@@ -178,6 +210,22 @@ public class UploadStatusWebSocket {
         }
     }
 
+    public void close() {
+        queueDepthPoller.close();
+    }
+
+    public Map<String, Object> currentClusterSnapshot() {
+        return Map.of(
+                "jobId", "__cluster__",
+                "taskId", "node_status",
+                "type", "node_status",
+                "nodes", lastNodeStatusNodes,
+                "queueDepth", lastQueueDepth,
+                "activeCount", lastActiveCount,
+                "totalCount", lastTotalCount
+        );
+    }
+
 
     private void sendProgressSnapshot(WsContext ctx, String jobId) throws JsonProcessingException {
         int completedSegments = segmentUploadRepository.countByVideoId(jobId);
@@ -220,5 +268,121 @@ public class UploadStatusWebSocket {
             return hostname;
         }
         return "status-service-unknown";
+    }
+
+    private void broadcastQueueDepth(int queueDepth) {
+        try {
+            String json = objectMapper.writeValueAsString(Map.of(
+                    "jobId", "__cluster__",
+                    "taskId", "queue_depth",
+                    "type", "queue_depth",
+                    "queueDepth", queueDepth
+            ));
+            lastQueueDepth = queueDepth;
+            lastQueueDepthJson = json;
+            for (WsContext ctx : clusterListenersByContext.keySet()) {
+                try {
+                    ctx.send(json);
+                } catch (Exception e) {
+                    logger.debug("Failed to send queue depth update to websocket client", e);
+                }
+            }
+        } catch (JsonProcessingException e) {
+            logger.warn("Failed to serialize queue depth update", e);
+        }
+    }
+
+    private static final class QueueDepthPoller implements AutoCloseable {
+        private static final long POLL_INTERVAL_MILLIS = 1000L;
+
+        private final Logger logger = LogManager.getLogger(QueueDepthPoller.class);
+        private final ScheduledExecutorService executor;
+        private final String queueUrl;
+        private final String basicAuthHeader;
+        private final java.util.function.IntConsumer consumer;
+        private volatile Integer lastPublishedDepth = null;
+
+        private QueueDepthPoller(String queueUrl, String basicAuthHeader, java.util.function.IntConsumer consumer) {
+            this.queueUrl = queueUrl;
+            this.basicAuthHeader = basicAuthHeader;
+            this.consumer = consumer;
+            this.executor = Executors.newSingleThreadScheduledExecutor(new ThreadFactory() {
+                @Override
+                public Thread newThread(Runnable r) {
+                    Thread t = new Thread(r, "queue-depth-poller");
+                    t.setDaemon(true);
+                    return t;
+                }
+            });
+        }
+
+        static QueueDepthPoller fromEnv(java.util.function.IntConsumer consumer) {
+            String rabbitmqHost = readEnv("RABBITMQ_HOST", "localhost");
+            String rabbitmqUser = readEnv("RABBITMQ_USER", "guest");
+            String rabbitmqPass = readEnv("RABBITMQ_PASS", "guest");
+            String rabbitmqVhost = readEnv("RABBITMQ_VHOST", "/");
+            String rabbitmqTaskQueue = readEnv("RABBITMQ_TASK_QUEUE", "processing.tasks.queue");
+            String managementPort = readEnv("RABBITMQ_MANAGEMENT_PORT", "15672");
+            String vhost = urlEncode(rabbitmqVhost);
+            String queue = urlEncode(rabbitmqTaskQueue);
+            String queueUrl = "http://" + rabbitmqHost + ":" + managementPort + "/api/queues/" + vhost + "/" + queue;
+            String auth = Base64.getEncoder().encodeToString(
+                    (rabbitmqUser + ":" + rabbitmqPass).getBytes(StandardCharsets.UTF_8)
+            );
+            return new QueueDepthPoller(queueUrl, "Basic " + auth, consumer);
+        }
+
+        void start() {
+            executor.scheduleWithFixedDelay(this::pollOnce, 0L, POLL_INTERVAL_MILLIS, TimeUnit.MILLISECONDS);
+        }
+
+        private void pollOnce() {
+            try {
+                int depth = fetchQueueDepth();
+                if (lastPublishedDepth == null || depth != lastPublishedDepth.intValue()) {
+                    lastPublishedDepth = depth;
+                    consumer.accept(depth);
+                }
+            } catch (Exception e) {
+                logger.debug("Queue depth poll failed", e);
+            }
+        }
+
+        private int fetchQueueDepth() throws Exception {
+            HttpURLConnection connection = (HttpURLConnection) URI.create(queueUrl).toURL().openConnection();
+            connection.setRequestMethod("GET");
+            connection.setRequestProperty("Authorization", basicAuthHeader);
+            connection.setConnectTimeout((int) Duration.ofSeconds(2).toMillis());
+            connection.setReadTimeout((int) Duration.ofSeconds(2).toMillis());
+            connection.setRequestProperty("Accept", "application/json");
+            try {
+                int status = connection.getResponseCode();
+                if (status < 200 || status >= 300) {
+                    throw new IllegalStateException("RabbitMQ management API returned status " + status);
+                }
+                try (InputStream input = connection.getInputStream()) {
+                    com.fasterxml.jackson.databind.JsonNode data = objectMapper.readTree(input);
+                    int ready = data.path("messages_ready").asInt(0);
+                    int unacked = data.path("messages_unacknowledged").asInt(0);
+                    return ready + unacked;
+                }
+            } finally {
+                connection.disconnect();
+            }
+        }
+
+        @Override
+        public void close() {
+            executor.shutdownNow();
+        }
+
+        private static String readEnv(String key, String fallback) {
+            String value = System.getenv(key);
+            return value == null || value.isBlank() ? fallback : value;
+        }
+
+        private static String urlEncode(String value) {
+            return URLEncoder.encode(value, StandardCharsets.UTF_8);
+        }
     }
 }

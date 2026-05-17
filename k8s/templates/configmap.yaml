@@ -21,6 +21,7 @@ data:
   {{- end }}
   RABBITMQ_HOST: "{{ .Release.Name }}-rabbitmq"
   RABBITMQ_PORT: {{ .Values.config.rabbitmqPort | quote }}
+  RABBITMQ_MANAGEMENT_PORT: {{ .Values.autoscaler.rabbitmqManagementPort | quote }}
   RABBITMQ_VHOST: {{ .Values.config.rabbitmqVhost | quote }}
   RABBITMQ_EXCHANGE: {{ .Values.config.rabbitmqExchange | quote }}
   RABBITMQ_STATUS_QUEUE: {{ .Values.config.rabbitmqStatusQueue | quote }}

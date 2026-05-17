@@ -167,6 +167,7 @@ public class UploadServiceApplication {
         });
         registerFrontendRoutes(app, frontendIndex);
         registerAutoscalerProxyRoutes(app);
+        registerStatusProxyRoutes(app);
         app.post("/upload", uploadHandler::upload);
         app.post("/upload/{videoId}/fail", terminalFailureHandler::markFailed);
 
@@ -216,6 +217,7 @@ public class UploadServiceApplication {
         app.options("/*", ctx -> ctx.status(204));
         app.get("/health", ctx -> ctx.json(java.util.Map.of("status", "ok")));
         app.ws("/upload-status", uploadStatusWebSocket::configure);
+        app.get("/cluster-status", ctx -> ctx.json(uploadStatusWebSocket.currentClusterSnapshot()));
         app.get("/upload-info/{videoId}", uploadInfoHandler::getInfo);
         app.get("/dev-logs", ctx -> {
             String format = ctx.queryParam("format");
@@ -260,6 +262,11 @@ public class UploadServiceApplication {
                 storageClient.close();
             } catch (Exception e) {
                 logger.warn("Error closing status storage client", e);
+            }
+            try {
+                uploadStatusWebSocket.close();
+            } catch (Exception e) {
+                logger.warn("Error closing upload status websocket", e);
             }
             closeDevLogReader(devLogReader);
         }));
@@ -355,6 +362,14 @@ public class UploadServiceApplication {
         app.post("/autoscaler/pause", ctx -> proxyAutoscalerRequest(ctx, client, "POST", "/pause"));
     }
 
+    static void registerStatusProxyRoutes(Javalin app) {
+        HttpClient client = HttpClient.newBuilder()
+                .connectTimeout(java.time.Duration.ofSeconds(3))
+                .build();
+
+        app.get("/cluster-status", ctx -> proxyStatusRequest(ctx, client, "GET", "/cluster-status"));
+    }
+
     private static void proxyAutoscalerRequest(io.javalin.http.Context ctx, HttpClient client, String method, String path) {
         String baseUrl = resolveAutoscalerInternalUrl();
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(baseUrl + path))
@@ -378,11 +393,46 @@ public class UploadServiceApplication {
         }
     }
 
+    private static void proxyStatusRequest(io.javalin.http.Context ctx, HttpClient client, String method, String path) {
+        String baseUrl = resolveStatusInternalUrl();
+        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(baseUrl + path))
+                .timeout(java.time.Duration.ofSeconds(5));
+        if ("POST".equals(method)) {
+            builder.POST(HttpRequest.BodyPublishers.noBody());
+        } else {
+            builder.GET();
+        }
+        try {
+            HttpResponse<String> response = client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+            ctx.status(response.statusCode())
+                    .contentType(response.headers().firstValue("content-type").orElse("application/json"))
+                    .result(response.body());
+        } catch (Exception e) {
+            logger.warn("Status proxy failed method={} path={} baseUrl={}", method, path, baseUrl, e);
+            ctx.status(502).json(java.util.Map.of(
+                    "error", "status_service_unreachable",
+                    "message", e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()
+            ));
+        }
+    }
+
     private static String resolveAutoscalerInternalUrl() {
         String configured = System.getenv("AUTOSCALER_INTERNAL_URL");
         if (configured != null && !configured.isBlank()) {
             return configured.replaceAll("/+$", "");
         }
+        return "http://" + resolveReleaseName() + "-autoscaler:8084";
+    }
+
+    private static String resolveStatusInternalUrl() {
+        String configured = System.getenv("STATUS_INTERNAL_URL");
+        if (configured != null && !configured.isBlank()) {
+            return configured.replaceAll("/+$", "");
+        }
+        return "http://" + resolveReleaseName() + "-status:8081";
+    }
+
+    private static String resolveReleaseName() {
         String releaseName = System.getenv("HELM_RELEASE_NAME");
         if (releaseName == null || releaseName.isBlank()) {
             releaseName = DOTENV.get("HELM_RELEASE_NAME");
@@ -390,7 +440,7 @@ public class UploadServiceApplication {
         if (releaseName == null || releaseName.isBlank()) {
             releaseName = "vs";
         }
-        return "http://" + releaseName + "-autoscaler:8084";
+        return releaseName;
     }
 
     static String loadFrontendIndex() {
